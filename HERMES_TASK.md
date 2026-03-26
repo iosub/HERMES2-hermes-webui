@@ -22,21 +22,27 @@
 
 ## Completed
 
+### Phase 1: Security & Infrastructure
+- [x] **Fix 1:** Create requirements.txt
+- [x] **Fix 2:** Authentication (token-based, all API routes)
 - [x] **Fix 3:** XSS hardening in chat rendering
 - [x] **Fix 4:** Path traversal hardening for uploads
-- [x] **Fix 1:** Create requirements.txt
-- [x] **Fix 2:** Authentication
-- [x] **Fix 5:** Production server / startup hardening
+
+### Phase 2: Stability
+- [x] **Fix 5:** Production server / startup hardening (gunicorn)
 - [x] **Fix 6:** Basic structured logging
 - [x] **Fix 7:** Simple in-memory rate limiting
 
+### Phase 3: UX/Feature Improvements
+- [x] **Fix 8:** Remove non-functional Plugins menu item
+
 ## Next
 
-- [ ] **Phase 2:** Stability fixes (remaining)
+- [ ] Additional Phase 3 improvements (model selector, search, etc.)
 
 ## Pending Queue
 
-- Phase 3: UX/features
+- Future enhancements and features
 
 ---
 

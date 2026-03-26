@@ -112,7 +112,7 @@ function screenTitle(s) {
     return {
         dashboard: 'Dashboard', settings: 'Settings', 'env-vars': 'Environment Variables',
         service: 'Service Controls', providers: 'Providers', models: 'Models',
-        agents: 'Agents', skills: 'Skills', plugins: 'Plugins', channels: 'Channels',
+        agents: 'Agents', skills: 'Skills', channels: 'Channels',
         hooks: 'Hooks / Webhooks', sessions: 'Sessions', logs: 'Logs & Diagnostics', chat: 'Chat'
     }[s] || s;
 }
@@ -676,23 +676,6 @@ window.toggleSkill = async function (name) {
         toast(name + ': ' + (r.enabled ? 'Enabled' : 'Disabled'), 'success');
         Screens.skills();
     } catch (e) { toast('Error: ' + e.message, 'error'); }
-};
-
-// ── PLUGINS ────────────────────────────────────────────────
-Screens.plugins = async function () {
-    document.getElementById('content').innerHTML = `
-    <div class="card">
-        <div class="card-header"><span>Plugins</span></div>
-        <div class="card-body">
-            <div class="empty-state">
-                <div class="empty-icon">\U0001f9e9</div>
-                <h3>Plugin System</h3>
-                <p>The plugin marketplace is not yet available in Hermes Agent. This feature is planned for a future release.</p>
-                <p class="mt-8 text-sm text-muted">In the meantime, extend functionality through Skills, MCP servers, and custom providers.</p>
-                <button class="btn mt-16" onclick="navigate('skills')">View Skills</button>
-            </div>
-        </div>
-    </div>`;
 };
 
 // ── CHANNELS ───────────────────────────────────────────────
