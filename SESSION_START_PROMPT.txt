@@ -1,0 +1,1 @@
+Read HERMES_TASK.md first. Then implement only the next unchecked item. Keep the patch minimal and localized. Do not touch unrelated files. Output files changed, exact changes, risks, manual tests, and unified diff.
