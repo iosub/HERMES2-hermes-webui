@@ -42,7 +42,21 @@ HERMES_HOME = Path.home() / ".hermes"
 CONFIG_PATH = HERMES_HOME / "config.yaml"
 ENV_PATH = HERMES_HOME / ".env"
 SKILLS_DIR = HERMES_HOME / "skills"
-HERMES_BIN = HERMES_HOME / "hermes-agent" / "venv" / "bin" / "hermes"
+
+# Hermes executable - try current install locations with fallback
+def _find_hermes_bin():
+    candidates = [
+        Path.home() / ".local" / "bin" / "hermes",
+        HERMES_HOME / ".venv" / "bin" / "hermes",
+        HERMES_HOME / "hermes-agent" / "venv" / "bin" / "hermes",  # legacy
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[0]  # Return first candidate as fallback
+
+HERMES_BIN = _find_hermes_bin()
+SESSIONS_DIR = HERMES_HOME / "sessions"
 UPLOADS_DIR = Path.home() / "hermes-web-ui" / "uploads"
 UPLOAD_FOLDER = Path(__file__).parent / "uploads"
 UPLOAD_FOLDER.mkdir(exist_ok=True)
@@ -960,11 +974,10 @@ def api_channels_update(name):
 def api_sessions_get():
     """Return a list of recent chat sessions for the session selector."""
     try:
-        import glob, os
-        session_dir = os.path.expanduser("~/.hermes/hermes-agent/data/sessions")
+        import glob
         sessions = []
-        if os.path.isdir(session_dir):
-            files = sorted(glob.glob(os.path.join(session_dir, "*.json")), key=os.path.getmtime, reverse=True)[:50]
+        if SESSIONS_DIR.is_dir():
+            files = sorted(glob.glob(str(SESSIONS_DIR / "*.json")), key=os.path.getmtime, reverse=True)[:50]
             for f in files:
                 name = os.path.splitext(os.path.basename(f))[0]
                 sessions.append({"id": name, "title": name})
