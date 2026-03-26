@@ -851,7 +851,6 @@ const chatState = {
     micStoppedByUser: false,  // track if user manually stopped
     recognition: null,
     speechSupported: false,
-    currentMode: 'general',
     historyOpen: true,
     localMessages: [],  // messages for the current viewed session
 };
@@ -940,13 +939,6 @@ Screens.chat = function () {
                 </div>
             </div>
 
-            <div class="chat-mode-tabs">
-                <button class="chat-mode-tab active" data-mode="general" onclick="chatSetMode('general')">General</button>
-                <button class="chat-mode-tab" data-mode="coding" onclick="chatSetMode('coding')">Coding</button>
-                <button class="chat-mode-tab" data-mode="file-analysis" onclick="chatSetMode('file-analysis')">File Analysis</button>
-                <button class="chat-mode-tab" data-mode="research" onclick="chatSetMode('research')">Research</button>
-                <button class="chat-mode-tab" data-mode="writing" onclick="chatSetMode('writing')">Writing</button>
-            </div>
 
             <div class="chat-transcript" id="chat-messages"></div>
 
@@ -1156,13 +1148,6 @@ function chatRenderMessages() {
     });
     msgs.scrollTop = msgs.scrollHeight;
 }
-
-window.chatSetMode = function (mode) {
-    chatState.currentMode = mode;
-    document.querySelectorAll('.chat-mode-tab').forEach(t => {
-        t.classList.toggle('active', t.dataset.mode === mode);
-    });
-};
 
 window.chatNewSession = function () {
     chatState.currentSessionId = null;

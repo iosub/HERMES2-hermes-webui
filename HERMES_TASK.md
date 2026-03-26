@@ -37,6 +37,7 @@
 - [x] **Fix 8:** Remove non-functional Plugins menu item
 - [x] **Fix 9:** Remove non-functional model selector from chat
 - [x] **Fix 10:** Remove non-functional global search bar
+- [x] **Fix 11:** Remove non-functional chat mode tabs
 
 ## Next
 
