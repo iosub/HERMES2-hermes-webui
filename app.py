@@ -133,6 +133,49 @@ def require_token(f):
     return decorated_function
 
 # ---------------------------------------------------------------------------
+# Rate Limiting
+# ---------------------------------------------------------------------------
+# Simple in-memory rate limiter: {ip: [(timestamp, endpoint), ...]}
+_rate_limit_store = {}
+_RATE_LIMIT_WINDOW = 60  # seconds
+_RATE_LIMIT_MAX_REQUESTS = 60  # requests per window per IP
+
+def rate_limit(f):
+    """Decorator to rate limit requests per IP address."""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        client_ip = request.remote_addr
+        now = time.time()
+        endpoint = request.endpoint
+        
+        # Clean old entries for this IP
+        if client_ip in _rate_limit_store:
+            _rate_limit_store[client_ip] = [
+                (ts, ep) for ts, ep in _rate_limit_store[client_ip]
+                if now - ts < _RATE_LIMIT_WINDOW
+            ]
+        else:
+            _rate_limit_store[client_ip] = []
+        
+        # Check rate limit
+        request_count = len(_rate_limit_store[client_ip])
+        if request_count >= _RATE_LIMIT_MAX_REQUESTS:
+            logger.warning(
+                "Rate limit exceeded for %s on %s (%d requests in %ds)",
+                client_ip, endpoint, request_count, _RATE_LIMIT_WINDOW
+            )
+            return jsonify({
+                "ok": False,
+                "error": "Rate limit exceeded. Please try again later."
+            }), 429
+        
+        # Record this request
+        _rate_limit_store[client_ip].append((now, endpoint))
+        
+        return f(*args, **kwargs)
+    return decorated_function
+
+# ---------------------------------------------------------------------------
 # Secret-key patterns
 # ---------------------------------------------------------------------------
 _SECRET_PATTERNS = re.compile(r"(key|token|secret|password|apikey|api_key)", re.IGNORECASE)
@@ -591,6 +634,7 @@ def api_providers_delete(name):
 
 @app.route("/api/providers/<name>/test", methods=["POST"])
 @require_token
+@rate_limit
 def api_providers_test(name):
     try:
         raw = cfg.get_raw()
@@ -1264,6 +1308,7 @@ def _get_or_create_chat_session(session_id=None):
 
 @app.route("/api/chat", methods=["POST"])
 @require_token
+@rate_limit
 def api_chat():
     data = request.get_json()
     message = data.get("message", "").strip()
@@ -1305,6 +1350,7 @@ def api_chat():
 
 @app.route("/api/upload", methods=["POST"])
 @require_token
+@rate_limit
 def api_upload():
     if "file" not in request.files:
         return jsonify({"error": "No file"}), 400
@@ -1323,6 +1369,7 @@ def api_upload():
 
 @app.route("/api/upload/base64", methods=["POST"])
 @require_token
+@rate_limit
 def api_upload_base64():
     """Accept a base64-encoded image (from clipboard paste) and save it."""
     data = request.get_json() or {}
