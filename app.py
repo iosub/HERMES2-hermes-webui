@@ -78,8 +78,8 @@ def _load_all_sessions():
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
             chat_sessions[data["id"]] = data
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to load session file %s: %s", f.name, exc)
 
 
 def _save_session(session_id):
@@ -1408,6 +1408,7 @@ def api_upload_base64():
 
 
 @app.route("/uploads/<path:filename>")
+@require_token
 def serve_upload(filename):
     return send_from_directory(str(UPLOAD_FOLDER), filename)
 

@@ -1333,7 +1333,7 @@ function chatRenderMd(text) {
     h = h.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
     h = h.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
     h = h.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(m, text, url) {
-        if (/^https?:\/\//i.test(url)) return '<a href="' + url + '" target="_blank" rel="noopener">' + text + '</a>';
+        if (/^https?:\/\//i.test(url)) return '<a href="' + escA(url) + '" target="_blank" rel="noopener">' + text + '</a>';
         return text;
     });
     h = h.replace(/\n\n/g, '</p><p>');
