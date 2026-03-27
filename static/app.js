@@ -163,7 +163,10 @@ function navigate(screen) {
     else content.innerHTML = '<div class="empty-state"><div class="empty-icon">\u2753</div><h3>Screen not found</h3></div>';
 }
 
+let _healthCache = null, _healthTs = 0;
 async function checkHealth() {
+    const now = Date.now();
+    if (_healthCache && (now - _healthTs) < 5000) return;
     try {
         const d = await api('GET', '/api/health');
         const dot = document.querySelector('#connection-status .status-dot');
@@ -179,6 +182,7 @@ async function checkHealth() {
         document.querySelector('#connection-status .status-dot').className = 'status-dot error';
         document.querySelector('#connection-status .status-text').textContent = 'Error';
     }
+    _healthCache = true; _healthTs = now;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1194,6 +1198,7 @@ window.chatNewSession = function () {
 
 window.chatClearCurrent = function () {
     if (!chatState.currentSessionId) return;
+    chatState.isThinking = true;
     api('POST', '/api/chat/sessions/' + chatState.currentSessionId + '/clear').then(() => {
         chatState.localMessages = [];
         chatRenderMessages();

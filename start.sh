@@ -25,6 +25,10 @@ if curl -s "http://127.0.0.1:$PORT/api/health" > /dev/null 2>&1; then
     exit 0
 fi
 
+if [ -f "$APP_DIR/.env" ]; then
+    set -a; . "$APP_DIR/.env"; set +a
+fi
+
 # Use gunicorn for production, Flask dev server only if DEV=1
 if [ "${DEV}" = "1" ]; then
     echo "  [DEV MODE] Using Flask development server"
