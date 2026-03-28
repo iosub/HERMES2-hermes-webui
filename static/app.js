@@ -1218,6 +1218,31 @@ function chatRenderMessages() {
         msgs.appendChild(div);
     });
     msgs.scrollTop = msgs.scrollHeight;
+    chatEnhanceCodeBlocks();
+}
+
+function chatEnhanceCodeBlocks() {
+    document.querySelectorAll('#chat-messages .code-block').forEach(function(pre) {
+        if (pre.dataset.enhanced) return;
+        pre.dataset.enhanced = '1';
+        const code = pre.querySelector('code');
+        const wrapper = document.createElement('div');
+        wrapper.className = 'code-wrapper';
+        pre.parentNode.insertBefore(wrapper, pre);
+        wrapper.appendChild(pre);
+        const btn = document.createElement('button');
+        btn.className = 'code-copy-btn';
+        btn.textContent = 'Copy';
+        btn.title = 'Copy code';
+        btn.addEventListener('click', function() {
+            navigator.clipboard.writeText(code.innerText).then(function() {
+                btn.textContent = 'Copied!';
+                setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+            });
+        });
+        wrapper.appendChild(btn);
+        if (window.hljs) hljs.highlightElement(code);
+    });
 }
 
 window.chatNewSession = function () {
@@ -1362,7 +1387,9 @@ function chatAppendMsg(role, content, files = []) {
 function chatRenderMd(text) {
     if (!text) return '';
     let h = escH(text);
-    h = h.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+    h = h.replace(/```(\w*)\n?([\s\S]*?)```/g, function(_, lang, code) {
+        return '<pre class="code-block"' + (lang ? ' data-lang="' + lang + '"' : '') + '><code class="' + (lang ? 'language-' + lang : '') + '">' + code + '</code></pre>';
+    });
     h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
     h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
     h = h.replace(/\*(.+?)\*/g, '<em>$1</em>');
