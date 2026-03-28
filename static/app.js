@@ -257,10 +257,20 @@ Screens.dashboard = async function () {
         content.innerHTML = '<div class="empty-state"><div class="empty-icon">\u26a0\ufe0f</div><h3>Error loading dashboard</h3><p>' + escH(e.message) + '</p></div>';
     }
 };
+async function setBtnLoading(el, loading) {
+    if (!el) return;
+    if (loading) { el.dataset._origText = el.textContent; el.disabled = true; el.classList.add('btn-loading'); }
+    else { el.textContent = el.dataset._origText || el.textContent; el.disabled = false; el.classList.remove('btn-loading'); }
+}
 
+// ── SERVICE ────────────────────────────────────────────────
 async function serviceAction(action) {
+    const actionLabels = { start: '\u25b6 Start', stop: '\u25a0 Stop', restart: '\u21bb Restart', doctor: 'Run Diagnostics' };
+    const btns = Array.from(document.querySelectorAll('.card-body button')).filter(b => b.textContent.trim() === actionLabels[action]);
+    const btn = btns[0];
     toast('Running ' + action + '...', 'info', 2000);
     try {
+        setBtnLoading(btn, true);
         const r = await api('POST', '/api/service/' + action);
         toast(action.charAt(0).toUpperCase() + action.slice(1) + ': ' + (r.ok ? 'Success' : 'Failed'), r.ok ? 'success' : 'error');
         // Invalidate health cache so next check gets fresh gateway status
@@ -273,6 +283,7 @@ async function serviceAction(action) {
             showModal('Diagnostics Output', '<pre class="font-mono text-sm" style="max-height:400px;overflow:auto;white-space:pre-wrap">' + escH(r.output) + '</pre>');
         }
     } catch (e) { toast('Error: ' + e.message, 'error'); }
+    finally { setBtnLoading(btn, false); }
 }
 
 async function reloadConfig() {
@@ -329,7 +340,7 @@ Screens.settings = async function () {
                 }
                 formHtml += '</div>';
             });
-            return '<div class="tab-pane' + (i === 0 ? ' active' : '') + '" data-tab="' + t.id + '">' + formHtml + '<button class="btn btn-primary mt-16" onclick="saveSettings()">Save Settings</button></div>';
+            return '<div class="tab-pane' + (i === 0 ? ' active' : '') + '" data-tab="' + t.id + '">' + formHtml + '<button class="btn btn-primary mt-16" onclick="saveSettings(this)">Save Settings</button></div>';
         }).join('');
 
         content.innerHTML = tabsHtml + panelsHtml;
@@ -347,7 +358,7 @@ Screens.settings = async function () {
     }
 };
 
-window.saveSettings = async function () {
+window.saveSettings = async function (btn) {
     const activePane = document.querySelector('.tab-pane.active');
     if (!activePane) return;
     const updates = {};
@@ -366,9 +377,11 @@ window.saveSettings = async function () {
         } else updates[sec][key] = input.value;
     });
     try {
+        setBtnLoading(btn, true);
         for (const [sec, data] of Object.entries(updates)) { await api('PUT', '/api/config/' + sec, data); }
         toast('Settings saved', 'success');
     } catch (e) { toast('Save failed: ' + e.message, 'error'); }
+    finally { setBtnLoading(btn, false); }
 };
 
 // ── ENV VARS ───────────────────────────────────────────────
@@ -514,7 +527,7 @@ Screens.providers = async function () {
             html += '<div class="table-container"><table class="table"><thead><tr><th>Name</th><th>Base URL</th><th>Model</th><th style="width:180px">Actions</th></tr></thead><tbody>';
             custom.forEach(p => {
                 html += '<tr><td class="font-mono text-sm">' + escH(p.name) + '</td><td class="text-sm">' + escH(p.base_url || '') + '</td><td class="font-mono text-sm">' + escH(p.model || '') + '</td>';
-                html += '<td class="actions"><button class="btn btn-sm" onclick="editProvider(\'' + escA(p.name) + '\')">Edit</button> <button class="btn btn-sm" onclick="testProvider(\'' + escA(p.name) + '\')">Test</button> <button class="btn btn-sm btn-danger" onclick="deleteProvider(\'' + escA(p.name) + '\')">Delete</button></td></tr>';
+                html += '<td class="actions"><button class="btn btn-sm" onclick="editProvider(\'' + escA(p.name) + '\')">Edit</button> <button class="btn btn-sm" onclick="testProvider(this, \'' + escA(p.name) + '\')">Test</button> <button class="btn btn-sm btn-danger" onclick="deleteProvider(\'' + escA(p.name) + '\')">Delete</button></td></tr>';
             });
             html += '</tbody></table></div>';
         }
@@ -573,12 +586,14 @@ window.doDeleteProvider = async function (name) {
     try { await api('DELETE', '/api/providers/' + name); toast('Provider deleted', 'success'); closeModal(); Screens.providers(); }
     catch (e) { toast('Error: ' + e.message, 'error'); }
 };
-window.testProvider = async function (name) {
+window.testProvider = async function (btn, name) {
     toast('Testing ' + name + '...', 'info', 2000);
     try {
+        setBtnLoading(btn, true);
         const r = await api('POST', '/api/providers/' + name + '/test');
         toast(r.ok ? 'Connection OK (' + (r.latency_ms || '?') + 'ms)' : 'Connection failed: ' + (r.error || ''), r.ok ? 'success' : 'error');
     } catch (e) { toast('Test failed: ' + e.message, 'error'); }
+    finally { setBtnLoading(btn, false); }
 };
 
 // ── MODELS ─────────────────────────────────────────────────
