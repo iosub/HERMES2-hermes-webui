@@ -45,6 +45,12 @@ SKILLS_DIR = HERMES_HOME / "skills"
 
 # Hermes executable - try current install locations with fallback
 def _find_hermes_bin():
+    # First try: find hermes on PATH (resolves symlinks correctly in all contexts)
+    import shutil as _shutil
+    found = _shutil.which("hermes")
+    if found:
+        return Path(found)
+    # Fallbacks for non-PATH installs
     candidates = [
         Path.home() / ".local" / "bin" / "hermes",
         HERMES_HOME / ".venv" / "bin" / "hermes",
@@ -342,16 +348,39 @@ def _run_hermes(*args, timeout: int = 30) -> subprocess.CompletedProcess:
 
 
 def _find_gateway_pid() -> int | None:
-    """Try to locate the Hermes gateway process ID."""
+    """Try to locate the Hermes gateway process ID.
+
+    The gateway runs as a python/hermes subprocess. We look for processes
+    whose cmdline contains 'hermes' followed by 'gateway' (as separate
+    arguments), or the python wrapper running hermes_cli.main with gateway.
+    """
     try:
-        result = subprocess.run(
-            ["pgrep", "-xf", "hermes gateway"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return int(result.stdout.strip().split()[0])
+        # Try to read /proc entries directly for reliability
+        proc_dir = Path("/proc")
+        for entry in proc_dir.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                cmdline_path = entry / "cmdline"
+                cmdline = cmdline_path.read_text(errors="replace")
+                # Normalize: split on \0 and join with spaces
+                args = cmdline.replace("\x00", " ").split()
+                if not args:
+                    continue
+                # Check patterns used by hermes_cli/gateway.py find_gateway_pids()
+                combined = " ".join(args)
+                patterns = [
+                    "hermes_cli.main gateway",
+                    "hermes_cli/main.py gateway",
+                    "hermes gateway",
+                    "gateway/run.py",
+                ]
+                if any(p in combined for p in patterns):
+                    pid = int(entry.name)
+                    if pid != os.getpid():
+                        return pid
+            except (PermissionError, FileNotFoundError, ProcessLookupError, ValueError):
+                continue
     except Exception:
         pass
     return None
@@ -1044,16 +1073,9 @@ def api_logs_get():
         lines = request.args.get("lines", 200, type=int)
         lines = max(10, min(lines, 2000))
 
-        # Try hermes logs command first
+        # hermes logs is not a valid CLI command - skip CLI entirely
+        # and read log files directly (hermes sessions are in SQLite, not text logs)
         log_text = ""
-        try:
-            r = _run_hermes("logs", "--lines", str(lines), timeout=10)
-            if r.returncode == 0 and r.stdout.strip():
-                log_text = r.stdout
-            elif r.stderr.strip():
-                log_text = r.stderr
-        except Exception:
-            pass
 
         # Fallback: read from common log locations
         if not log_text:

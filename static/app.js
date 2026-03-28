@@ -259,9 +259,11 @@ async function serviceAction(action) {
     try {
         const r = await api('POST', '/api/service/' + action);
         toast(action.charAt(0).toUpperCase() + action.slice(1) + ': ' + (r.ok ? 'Success' : 'Failed'), r.ok ? 'success' : 'error');
+        // Invalidate health cache so next check gets fresh gateway status
+        _healthCache = null;
         checkHealth();
         if (action === 'start' || action === 'restart') {
-            setTimeout(checkHealth, 3000);
+            setTimeout(() => { _healthCache = null; checkHealth(); }, 3000);
         }
         if (action === 'doctor' && r.output) {
             showModal('Diagnostics Output', '<pre class="font-mono text-sm" style="max-height:400px;overflow:auto;white-space:pre-wrap">' + escH(r.output) + '</pre>');
@@ -293,13 +295,22 @@ Screens.settings = async function () {
             { id: 'misc', label: 'Misc', sections: ['human_delay', 'approvals', 'code_execution', 'skills', 'streaming', 'delegation'] }
         ];
 
-        let tabsHtml = '<div class="tabs">' + tabs.map((t, i) => '<button class="tab' + (i === 0 ? ' active' : '') + '" data-tab="' + t.id + '">' + t.label + '</button>').join('') + '</div>';
+            let tabsHtml = '<div class="tabs">' + tabs.map((t, i) => '<button class="tab' + (i === 0 ? ' active' : '') + '" data-tab="' + t.id + '">' + t.label + '</button>').join('') + '</div>';
         let panelsHtml = tabs.map((t, i) => {
             let formHtml = '';
             t.sections.forEach(sec => {
                 const data = cfg[sec];
                 if (!data || typeof data !== 'object') return;
                 formHtml += '<div class="form-section"><div class="form-section-title">' + escH(sec) + '</div>';
+                // Theme chooser in General > display
+                if (sec === 'display') {
+                    formHtml += '<div class="form-row"><div class="form-group"><label class="form-label">Theme</label>';
+                    formHtml += '<div class="theme-chooser">';
+                    ['dark', 'light', 'system'].forEach(th => {
+                        formHtml += '<button class="theme-btn' + (ThemeManager.current === th ? ' active' : '') + '" data-theme="' + th + '" onclick="ThemeManager.set(\'' + th + '\')">' + th.charAt(0).toUpperCase() + th.slice(1) + '</button>';
+                    });
+                    formHtml += '</div></div></div>';
+                }
                 for (const [key, val] of Object.entries(data)) {
                     if (key.startsWith('_') || key === 'edge' || key === 'elevenlabs' || key === 'openai' || key === 'neutts' || key === 'local') continue;
                     formHtml += '<div class="form-row"><div class="form-group"><label class="form-label">' + escH(key) + '</label>';
@@ -575,7 +586,7 @@ Screens.models = async function () {
         html += '<div class="stat-card blue"><div class="stat-value font-mono" style="font-size:16px">' + escH(data.default_provider || '?') + '</div><div class="stat-label">Default Provider</div></div>';
         html += '<div class="stat-card green"><div class="stat-value font-mono" style="font-size:16px">' + escH(data.fallback_model || 'None') + '</div><div class="stat-label">Fallback Model</div></div></div>';
 
-        html += '<div class="card"><div class="card-header"><span>All Models</span></div><div class="table-container"><table class="table"><thead><tr><th>Model ID</th></tr></thead><tbody>';
+        html += '<div class="card"><div class="card-header"><span>All Models</span><button class="btn btn-primary" onclick="addModel()">+ Add Model</button></div><div class="table-container"><table class="table"><thead><tr><th>Model ID</th></tr></thead><tbody>';
         (data.all_models || []).forEach(m => { html += '<tr><td class="font-mono text-sm">' + escH(m.provider + ' / ' + m.model) + '</td></tr>'; });
         if (!data.all_models || data.all_models.length === 0) html += '<tr><td class="text-muted">No models listed</td></tr>';
         html += '</tbody></table></div></div>';
@@ -583,6 +594,24 @@ Screens.models = async function () {
     } catch (e) {
         content.innerHTML = '<div class="empty-state"><div class="empty-icon">\u26a0\ufe0f</div><h3>Error</h3><p>' + escH(e.message) + '</p></div>';
     }
+};
+window.addModel = function () {
+    showModal('Set Default Model',
+        '<div class="form-group"><label class="form-label">Provider</label>' + inputH('model-provider', '', 'text', 'e.g. OpenRouter') + '</div>' +
+        '<div class="form-group"><label class="form-label">Model ID</label>' + inputH('model-name', '', 'text', 'e.g. openai/gpt-4o') + '</div>',
+        '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveModel()">Save</button>'
+    );
+};
+window.saveModel = async function () {
+    const provider = document.getElementById('model-provider').value.trim();
+    const model = document.getElementById('model-name').value.trim();
+    if (!provider || !model) { toast('Provider and Model ID are required', 'error'); return; }
+    try {
+        await api('PUT', '/api/config/model', { default_provider: provider, default_model: model });
+        toast('Default model updated', 'success');
+        closeModal();
+        Screens.models();
+    } catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 
 // ── AGENTS ─────────────────────────────────────────────────

@@ -32,6 +32,32 @@
   --accent-hover: #818cf8;
   --accent-dim: rgba(99, 102, 241, 0.12);
   --accent-glow: rgba(99, 102, 241, 0.25);
+  --accent-muted: rgba(99, 102, 241, 0.2);
+
+.theme-chooser {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  padding: 4px;
+}
+.theme-btn {
+  flex: 1;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s, color 0.15s;
+}
+.theme-btn:hover { background: var(--bg-hover); color: var(--text); }
+.theme-btn.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-weight: 600;
+}
 
   /* Semantic */
   --teal: #06b6d4;
@@ -1817,8 +1843,10 @@ pre code {
 
 .chat-layout {
   display: flex;
-  height: 100%;
+  height: 100vh;
   width: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .chat-history {
@@ -1980,6 +2008,11 @@ pre code {
 /* Hide the global topbar when chat is active */
 #topbar.hidden-by-chat {
   display: none;
+  height: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: none;
+  padding: 0;
 }
 
 /* Chat Header */
