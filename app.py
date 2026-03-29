@@ -347,6 +347,37 @@ def _run_hermes(*args, timeout: int = 30) -> subprocess.CompletedProcess:
     )
 
 
+def _gateway_status() -> dict:
+    """Run `hermes gateway status` and parse the result.
+
+    Returns:
+        {
+            "running": bool,          # True if gateway is running
+            "pid": int | None,       # PID from CLI output if present
+            "status_text": str,       # Raw first line of output
+            "raw": str                # Full stdout
+        }
+    """
+    try:
+        r = _run_hermes("gateway", "status", timeout=10)
+        lines = r.stdout.strip().split("\n")
+        status_line = lines[0] if lines else ""
+        raw = r.stdout + r.stderr
+
+        running = "✓ Gateway is running" in status_line
+        pid: int | None = None
+        if running:
+            # Extract PID from "✓ Gateway is running (PID: NNNNN)"
+            import re
+            m = re.search(r"PID:\s*(\d+)", status_line)
+            if m:
+                pid = int(m.group(1))
+
+        return {"running": running, "pid": pid, "status_text": status_line, "raw": raw}
+    except Exception as e:
+        return {"running": False, "pid": None, "status_text": str(e), "raw": ""}
+
+
 def _find_gateway_pid() -> int | None:
     """Try to locate the Hermes gateway process ID.
 
@@ -424,7 +455,12 @@ def _http_error(msg: str, status: int = 500):
 @require_token
 def api_health():
     try:
-        pid = _find_gateway_pid()
+        # Primary truth: Hermes CLI status
+        gs = _gateway_status()
+        # Fallback PID scan only if CLI didn't return a PID (for debug/missing CLI info)
+        pid = gs["pid"]
+        if pid is None:
+            pid = _find_gateway_pid()
         version = "unknown"
         try:
             r = _run_hermes("--version", timeout=5)
@@ -433,9 +469,9 @@ def api_health():
         except Exception:
             pass
         return jsonify({
-            "status": "running" if pid else "stopped",
+            "status": "running" if gs["running"] else "stopped",
             "gateway_pid": pid,
-            "gateway_running": pid is not None,
+            "gateway_running": gs["running"],
             "version": version,
             "hermes_home": str(HERMES_HOME),
         })
@@ -1164,10 +1200,27 @@ def api_service_action(action):
 
         r = _run_hermes(*cmd_map[action], timeout=30)
         output = (r.stdout + "\n" + r.stderr).strip()
-        ok = r.returncode == 0
-        return jsonify({"ok": ok, "output": output, "returncode": r.returncode})
+
+        # Determine actual running state after the action using Hermes CLI status
+        running_after = _gateway_status()["running"]
+
+        if action == "start":
+            # start returns failure if systemd service not installed, even when
+            # gateway is already running manually. Treat already-running as success.
+            ok = running_after or r.returncode == 0
+        elif action == "stop":
+            # stop returns success even when no systemd service exists (falls back
+            # to kill_gateway_processes). Treat already-stopped as success.
+            ok = (not running_after) or r.returncode == 0
+        elif action == "restart":
+            # restart succeeds if the gateway is running after the command
+            ok = running_after
+        else:
+            ok = r.returncode == 0
+
+        return jsonify({"ok": ok, "output": output, "returncode": r.returncode, "gateway_running": running_after})
     except subprocess.TimeoutExpired:
-        return jsonify({"ok": False, "error": "Command timed out"}), 500
+        return jsonify({"ok": False, "error": "Command timed out", "gateway_running": _gateway_status()["running"]}), 500
     except Exception as exc:
         return _http_error(str(exc))
 
