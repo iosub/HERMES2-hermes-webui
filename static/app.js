@@ -1394,9 +1394,17 @@ window.chatSend = async function () {
         chatAppendMsg('assistant', resp.response);
     } catch (e) {
         // Roll back the optimistic user message — it was never processed
-        chatState.localMessages.pop();
-        const lastMsg = document.getElementById('chat-messages').lastElementChild;
-        if (lastMsg && lastMsg.classList.contains('user')) lastMsg.remove();
+        chatState.localMessages.pop(); // remove failed user msg from state
+        // Remove thinking dots first (they were appended last in the DOM)
+        const dots = document.getElementById('chat-thinking-dots');
+        if (dots) dots.remove();
+        // Now find and remove the user bubble (always the last .user in the container)
+        const container = document.getElementById('chat-messages');
+        if (container) {
+            const userBubbles = container.querySelectorAll('.chat-msg.user');
+            const lastUser = userBubbles[userBubbles.length - 1];
+            if (lastUser) lastUser.remove();
+        }
         const errMsg = { role: 'assistant', content: 'Connection error: ' + e.message, timestamp: new Date().toISOString() };
         chatState.localMessages.push(errMsg);
         chatAppendMsg('assistant', 'Connection error: ' + e.message);
