@@ -1089,7 +1089,7 @@ Screens.chat = function () {
             </div>
 
 
-            <div class="chat-transcript" id="chat-messages"></div>
+            <div class="chat-transcript" id="chat-messages" role="log" aria-live="polite"></div>
 
             <div class="chat-file-bar hidden" id="chat-file-bar">
                 <div class="chat-file-previews" id="chat-file-previews"></div>
