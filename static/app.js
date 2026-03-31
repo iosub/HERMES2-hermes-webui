@@ -1077,6 +1077,7 @@ Screens.chat = function () {
                 <div class="loading"><div class="spinner"></div></div>
             </div>
         </div>
+        <div class="chat-history-overlay" id="chat-history-overlay"></div>
 
         <!-- Chat Main Area -->
         <div class="chat-main">
@@ -1242,6 +1243,7 @@ window.chatToggleHistory = function () {
     chatState.historyOpen = !chatState.historyOpen;
     const el = document.getElementById('chat-history');
     if (el) el.classList.toggle('collapsed', !chatState.historyOpen);
+    if (el) el.classList.toggle('mobile-open', chatState.historyOpen);
     // Re-render chat to show/hide toggle button in header
     if (document.getElementById('chat-layout')) Screens.chat();
 };

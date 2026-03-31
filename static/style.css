@@ -2735,6 +2735,38 @@ pre code {
     padding: 0 16px;
   }
 
+  /* Chat History — mobile overlay */
+  .chat-history {
+    position: fixed;
+    left: 0;
+    top: 0;
+    height: 100vh;
+    z-index: 150;
+    transform: translateX(-100%);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+  }
+
+  .chat-history.mobile-open {
+    transform: translateX(0);
+  }
+
+  .chat-history-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.4);
+    z-index: 140;
+  }
+
+  .chat-history.mobile-open ~ .chat-history-overlay {
+    display: block;
+  }
+
+  .chat-history.mobile-open ~ .chat-main {
+    pointer-events: none;
+  }
+
   /* Chat */
   .chat-header {
     padding: 10px 16px;
