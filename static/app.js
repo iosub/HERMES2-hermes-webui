@@ -1393,6 +1393,10 @@ window.chatSend = async function () {
         chatState.localMessages.push(assistantMsg);
         chatAppendMsg('assistant', resp.response);
     } catch (e) {
+        // Roll back the optimistic user message — it was never processed
+        chatState.localMessages.pop();
+        const lastMsg = document.getElementById('chat-messages').lastElementChild;
+        if (lastMsg && lastMsg.classList.contains('user')) lastMsg.remove();
         const errMsg = { role: 'assistant', content: 'Connection error: ' + e.message, timestamp: new Date().toISOString() };
         chatState.localMessages.push(errMsg);
         chatAppendMsg('assistant', 'Connection error: ' + e.message);
