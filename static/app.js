@@ -1477,19 +1477,45 @@ function chatAppendMsg(role, content, files = []) {
 function chatRenderMd(text) {
     if (!text) return '';
     let h = escH(text);
+
+    // 1. Fenced code blocks and inline code are rendered first so they are
+    // not touched by subsequent transforms (\n, \n\n, etc.).
     h = h.replace(/```(\w*)\n?([\s\S]*?)```/g, function(_, lang, code) {
         return '<pre class="code-block"' + (lang ? ' data-lang="' + lang + '"' : '') + '><code class="' + (lang ? 'language-' + lang : '') + '">' + code + '</code></pre>';
     });
-    h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+    h = h.replace(/`([^`]+)`/g, function(_, code) {
+        return '<code>' + code + '</code>';
+    });
+
     h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
     h = h.replace(/\*(.+?)\*/g, '<em>$1</em>');
     h = h.replace(/^### (.+)$/gm, '<h3>$1</h3>');
     h = h.replace(/^## (.+)$/gm, '<h2>$1</h2>');
     h = h.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+    // 2. Unordered lists -> <ul>.
     h = h.replace(/^[-*] (.+)$/gm, '<li>$1</li>');
     h = h.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
-    h = h.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+
+    // 3. Ordered lists -> <ol> (separate from unordered to avoid cross-contamination).
+    h = h.replace(/^(\d+)\. (.+)$/gm, '<li>$2</li>');
+    h = h.replace(/(<li>.*<\/li>\n?)+/g, function(match) {
+        return '<ol>' + match + '</ol>';
+    });
+
+    // 4. Consecutive blockquote lines -> single <blockquote> block.
     h = h.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+    h = h.replace(/(<blockquote>.*<\/blockquote>\n?)+/g, function(match) {
+        // Collapse multiple separate blockquotes into one, preserving inner content.
+        var inners = match.match(/<blockquote>(.*?)<\/blockquote>/g);
+        if (!inners) return match;
+        var merged = inners.map(function(bq) {
+            // Strip the wrapper, keep inner HTML.
+            return bq.replace(/^<blockquote>/, '').replace(/<\/blockquote>$/, '');
+        }).join('\n');
+        return '<blockquote>' + merged + '</blockquote>';
+    });
+
     h = h.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(m, text, url) {
         if (/^https?:\/\//i.test(url)) return '<a href="' + escA(url) + '" target="_blank" rel="noopener">' + text + '</a>';
         return text;
@@ -1503,6 +1529,8 @@ function chatRenderMd(text) {
     h = h.replace(/(<\/pre>)<\/p>/g, '$1');
     h = h.replace(/<p>(<ul>)/g, '$1');
     h = h.replace(/(<\/ul>)<\/p>/g, '$1');
+    h = h.replace(/<p>(<ol>)/g, '$1');
+    h = h.replace(/(<\/ol>)<\/p>/g, '$1');
     h = h.replace(/<p>(<blockquote>)/g, '$1');
     h = h.replace(/(<\/blockquote>)<\/p>/g, '$1');
     return h.replace(/<p><\/p>/g, '');
