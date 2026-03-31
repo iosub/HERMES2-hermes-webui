@@ -11,35 +11,76 @@ function setToken(token) {
     localStorage.setItem('hermes_webui_token', token);
 }
 
+// AuthRequired sentinel — thrown only when user cancels the token prompt
+// (api() retries internally after prompt; this is for the cancel path only)
+class AuthRequired extends Error {
+    constructor() { super('Authentication required'); this.name = 'AuthRequired'; }
+}
+
+let _tokenPromptActive = false;
+
 function promptForToken() {
-    const token = prompt('Enter your HERMES_WEBUI_TOKEN to access the admin panel:\n\n(Set this with: export HERMES_WEBUI_TOKEN=your-token-here)');
-    if (token) {
-        setToken(token);
-        location.reload();
+    if (_tokenPromptActive) return null;
+    _tokenPromptActive = true;
+    try {
+        const token = prompt('Enter your HERMES_WEBUI_TOKEN to access the admin panel:\n\n(Set this with: export HERMES_WEBUI_TOKEN=your-token-here)');
+        if (token && token.trim()) {
+            const trimmed = token.trim();
+            setToken(trimmed);
+            return trimmed; // return the saved token so api() can retry
+        }
+        return null;
+    } finally {
+        _tokenPromptActive = false;
     }
 }
 
 async function api(method, path, body) {
     const token = getToken();
-    const opts = { 
-        method, 
-        headers: { 
+    const opts = {
+        method,
+        headers: {
             'Content-Type': 'application/json',
             ...(token && { 'Authorization': 'Bearer ' + token })
-        } 
+        }
     };
     if (body !== undefined && body !== null) opts.body = JSON.stringify(body);
     const resp = await fetch(API.base + path, opts);
-    const data = await resp.json();
     if (!resp.ok) {
-        // If 401 and no token or invalid token, prompt for it
         if (resp.status === 401) {
-            promptForToken();
-            throw new Error('Authentication required');
+            if (!token) {
+                // No stored token: prompt, then retry once with the newly saved token
+                const savedToken = promptForToken();
+                if (savedToken) {
+                    // Retry with the saved token
+                    const retryOpts = {
+                        method,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': 'Bearer ' + savedToken
+                        }
+                    };
+                    if (body !== undefined && body !== null) retryOpts.body = JSON.stringify(body);
+                    const retryResp = await fetch(API.base + path, retryOpts);
+                    if (retryResp.ok) return retryResp.json();
+                    // Retry also failed — fall through to error handling
+                    if (retryResp.status === 401) {
+                        throw new Error('Authentication failed: check your token');
+                    }
+                }
+                // User cancelled or prompt failed — throw AuthRequired for caller to handle
+                throw new AuthRequired();
+            }
+            // Stored token was rejected
+            let errMsg = 'Authentication failed';
+            try { const d = await resp.json(); errMsg = d.error || d.message || errMsg; } catch {}
+            throw new Error(errMsg);
         }
-        throw new Error(data.error || data.message || 'Request failed');
+        let errMsg = 'Request failed';
+        try { const d = await resp.json(); errMsg = d.error || d.message || errMsg; } catch {}
+        throw new Error(errMsg);
     }
-    return data;
+    return resp.json();
 }
 
 function toast(msg, type = 'info', dur = 4000) {
