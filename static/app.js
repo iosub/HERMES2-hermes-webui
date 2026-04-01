@@ -1719,10 +1719,11 @@ window.chatToggleVoice = function () {
 };
 
 function chatStartVoice() {
+    const input = document.getElementById('chat-input');
     const btn = document.getElementById('chat-voice-btn');
     const status = document.getElementById('chat-voice-status');
     if (chatState.speechSupported && chatState.recognition) {
-        // Auto-resize textarea before and when voice starts
+        // Auto-resize textarea before voice starts
         if (input) { chatAutoResize(input); }
         try { chatState.recognition.start(); } catch(e) { /* already started */ }
         chatState.isRecording = true;

@@ -1359,12 +1359,30 @@ def _call_hermes_direct(message: str, files: list = None) -> str:
         return f"(Error calling Hermes: {e})"
 
 
-def _call_api_server(messages: list, session_id: str) -> str:
-    """Call Hermes via its OpenAI-compatible API server."""
-    import urllib.request, urllib.error
-    payload = {"model": "hermes-agent", "messages": messages, "stream": False}
+def _call_api_server(messages: list, session_id: str, files: list = None) -> str:
+    """Call Hermes via its OpenAI-compatible API server. Handles image files as base64."""
+    import urllib.request, base64
+    msgs = list(messages)
+    if files:
+        image_files = [f for f in files if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")]
+        if image_files and msgs and msgs[-1].get("role") == "user":
+            img_content = []
+            text = msgs[-1].get("content", "") or ""
+            if text:
+                img_content.append({"type": "text", "text": text})
+            for img in image_files:
+                try:
+                    with open(img, "rb") as f:
+                        b64 = base64.b64encode(f.read()).decode("utf-8")
+                    ext = img.suffix.lower().replace(".", "")
+                    img_content.append({"type": "image_url", "image_url": {"url": f"data:image/{ext};base64,{b64}"}})
+                except Exception:
+                    pass
+            if len(img_content) > (1 if text else 0):
+                msgs[-1] = {"role": "user", "content": img_content}
+    payload = {"model": "hermes-agent", "messages": msgs, "stream": False}
     headers = {"Content-Type": "application/json"}
-    api_key = os.environ.get("HERMES_API_KEY", "")
+    api_key = os.environ.get("HERMES_API_KEY", os.environ.get("API_SERVER_KEY", ""))
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(
@@ -1431,7 +1449,7 @@ def api_chat():
             api_msgs = []
             for m in sess["messages"]:
                 api_msgs.append({"role": m["role"], "content": m["content"]})
-            response_text = _call_api_server(api_msgs, sid)
+            response_text = _call_api_server(api_msgs, sid, files)
         else:
             response_text = _call_hermes_direct(message, files)
     except Exception as e:
