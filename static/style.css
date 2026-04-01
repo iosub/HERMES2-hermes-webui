@@ -1177,7 +1177,7 @@ pre code {
   justify-content: center;
   flex-shrink: 0;
   vertical-align: middle;
-  line-height: 1;
+  box-sizing: border-box;
 }
 
 .btn-icon:hover {
@@ -1899,17 +1899,18 @@ pre code {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 8px;
+  padding: 8px 10px;
   font-weight: 600;
   font-size: 13px;
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   flex-shrink: 0;
-  height: auto;
+  height: 48px;
   min-height: 48px;
   overflow: visible;
-  gap: 8px;
+  gap: 6px;
+  box-sizing: border-box;
 }
 
 .chat-history-header > span {
@@ -2042,23 +2043,27 @@ pre code {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 24px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-secondary);
   flex-shrink: 0;
-  height: 52px;
-  min-height: 52px;
+  height: 56px;
+  min-height: 56px;
+  overflow: visible;
+  box-sizing: border-box;
 }
 
 .chat-header-left {
   display: flex;
   align-items: center;
+  overflow: visible;
   gap: 8px;
 }
 
 .chat-header-right {
   display: flex;
   align-items: center;
+  overflow: visible;
   gap: 4px;
 }
 
@@ -2862,6 +2867,9 @@ pre code {
   /* Chat */
   .chat-header {
     padding: 10px 16px;
+    height: auto;
+    min-height: 56px;
+    overflow: visible;
   }
 
   .chat-mode-tabs {
