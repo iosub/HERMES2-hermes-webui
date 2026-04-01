@@ -1323,13 +1323,24 @@ def _call_hermes_direct(message: str, files: list = None) -> str:
     prompt = message
     if files:
         file_info = []
+        image_files = []
         for f in files:
-            try:
-                content = f.read_text(errors="replace")
-                file_info.append(f"File: {f.name}\n```\n{content[:5000]}\n```\n")
-            except Exception:
-                file_info.append(f"File: {f.name} (could not read)\n")
-        prompt = "\n\n".join(file_info) + "\n\nUser message: " + message
+            if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+                # Images can't be processed in CLI mode — track them separately
+                image_files.append(f.name)
+            else:
+                try:
+                    content = f.read_text(errors="replace")
+                    file_info.append(f"File: {f.name}\n```\n{content[:5000]}\n```\n")
+                except Exception:
+                    file_info.append(f"File: {f.name} (could not read)\n")
+        if image_files:
+            prompt += ("\n\nNote: the following image file(s) cannot be processed in CLI mode: "
+                       + ", ".join(image_files) + ". Please re-send with the gateway running for image support.")
+        if file_info:
+            prompt = "\n\n".join(file_info) + "\n\nUser message: " + message
+        else:
+            prompt = message
     try:
         result = subprocess.run(
             [str(HERMES_BIN), "chat", "-q", prompt],
