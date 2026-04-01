@@ -236,8 +236,9 @@ async function checkHealth() {
         const d = await api('GET', '/api/health');
         const dot = document.querySelector('#connection-status .status-dot');
         const txt = document.querySelector('#connection-status .status-text');
-        dot.className = 'status-dot ' + (d.gateway_running ? 'online' : 'offline');
-        txt.textContent = d.gateway_running ? 'Gateway Running' : 'Gateway Stopped';
+        const running = d.gateway_running;
+        dot.className = 'status-dot ' + (running ? 'online' : 'warning');
+        txt.textContent = running ? 'Gateway Running' : 'Running via CLI';
         const ver = document.getElementById('sidebar-version');
         if (ver && d.version) {
             const firstLine = d.version.split('\n')[0].replace('Hermes Agent ', '');
@@ -1659,7 +1660,7 @@ window.chatKeyDown = function (e) {
 
 window.chatAutoResize = function (el) {
     el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+    el.style.height = Math.min(el.scrollHeight, 300) + 'px';
 };
 
 async function chatUploadFile(file) {
