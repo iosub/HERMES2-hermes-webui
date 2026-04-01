@@ -42,7 +42,7 @@ function promptForToken() {
     }
 }
 
-async function api(method, path, body) {
+async function api(method, path, body, signal) {
     const token = getToken();
     const opts = {
         method,
@@ -52,7 +52,7 @@ async function api(method, path, body) {
         }
     };
     if (body !== undefined && body !== null) opts.body = JSON.stringify(body);
-    const resp = await fetch(API.base + path, opts);
+    const resp = await fetch(API.base + path, { ...opts, signal });
     if (!resp.ok) {
         if (resp.status === 401) {
             if (!token) {
@@ -1092,6 +1092,9 @@ Screens.chat = function () {
                     <button class="btn-icon" title="New session" onclick="chatNewSession()">
                         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                     </button>
+                    <button class="btn-icon" title="Regenerate response" onclick="chatRegenerate()">
+                        <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                    </button>
                     <button class="btn-icon" title="Clear chat" onclick="chatClearCurrent()">
                         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                     </button>
@@ -1375,6 +1378,31 @@ window.chatQuick = function (text) {
     chatSend();
 };
 
+// ── ABORT ─────────────────────────────────────────────────
+window.chatAbort = function () {
+    if (chatState.chatAbortController) {
+        chatState.chatAbortController.abort();
+    }
+};
+
+// ── REGENERATE ─────────────────────────────────────────────
+window.chatRegenerate = async function () {
+    if (chatState.isThinking) return;
+    const last = chatState.lastUserMessage;
+    if (!last) { toast('Nothing to regenerate', 'warning'); return; }
+    // Clear last assistant response
+    const container = document.getElementById('chat-messages');
+    if (container) {
+        const asst = container.querySelectorAll('.chat-msg.assistant');
+        if (asst.length > 0) asst[asst.length - 1].remove();
+    }
+    chatState.localMessages.pop();
+    // Re-send
+    const input = document.getElementById('chat-input');
+    if (input) { input.value = last; }
+    await chatSend();
+};
+
 window.chatSend = async function () {
     const input = document.getElementById('chat-input');
     const message = input.value.trim();
@@ -1387,6 +1415,10 @@ window.chatSend = async function () {
 
     chatState.isThinking = true;
 
+    // Store for regeneration
+    chatState.lastUserMessage = message;
+    chatState.lastUserFiles = chatState.pendingFiles.map(f => f.stored_as);
+
     // Show thinking indicator
     const existing = document.getElementById('chat-thinking-dots');
     if (existing) existing.remove();
@@ -1394,8 +1426,17 @@ window.chatSend = async function () {
     const dots = document.createElement('div');
     dots.id = 'chat-thinking-dots';
     dots.className = 'chat-thinking';
-    dots.innerHTML = '<div class="chat-thinking-dots"><span></span><span></span><span></span></div>';
+    dots.innerHTML = '<div class="chat-thinking-bubble"><span class="chat-thinking-icon"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span><span class="chat-thinking-text">Hermes is thinking<span class="chat-thinking-ellipsis"></span></span><button class="chat-stop-btn" id="chat-stop-btn" onclick="chatAbort()" title="Stop"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button></div>';
     if (msgs) msgs.appendChild(dots);
+
+    // Swap send button to stop
+    const sendBtn = document.getElementById('chat-send-btn');
+    if (sendBtn) {
+        sendBtn.classList.add('chat-stop-state');
+        sendBtn.onclick = chatAbort;
+        const svg = sendBtn.querySelector('svg');
+        if (svg) svg.innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>';
+    }
 
     const files = chatState.pendingFiles.map(f => f.name);
     // Optimistically add user message to local
@@ -1406,16 +1447,43 @@ window.chatSend = async function () {
     chatAutoResize(input);
     document.getElementById('chat-send-btn').disabled = true;
 
+    // AbortController for cancellation
+    const controller = new AbortController();
+    chatState.chatAbortController = controller;
+
     try {
         const resp = await api('POST', '/api/chat', {
             message, session_id: chatState.currentSessionId,
             files: chatState.pendingFiles.map(f => f.stored_as),
-        });
+        }, controller.signal);
         chatState.currentSessionId = resp.session_id;
         const assistantMsg = { role: 'assistant', content: resp.response, timestamp: new Date().toISOString() };
         chatState.localMessages.push(assistantMsg);
         chatAppendMsg('assistant', resp.response);
     } catch (e) {
+        // Restore send button if stopped
+        if (e.name === 'AbortError') {
+            const dotsEl = document.getElementById('chat-thinking-dots');
+            if (dotsEl) dotsEl.remove();
+            chatState.localMessages.pop();
+            const container = document.getElementById('chat-messages');
+            if (container) {
+                const uls = container.querySelectorAll('.chat-msg.user');
+                const last = uls[uls.length - 1];
+                if (last) last.remove();
+            }
+            chatState.isThinking = false;
+            const sb = document.getElementById('chat-send-btn');
+            if (sb) {
+                sb.classList.remove('chat-stop-state');
+                sb.onclick = chatSend;
+                sb.disabled = false;
+                const svg = sb.querySelector('svg');
+                if (svg) svg.innerHTML = '<path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>';
+            }
+            input.focus();
+            return;
+        }
         // Roll back the optimistic user message — it was never processed
         chatState.localMessages.pop(); // remove failed user msg from state
         // Remove thinking dots first (they were appended last in the DOM)
@@ -1435,7 +1503,17 @@ window.chatSend = async function () {
 
     chatClearFiles();
     chatState.isThinking = false;
-    dots.remove();
+    const dotsEl = document.getElementById('chat-thinking-dots');
+    if (dotsEl) dotsEl.remove();
+    // Reset send button
+    const sb = document.getElementById('chat-send-btn');
+    if (sb) {
+        sb.classList.remove('chat-stop-state');
+        sb.onclick = chatSend;
+        sb.disabled = false;
+        const svg = sb.querySelector('svg');
+        if (svg) svg.innerHTML = '<path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>';
+    }
     input.focus();
     // Refresh history to update title and order
     chatLoadHistory();
@@ -1485,17 +1563,39 @@ function chatAppendMsg(role, content, files = []) {
     const avatarSvg = role === 'user'
         ? '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>'
         : '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>';
-    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    // Date-aware timestamp
+    const now = new Date();
+    const dateStr = now.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const time = dateStr + ' \u00b7 ' + timeStr;
+
     let filesHtml = '';
     if (files && files.length > 0) {
         filesHtml = '<div class="chat-msg-files">' + files.map(f => '<span class="chat-file-tag"><span>\U0001f4ce</span>' + escH(f) + '</span>').join('') + '</div>';
     }
+
+    // Plain text for copying
+    const tmp = document.createElement('div');
+    tmp.innerHTML = chatRenderMd(content);
+    const plainText = tmp.textContent || tmp.innerText || content;
+    const escapedPlain = escH(plainText);
+
     const div = document.createElement('div');
     div.className = 'chat-msg ' + role;
-    div.innerHTML = '<div class="chat-msg-inner"><div class="chat-msg-avatar">' + avatarSvg + '</div><div class="chat-msg-body"><div class="chat-bubble">' + chatRenderMd(content) + '</div>' + filesHtml + '<div class="chat-msg-time">' + time + '</div></div></div>';
+    div.innerHTML = '<div class="chat-msg-inner"><div class="chat-msg-avatar">' + avatarSvg + '</div><div class="chat-msg-body"><div class="chat-bubble"><div class="chat-bubble-content">' + chatRenderMd(content) + '</div><button class="chat-msg-copy" onclick="chatCopyMsg(this)" data-text="' + escapedPlain + '" title="Copy message"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>' + filesHtml + '<div class="chat-msg-time">' + time + '</div></div></div>';
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
 }
+
+// ── COPY MESSAGE ───────────────────────────────────────────
+window.chatCopyMsg = function (btn) {
+    const text = btn.getAttribute('data-text') || '';
+    navigator.clipboard.writeText(text).then(function() {
+        btn.classList.add('copied');
+        setTimeout(function() { btn.classList.remove('copied'); }, 1500);
+    }).catch(function() { toast('Copy failed', 'error'); });
+};
 
 function chatRenderMd(text) {
     if (!text) return '';

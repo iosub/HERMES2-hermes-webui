@@ -2290,31 +2290,114 @@ pre code {
   animation: chatFadeIn 0.3s ease;
 }
 
-.chat-thinking-dots {
+.chat-thinking-bubble {
   display: flex;
-  gap: 4px;
   align-items: center;
-  padding: 12px 16px;
+  gap: 8px;
+  padding: 10px 14px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-light);
   border-radius: 16px;
   border-bottom-left-radius: 4px;
+  font-size: 13px;
+  color: var(--text-secondary);
 }
 
-.chat-thinking-dot {
-  width: 6px;
-  height: 6px;
-  background: var(--text-muted);
-  border-radius: 50%;
-  animation: chatDot 1.4s ease infinite;
+.chat-thinking-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
 }
 
-.chat-thinking-dot:nth-child(2) {
-  animation-delay: 0.2s;
+.chat-thinking-text {
+  font-style: italic;
 }
 
-.chat-thinking-dot:nth-child(3) {
-  animation-delay: 0.4s;
+.chat-thinking-ellipsis::after {
+  content: '';
+  animation: chatEllipsis 1.5s infinite;
+}
+
+@keyframes chatEllipsis {
+  0%   { content: ''; }
+  25%  { content: '.'; }
+  50%  { content: '..'; }
+  75%  { content: '...'; }
+  100% { content: ''; }
+}
+
+.chat-stop-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+  margin-left: 4px;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+
+.chat-stop-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* Send button becomes stop button when thinking */
+.chat-send-btn.chat-stop-state {
+  background: var(--accent-dim) !important;
+  border-color: var(--accent) !important;
+}
+
+.chat-send-btn.chat-stop-state svg {
+  opacity: 0.8;
+}
+
+/* Copy message button */
+.chat-bubble {
+  position: relative;
+}
+
+.chat-bubble-content {
+  /* wrapper for content + copy button positioning */
+}
+
+.chat-msg-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+
+.chat-msg:hover .chat-msg-copy {
+  opacity: 1;
+}
+
+.chat-msg-copy:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.chat-msg-copy.copied {
+  opacity: 1;
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 /* Chat Composer */
