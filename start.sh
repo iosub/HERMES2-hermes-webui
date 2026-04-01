@@ -5,7 +5,6 @@
 #        DEV=1 ./start.sh    (use Flask dev server)
 
 PORT="${1:-5000}"
-HERMES_VENV="$HOME/.hermes/hermes-agent/venv"
 WEBUI_VENV="$HOME/.hermes/.venv"
 APP_DIR="$HOME/hermes-web-ui"
 
@@ -32,7 +31,7 @@ fi
 # Use gunicorn for production, Flask dev server only if DEV=1
 if [ "${DEV}" = "1" ]; then
     echo "  [DEV MODE] Using Flask development server"
-    FLASK_PORT="$PORT" "$WEBUI_VENV/bin/python" "$APP_DIR/app.py" &
+    FLASK_APP="$APP_DIR/app.py" "$WEBUI_VENV/bin/flask" run --host 127.0.0.1 --port "$PORT" &
     SERVER_PID=$!
 else
     echo "  [PRODUCTION] Using gunicorn"

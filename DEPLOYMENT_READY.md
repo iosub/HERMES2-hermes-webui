@@ -11,7 +11,7 @@ All 13 production-readiness fixes have been implemented and tested.
 ### 1. Install Dependencies
 ```bash
 cd ~/hermes-web-ui
-pip3 install -r requirements.txt
+~/.hermes/.venv/bin/pip install -r requirements.txt
 ```
 
 ### 2. Set Authentication Token
@@ -22,10 +22,10 @@ export HERMES_WEBUI_TOKEN=your-secure-random-token-here
 
 ### 3. Start the Server
 ```bash
-# Production mode (gunicorn)
+# Production mode (recommended)
 ./start.sh 5000
 
-# OR Development mode (Flask dev server)
+# Development mode
 DEV=1 ./start.sh 5000
 ```
 
@@ -112,8 +112,15 @@ All core endpoints tested and working:
 export HERMES_WEBUI_TOKEN=your-secure-token
 
 # Optional
-export FLASK_PORT=5000          # Default: 5000
-export HERMES_API_URL=...       # Default: http://127.0.0.1:8642
+export HERMES_API_URL=http://127.0.0.1:8642
+export HERMES_API_KEY=your-api-key
+export API_SERVER_KEY=your-api-key
+export HERMES_USE_API=true
+```
+
+Port is set with:
+```bash
+./start.sh 5000
 ```
 
 ### Running as a Service (systemd)

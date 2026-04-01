@@ -1641,5 +1641,5 @@ def catch_all(path):
 
 if __name__ == "__main__":
     print("[Hermes Admin Panel] ERROR: do not run this file directly.")
-    print("[Hermes Admin Panel] Use start.sh to run in production, or DEV=1 ./start.sh for development.")
+    print("[Hermes Admin Panel] Use ./start.sh 5000 to run in production, or DEV=1 ./start.sh 5000 for development.")
     exit(1)
