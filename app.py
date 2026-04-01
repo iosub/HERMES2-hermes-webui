@@ -1420,14 +1420,23 @@ def _call_api_server(messages: list, session_id: str, files: list = None) -> str
 
 
 def _check_api_server() -> bool:
-    """Check if Hermes API server is reachable."""
-    try:
-        import urllib.request
-        req = urllib.request.Request(f"{HERMES_API_URL}/health", method="GET")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
+    """Check if Hermes API server is reachable and compression is enabled.
+
+    Currently returns False to force CLI mode — the CLI (hermes chat -q)
+    respects compression settings in ~/.hermes/config.yaml (threshold: 0.5).
+    The API server does not yet support session-level compression.
+    Set HERMES_USE_API=true in the environment to re-enable API server mode.
+    """
+    import os
+    if os.environ.get("HERMES_USE_API", "").lower() in ("1", "true", "yes"):
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"{HERMES_API_URL}/health", method="GET")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+    return False
 
 
 def _get_or_create_chat_session(session_id=None):
