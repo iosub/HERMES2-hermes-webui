@@ -1187,10 +1187,31 @@ def api_tools_get():
 def api_service_action(action):
     try:
         action = action.lower()
+
+        # start uses `hermes gateway run &` (background) instead of `gateway start`
+        # because `gateway start` requires systemd which may not be set up in WSL
+        if action == "start":
+            import subprocess
+            env = {**os.environ, "HERMES_HOME": str(HERMES_HOME)}
+            pid_file = HERMES_HOME / "gateway.pid"
+            log_path = HERMES_HOME / "logs" / "gateway.log"
+            log_path.parent.mkdir(exist_ok=True)
+            # Kill any existing gateway process first
+            _run_hermes("gateway", "stop", timeout=10)
+            time.sleep(1)
+            with open(log_path, "a") as lf:
+                proc = subprocess.Popen(
+                    [str(HERMES_BIN), "gateway", "run"],
+                    env=env, stdout=lf, stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            time.sleep(3)
+            running = _gateway_status()["running"]
+            return jsonify({"ok": running, "output": "Gateway started", "gateway_running": running})
+
         cmd_map = {
-            "start": ["gateway", "start"],
             "stop": ["gateway", "stop"],
-            "restart": ["gateway", "restart"],
+            "restart": ["gateway", "stop"],
             "doctor": ["doctor"],
         }
         if action not in cmd_map:
@@ -1198,25 +1219,26 @@ def api_service_action(action):
 
         r = _run_hermes(*cmd_map[action], timeout=30)
         output = (r.stdout + "\n" + r.stderr).strip()
-
-        # Determine actual running state after the action using Hermes CLI status
         running_after = _gateway_status()["running"]
 
-        if action == "start":
-            # start returns failure if systemd service not installed, even when
-            # gateway is already running manually. Treat already-running as success.
-            ok = running_after or r.returncode == 0
-        elif action == "stop":
-            # stop returns success even when no systemd service exists (falls back
-            # to kill_gateway_processes). Treat already-stopped as success.
-            ok = (not running_after) or r.returncode == 0
-        elif action == "restart":
-            # restart succeeds if the gateway is running after the command
-            ok = running_after
-        else:
-            ok = r.returncode == 0
+        if action == "restart":
+            # After stop, start in background
+            import subprocess
+            env = {**os.environ, "HERMES_HOME": str(HERMES_HOME)}
+            log_path = HERMES_HOME / "logs" / "gateway.log"
+            log_path.parent.mkdir(exist_ok=True)
+            time.sleep(1)
+            with open(log_path, "a") as lf:
+                subprocess.Popen(
+                    [str(HERMES_BIN), "gateway", "run"],
+                    env=env, stdout=lf, stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            time.sleep(3)
+            running_after = _gateway_status()["running"]
+            output = "Restarted (running: " + str(running_after) + ")"
 
-        return jsonify({"ok": ok, "output": output, "returncode": r.returncode, "gateway_running": running_after})
+        return jsonify({"ok": running_after, "output": output, "returncode": r.returncode, "gateway_running": running_after})
     except subprocess.TimeoutExpired:
         return jsonify({"ok": False, "error": "Command timed out", "gateway_running": _gateway_status()["running"]}), 500
     except Exception as exc:
