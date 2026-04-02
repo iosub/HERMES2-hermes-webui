@@ -1277,6 +1277,8 @@ def api_logs_get():
         if not log_text:
             log_candidates = [
                 HERMES_HOME / "logs" / "hermes.log",
+                HERMES_HOME / "logs" / "gateway.log",
+                HERMES_HOME / "logs" / "errors.log",
                 HERMES_HOME / "hermes.log",
                 HERMES_HOME / "gateway.log",
             ]
@@ -1286,7 +1288,11 @@ def api_logs_get():
                     log_text = content
                     break
 
-        return jsonify({"logs": log_text})
+        return jsonify({
+            "logs": log_text,
+            "source": "log_files",
+            "source_detail": "Tail of Hermes log files under ~/.hermes/logs when present.",
+        })
     except Exception as exc:
         return _http_error(str(exc))
 
@@ -1335,6 +1341,8 @@ def api_tools_get():
             "tools": tools,
             "total_enabled": total_enabled,
             "total_disabled": total_disabled,
+            "source": "parsed_cli_output",
+            "source_detail": "Parsed from `hermes tools list` text output.",
         })
     except Exception as exc:
         return _http_error(str(exc))

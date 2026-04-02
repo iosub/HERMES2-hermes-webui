@@ -209,7 +209,7 @@ function screenTitle(s) {
         dashboard: 'Dashboard', settings: 'Settings', 'env-vars': 'Environment Variables',
         service: 'Service Controls', providers: 'Providers', models: 'Models',
         agents: 'Agents', skills: 'Skills', channels: 'Channels',
-        hooks: 'Hooks / Webhooks', sessions: 'Sessions', logs: 'Logs & Diagnostics', chat: 'Chat'
+        hooks: 'Hooks / Webhooks', sessions: 'Session Reset', logs: 'Log File Tail', chat: 'Chat'
     }[s] || s;
 }
 
@@ -278,7 +278,7 @@ Screens.dashboard = async function () {
             </div>
             <div class="stat-card green">
                 <div class="stat-value">${tools.total_enabled || 0} / ${(tools.total_enabled || 0) + (tools.total_disabled || 0)}</div>
-                <div class="stat-label">Tools Enabled</div>
+                <div class="stat-label">CLI Tool Status</div>
             </div>
             <div class="stat-card blue">
                 <div class="stat-value">${escH(sys.python_version || '?')}</div>
@@ -307,12 +307,15 @@ Screens.dashboard = async function () {
             </div>
         </div>
         <div class="card">
-            <div class="card-header"><span>Enabled Tools</span><span class="badge badge-success">${tools.total_enabled || 0} enabled</span></div>
+            <div class="card-header"><span>Tool Status Snapshot</span><span class="badge badge-success">${tools.total_enabled || 0} enabled</span></div>
             <div class="table-container">
                 <table class="table">
                     <thead><tr><th>Name</th><th>Status</th><th>Description</th></tr></thead>
                     <tbody>${(tools.tools || []).map(t => '<tr><td class="font-mono text-sm">' + escH(t.name) + '</td><td>' + (t.status === 'enabled' ? '<span class="badge badge-success">Enabled</span>' : '<span class="badge badge-danger">Disabled</span>') + '</td><td class="text-sm">' + escH(t.description || '') + '</td></tr>').join('')}</tbody>
                 </table>
+            </div>
+            <div class="card-body pt-0">
+                <p class="text-sm text-secondary">This list is parsed from <span class="font-mono">hermes tools list</span> output and may not reflect deeper runtime state.</p>
             </div>
         </div>`;
     } catch (e) {
@@ -949,7 +952,7 @@ Screens.sessions = async function () {
             else if (key === 'mode') fields += '<div class="form-group"><label class="form-label">Reset Mode</label>' + selectH('sess-mode', ['both', 'session', 'idle', 'off'], val) + '</div>';
             else fields += '<div class="form-group"><label class="form-label">' + escH(key) + '</label>' + inputH('sess-' + key, val) + '</div>';
         }
-        content.innerHTML = '<div class="card"><div class="card-header"><span>Session Configuration</span></div><div class="card-body">' + fields + '<button class="btn btn-primary mt-16" onclick="saveSessions()">Save Session Config</button></div></div>';
+        content.innerHTML = '<div class="card"><div class="card-header"><span>Session Reset Configuration</span></div><div class="card-body"><p class="text-sm text-secondary mb-16">This screen edits the <span class="font-mono">session_reset</span> config only. It does not show active or historical Hermes sessions.</p>' + fields + '<button class="btn btn-primary mt-16" onclick="saveSessions()">Save Session Reset Config</button></div></div>';
     } catch (e) {
         content.innerHTML = '<div class="empty-state"><div class="empty-icon">\u26a0\ufe0f</div><h3>Error</h3><p>' + escH(e.message) + '</p></div>';
     }
@@ -966,14 +969,14 @@ window.saveSessions = async function () {
         else if (input.type === 'number') updates[key] = parseFloat(input.value);
         else updates[key] = input.value;
     });
-    try { await api('PUT', '/api/sessions/config', updates); toast('Session config saved', 'success'); }
+    try { await api('PUT', '/api/sessions/config', updates); toast('Session reset config saved', 'success'); }
     catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 
 // ── LOGS ───────────────────────────────────────────────────
 Screens.logs = async function () {
     const content = document.getElementById('content');
-    content.innerHTML = '<div class="card"><div class="card-header"><span>System Logs</span><div class="flex gap-8"><select class="form-select" id="log-lines" style="width:auto"><option value="100">100 lines</option><option value="500" selected>500 lines</option><option value="1000">1000 lines</option></select><button class="btn btn-sm" onclick="loadLogs()">Refresh</button><button class="btn btn-sm" onclick="copyLogs()">Copy</button></div></div><div class="card-body" style="padding:0"><div id="log-output" class="font-mono text-xs" style="padding:16px;max-height:70vh;overflow:auto;background:var(--bg-primary);white-space:pre-wrap;line-height:1.6;color:var(--text-secondary)"><div class="loading"><div class="spinner"></div></div></div></div></div>';
+    content.innerHTML = '<div class="card"><div class="card-header"><span>Hermes Log File Tail</span><div class="flex gap-8"><select class="form-select" id="log-lines" style="width:auto"><option value="100">100 lines</option><option value="500" selected>500 lines</option><option value="1000">1000 lines</option></select><button class="btn btn-sm" onclick="loadLogs()">Refresh</button><button class="btn btn-sm" onclick="copyLogs()">Copy</button></div></div><div class="card-body"><p class="text-sm text-secondary mb-16">Shows recent lines from Hermes log files when present. This is not a complete diagnostics or session activity view.</p></div><div class="card-body" style="padding:0"><div id="log-output" class="font-mono text-xs" style="padding:16px;max-height:70vh;overflow:auto;background:var(--bg-primary);white-space:pre-wrap;line-height:1.6;color:var(--text-secondary)"><div class="loading"><div class="spinner"></div></div></div></div></div>';
     document.getElementById('log-lines').addEventListener('change', loadLogs);
     loadLogs();
 };
@@ -982,7 +985,8 @@ window.loadLogs = async function () {
     const lines = document.getElementById('log-lines')?.value || 500;
     try {
         const data = await api('GET', '/api/logs?lines=' + lines);
-        document.getElementById('log-output').textContent = data.logs || 'No logs available.';
+        const detail = data.source_detail ? data.source_detail + '\n\n' : '';
+        document.getElementById('log-output').textContent = detail + (data.logs || 'No logs available.');
     } catch (e) {
         document.getElementById('log-output').textContent = 'Error loading logs: ' + e.message;
     }
