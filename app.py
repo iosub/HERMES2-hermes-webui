@@ -11,6 +11,7 @@ import re
 import copy
 import json
 import shutil
+import mimetypes
 import subprocess
 import signal
 import time
@@ -457,6 +458,22 @@ def _mask_value(key: str, value: str) -> str:
     return value
 
 
+def _normalized_model_config() -> dict:
+    raw = cfg.get_raw()
+    model_cfg = raw.get("model", {}) or {}
+    auxiliary_cfg = raw.get("auxiliary", {}) or {}
+    normalized = copy.deepcopy(model_cfg)
+    if "default_model" not in normalized and model_cfg.get("default"):
+        normalized["default_model"] = model_cfg.get("default")
+    if "default_provider" not in normalized and model_cfg.get("provider"):
+        normalized["default_provider"] = model_cfg.get("provider")
+    for aux_key in ("vision", "web_extract", "compression", "session_search",
+                    "summarization", "embedding", "tts", "stt"):
+        if aux_key not in normalized and aux_key in auxiliary_cfg:
+            normalized[aux_key] = copy.deepcopy(auxiliary_cfg.get(aux_key))
+    return normalized
+
+
 def _classify_env_key(key: str) -> str:
     """Classify an env var into a display group."""
     k = key.lower()
@@ -745,7 +762,7 @@ def api_env_delete(key):
 def _get_providers_info():
     """Build a structured view of providers from config."""
     raw = cfg.get_raw()
-    model_cfg = raw.get("model", {})
+    model_cfg = _normalized_model_config()
     custom = raw.get("custom_providers", []) or []
 
     default = {
@@ -849,6 +866,7 @@ def api_providers_delete(name):
 def api_providers_test(name):
     try:
         raw = cfg.get_raw()
+        model_cfg = _normalized_model_config()
         custom = raw.get("custom_providers", []) or []
         provider_cfg = None
         for p in custom:
@@ -858,7 +876,6 @@ def api_providers_test(name):
 
         if not provider_cfg:
             # Maybe it's the default provider
-            model_cfg = raw.get("model", {})
             if model_cfg.get("default_provider") == name:
                 provider_cfg = {
                     "name": name,
@@ -923,7 +940,7 @@ def api_providers_test(name):
 def api_models_get():
     try:
         raw = cfg.get_raw()
-        model_cfg = raw.get("model", {})
+        model_cfg = _normalized_model_config()
         custom = raw.get("custom_providers", []) or []
 
         all_models = []
@@ -1397,12 +1414,12 @@ def api_onboarding_get():
         )
         if not has_api_key:
             # Also check config model section
-            model_cfg = raw.get("model", {})
+            model_cfg = _normalized_model_config()
             if not model_cfg.get("api_key"):
                 missing.append("api_key")
 
         # Check default provider is set
-        model_cfg = raw.get("model", {})
+        model_cfg = _normalized_model_config()
         if not model_cfg.get("default_provider"):
             missing.append("default_provider")
 
@@ -1474,29 +1491,92 @@ def _clean_cli_output(output: str) -> str:
     return result or "(Empty response)"
 
 
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".webm", ".m4a", ".aac", ".ogg", ".flac"}
+TEXT_EXTENSIONS = {
+    ".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv", ".json", ".yaml", ".yml",
+    ".xml", ".html", ".htm", ".css", ".js", ".jsx", ".ts", ".tsx", ".py", ".sh", ".bash",
+    ".zsh", ".ini", ".cfg", ".conf", ".toml", ".sql", ".env", ".gitignore", ".dockerfile",
+}
+TEXT_MIME_TYPES = {
+    "application/json", "application/ld+json", "application/xml", "application/javascript",
+    "application/x-javascript", "application/x-sh", "application/x-shellscript",
+    "application/x-yaml", "application/yaml", "application/toml",
+}
+
+
+def _file_mime_type(path: Path) -> str:
+    mime, _ = mimetypes.guess_type(str(path))
+    return (mime or "").lower()
+
+
+def _is_text_attachment(path: Path) -> bool:
+    if path.suffix.lower() in TEXT_EXTENSIONS:
+        return True
+    mime = _file_mime_type(path)
+    if mime.startswith("text/") or mime in TEXT_MIME_TYPES:
+        return True
+    try:
+        sample = path.read_bytes()[:4096]
+    except Exception:
+        return False
+    if not sample:
+        return True
+    if b"\x00" in sample:
+        return False
+    try:
+        sample.decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
+def _summarize_attachments(files: list[Path], image_support: bool) -> dict:
+    text_blocks = []
+    image_files = []
+    unsupported = []
+    for f in files or []:
+        suffix = f.suffix.lower()
+        if suffix in IMAGE_EXTENSIONS:
+            if image_support:
+                image_files.append(f)
+            else:
+                unsupported.append(f"{f.name} (image attachments require Hermes gateway/API mode)")
+            continue
+        if suffix in AUDIO_EXTENSIONS:
+            unsupported.append(f"{f.name} (audio attachments are not supported in Hermes chat)")
+            continue
+        if _is_text_attachment(f):
+            try:
+                content = f.read_text(encoding="utf-8", errors="replace")
+                text_blocks.append(f"File: {f.name}\n```\n{content}\n```")
+            except Exception:
+                unsupported.append(f"{f.name} (could not read text content)")
+            continue
+        unsupported.append(f"{f.name} (binary attachments cannot be read as text in this chat mode)")
+    return {
+        "text_blocks": text_blocks,
+        "image_files": image_files,
+        "unsupported": unsupported,
+    }
+
+
+def _compose_message_with_attachments(message: str, files: list[Path], image_support: bool) -> tuple[str, list[Path]]:
+    summary = _summarize_attachments(files, image_support=image_support)
+    sections = list(summary["text_blocks"])
+    if message:
+        sections.append(f"User message: {message}")
+    if summary["unsupported"]:
+        notes = "\n".join(f"- {note}" for note in summary["unsupported"])
+        sections.append(f"Attachment notes:\n{notes}")
+    if not sections:
+        sections.append(message or "User attached files without an additional text message.")
+    return "\n\n".join(sections), summary["image_files"]
+
+
 def _call_hermes_direct(message: str, files: list = None, request_id: str | None = None) -> str:
     """Call Hermes via CLI subprocess (fallback when API server is unavailable)."""
-    prompt = message
-    if files:
-        file_info = []
-        image_files = []
-        for f in files:
-            if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
-                # Images can't be processed in CLI mode — track them separately
-                image_files.append(f.name)
-            else:
-                try:
-                    content = f.read_text(errors="replace")
-                    file_info.append(f"File: {f.name}\n```\n{content[:5000]}\n```\n")
-                except Exception:
-                    file_info.append(f"File: {f.name} (could not read)\n")
-        if image_files:
-            prompt += ("\n\nNote: the following image file(s) cannot be processed in CLI mode: "
-                       + ", ".join(image_files) + ". Please re-send with the gateway running for image support.")
-        if file_info:
-            prompt = "\n\n".join(file_info) + "\n\nUser message: " + message
-        else:
-            prompt = message
+    prompt, _ = _compose_message_with_attachments(message, files or [], image_support=False)
     if request_id:
         state = _read_request_control(request_id)
         if state and state.get("cancel_requested_at"):
@@ -1565,13 +1645,14 @@ def _call_api_server(messages: list, session_id: str, files: list = None) -> str
     """Call Hermes via its OpenAI-compatible API server. Handles image files as base64."""
     import urllib.request, base64
     msgs = list(messages)
-    if files:
-        image_files = [f for f in files if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")]
-        if image_files and msgs and msgs[-1].get("role") == "user":
+    if files and msgs and msgs[-1].get("role") == "user":
+        text_content, image_files = _compose_message_with_attachments(
+            msgs[-1].get("content", "") or "", files, image_support=True
+        )
+        if image_files:
             img_content = []
-            text = msgs[-1].get("content", "") or ""
-            if text:
-                img_content.append({"type": "text", "text": text})
+            if text_content:
+                img_content.append({"type": "text", "text": text_content})
             for img in image_files:
                 try:
                     with open(img, "rb") as f:
@@ -1580,8 +1661,10 @@ def _call_api_server(messages: list, session_id: str, files: list = None) -> str
                     img_content.append({"type": "image_url", "image_url": {"url": f"data:image/{ext};base64,{b64}"}})
                 except Exception:
                     pass
-            if len(img_content) > (1 if text else 0):
+            if len(img_content) > 1:
                 msgs[-1] = {"role": "user", "content": img_content}
+        else:
+            msgs[-1] = {"role": "user", "content": text_content}
     payload = {"model": "hermes-agent", "messages": msgs, "stream": False}
     headers = {"Content-Type": "application/json"}
     api_key = os.environ.get("HERMES_API_KEY", os.environ.get("API_SERVER_KEY", ""))
@@ -1610,13 +1693,47 @@ def _check_api_server() -> bool:
     import os
     if os.environ.get("HERMES_USE_API", "").lower() in ("1", "true", "yes"):
         try:
-            import urllib.request
-            req = urllib.request.Request(f"{HERMES_API_URL}/health", method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                return resp.status == 200
+            return _api_server_healthcheck()
         except Exception:
             return False
     return False
+
+
+def _api_server_healthcheck(timeout: int = 3) -> bool:
+    import urllib.request
+    req = urllib.request.Request(f"{HERMES_API_URL}/health", method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.status == 200
+
+
+def _vision_configured() -> tuple[bool, str]:
+    model_cfg = _normalized_model_config()
+    vision_cfg = model_cfg.get("vision")
+    if isinstance(vision_cfg, str):
+        if vision_cfg.strip():
+            return True, ""
+    elif isinstance(vision_cfg, dict):
+        provider = (vision_cfg.get("provider") or "").strip()
+        model = (vision_cfg.get("model") or "").strip()
+        base_url = (vision_cfg.get("base_url") or "").strip()
+        if model or base_url or (provider and provider.lower() != "auto"):
+            return True, ""
+    return False, "Hermes vision is not configured"
+
+
+def _image_attachment_support_status() -> tuple[bool, str]:
+    vision_ready, vision_reason = _vision_configured()
+    if not vision_ready:
+        return False, vision_reason
+    gateway = _gateway_status()
+    if not gateway.get("running"):
+        return False, "Hermes gateway is not running"
+    try:
+        if _api_server_healthcheck(timeout=2):
+            return True, ""
+        return False, "Hermes gateway API is not reachable"
+    except Exception:
+        return False, "Hermes gateway API is not reachable"
 
 
 def _get_or_create_chat_session(session_id=None):
@@ -1640,25 +1757,34 @@ def api_chat():
     message = data.get("message", "").strip()
     session_id = data.get("session_id")
     request_id = (data.get("request_id") or str(uuid.uuid4())).strip()
-    if not message:
-        return jsonify({"error": "Message is required"}), 400
-    sess = _get_or_create_chat_session(session_id)
-    sid = sess["id"]
-    _register_chat_request(request_id, sid)
     files = []
     for ref in (data.get("files") or []):
         fpath = UPLOAD_FOLDER / ref
         if fpath.exists():
             files.append(fpath)
+    if not message and not files:
+        return jsonify({"error": "Message or attachment is required"}), 400
+    sess = _get_or_create_chat_session(session_id)
+    sid = sess["id"]
+    _register_chat_request(request_id, sid)
     user_msg = {"role": "user", "content": message,
                 "files": [f.name for f in files], "timestamp": datetime.now().isoformat()}
     sess["messages"].append(user_msg)
     # Auto-title from first user message
     if len(sess["messages"]) == 1 and sess.get("title") == "New Chat":
-        sess["title"] = message[:60] + ("..." if len(message) > 60 else "")
+        if message:
+            sess["title"] = message[:60] + ("..." if len(message) > 60 else "")
+        elif files:
+            file_label = ", ".join(f.name for f in files[:2])
+            if len(files) > 2:
+                file_label += f" +{len(files) - 2} more"
+            sess["title"] = f"Files: {file_label}"
     sess["updated"] = datetime.now().isoformat()
     try:
-        if _check_api_server():
+        has_image_files = any(f.suffix.lower() in IMAGE_EXTENSIONS for f in files)
+        image_support, _ = _image_attachment_support_status()
+        use_api_server = _check_api_server() or (has_image_files and image_support)
+        if use_api_server:
             api_msgs = []
             for m in sess["messages"]:
                 msg = {"role": m["role"], "content": m["content"]}
@@ -1822,9 +1948,19 @@ def api_chat_clear(session_id):
 @app.route("/api/chat/status", methods=["GET"])
 @require_token
 def api_chat_status():
+    api_server = _check_api_server()
+    image_support, image_reason = _image_attachment_support_status()
     return jsonify({
-        "api_server": _check_api_server(),
+        "api_server": api_server,
         "api_url": HERMES_API_URL,
+        "capabilities": {
+            "text_attachments": True,
+            "image_attachments": image_support,
+            "audio_attachments": False,
+        },
+        "capability_reasons": {
+            "image_attachments": image_reason,
+        },
     })
 
 

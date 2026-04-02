@@ -1012,6 +1012,15 @@ const chatState = {
     localMessages: [],  // messages for the current viewed session
     voiceBaseText: '',
     voiceFinalTranscript: '',
+    capabilities: {
+        textAttachments: true,
+        imageAttachments: false,
+        audioAttachments: false,
+    },
+    capabilityReasons: {
+        imageAttachments: '',
+        audioAttachments: '',
+    },
 };
 
 function makeRequestId() {
@@ -1035,15 +1044,128 @@ function chatRenderVoiceTranscript(input, interimTranscript = '') {
     document.getElementById('chat-send-btn').disabled = !input.value.trim() && chatState.pendingFiles.length === 0;
 }
 
+function chatIsProbablyTextFile(file) {
+    const type = (file.type || '').toLowerCase();
+    if (type.startsWith('text/')) return true;
+    if ([
+        'application/json', 'application/ld+json', 'application/xml', 'application/javascript',
+        'application/x-javascript', 'application/x-sh', 'application/x-shellscript',
+        'application/x-yaml', 'application/yaml', 'application/toml'
+    ].includes(type)) return true;
+    const name = (file.name || '').toLowerCase();
+    return [
+        '.txt', '.md', '.markdown', '.rst', '.log', '.csv', '.tsv', '.json', '.yaml', '.yml',
+        '.xml', '.html', '.htm', '.css', '.js', '.jsx', '.ts', '.tsx', '.py', '.sh', '.bash',
+        '.zsh', '.ini', '.cfg', '.conf', '.toml', '.sql', '.env', '.gitignore', '.dockerfile'
+    ].some(ext => name.endsWith(ext));
+}
+
+function chatDescribeUnsupportedFile(file) {
+    const type = (file.type || '').toLowerCase();
+    const name = file.name || 'This file';
+    if (type.startsWith('image/')) {
+        return chatState.capabilities.imageAttachments
+            ? ''
+            : `${name} is an image, and ${chatState.capabilityReasons.imageAttachments || 'image attachments are not available in the current Hermes configuration'}.`;
+    }
+    if (type.startsWith('audio/')) {
+        return `${name} is audio, and audio file uploads are not supported in Hermes chat.`;
+    }
+    if (chatIsProbablyTextFile(file)) return '';
+    return `${name} is a binary file type that Hermes chat cannot read as text.`;
+}
+
+function chatAcceptedFileTypes() {
+    const accepted = [
+        'text/*', '.txt', '.md', '.markdown', '.rst', '.log', '.csv', '.tsv', '.json', '.yaml', '.yml',
+        '.xml', '.html', '.htm', '.css', '.js', '.jsx', '.ts', '.tsx', '.py', '.sh', '.bash',
+        '.zsh', '.ini', '.cfg', '.conf', '.toml', '.sql', '.env', '.gitignore', '.dockerfile'
+    ];
+    if (chatState.capabilities.imageAttachments) accepted.push('image/*');
+    return accepted.join(',');
+}
+
+function chatCanUseMicButton() {
+    return !!(chatState.speechSupported && chatState.recognition) || !!chatState.capabilities.audioAttachments;
+}
+
+function chatApplyComposerCapabilities() {
+    const input = document.getElementById('chat-input');
+    const hint = document.querySelector('.chat-composer-hint');
+    const welcomeHint = document.querySelector('.chat-welcome-hint');
+    const fileInput = document.getElementById('chat-file-input');
+    const micBtn = document.getElementById('chat-voice-btn');
+    const attachBtn = document.getElementById('chat-attach-btn');
+    if (fileInput) fileInput.setAttribute('accept', chatAcceptedFileTypes());
+    if (attachBtn) {
+        attachBtn.title = chatState.capabilities.imageAttachments
+            ? 'Attach text files or images'
+            : 'Attach text files';
+    }
+    if (input) {
+        input.placeholder = chatState.capabilities.imageAttachments
+            ? 'Message Hermes... (attach text files or paste images)'
+            : 'Message Hermes... (attach text files)';
+    }
+    if (hint) {
+        hint.textContent = chatState.capabilities.imageAttachments
+            ? 'Enter to send, Shift+Enter for new line, Ctrl+V to paste image'
+            : 'Enter to send, Shift+Enter for new line, text files only in this mode';
+    }
+    if (welcomeHint) {
+        welcomeHint.textContent = chatState.capabilities.imageAttachments
+            ? 'Tip: Paste screenshots directly with Ctrl+V'
+            : 'Tip: You can send a text file even without typing a message';
+    }
+    if (micBtn) {
+        const enabled = chatCanUseMicButton();
+        micBtn.disabled = !enabled;
+        micBtn.classList.toggle('disabled', !enabled);
+        micBtn.title = enabled
+            ? 'Voice input (click to start/stop)'
+            : 'Voice input is unavailable here because this browser cannot transcribe speech and Hermes does not support audio uploads';
+    }
+}
+
+async function chatRefreshCapabilities() {
+    try {
+        const data = await api('GET', '/api/chat/status');
+        const caps = data.capabilities || {};
+        const reasons = data.capability_reasons || {};
+        chatState.capabilities = {
+            textAttachments: caps.text_attachments !== false,
+            imageAttachments: !!caps.image_attachments,
+            audioAttachments: !!caps.audio_attachments,
+        };
+        chatState.capabilityReasons = {
+            imageAttachments: reasons.image_attachments || '',
+            audioAttachments: reasons.audio_attachments || '',
+        };
+    } catch (e) {
+        chatState.capabilities = {
+            textAttachments: true,
+            imageAttachments: false,
+            audioAttachments: false,
+        };
+        chatState.capabilityReasons = {
+            imageAttachments: '',
+            audioAttachments: '',
+        };
+    }
+    chatApplyComposerCapabilities();
+}
+
 // ── CLIPBOARD PASTE ─────────────────────────────────────
 async function chatHandlePaste(e) {
     const items = e.clipboardData?.items;
     if (!items) return;
-    let hasImage = false;
     for (const item of items) {
         if (item.type.startsWith('image/')) {
-            hasImage = true;
             e.preventDefault();
+            if (!chatState.capabilities.imageAttachments) {
+                toast(chatState.capabilityReasons.imageAttachments || 'Image paste is unavailable in the current Hermes configuration.', 'warning');
+                continue;
+            }
             const blob = item.getAsFile();
             if (!blob) continue;
             // Extract extension from mime type
@@ -1115,11 +1237,11 @@ Screens.chat = function () {
 
             <div class="chat-composer">
                 <div class="chat-composer-row">
-                    <button class="chat-btn" id="chat-attach-btn" title="Attach files" onclick="document.getElementById('chat-file-input').click()">
+                    <button class="chat-btn" id="chat-attach-btn" title="Attach text files" onclick="document.getElementById('chat-file-input').click()">
                         <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                     </button>
                     <input type="file" id="chat-file-input" multiple style="display:none" onchange="chatHandleFiles(event)">
-                    <textarea id="chat-input" placeholder="Message Hermes... (Ctrl+V to paste screenshots)" rows="1" onkeydown="chatKeyDown(event)" oninput="chatAutoResize(this)"></textarea>
+                    <textarea id="chat-input" placeholder="Message Hermes... (attach text files)" rows="1" onkeydown="chatKeyDown(event)" oninput="chatAutoResize(this)"></textarea>
                     <button class="chat-btn" id="chat-voice-btn" title="Voice input (click to start/stop)" onclick="chatToggleVoice()">
                         <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
                     </button>
@@ -1142,7 +1264,7 @@ Screens.chat = function () {
                             <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                         </button>
                     </div>
-                    <span class="chat-composer-hint">Enter to send, Shift+Enter for new line, Ctrl+V to paste image</span>
+                    <span class="chat-composer-hint">Enter to send, Shift+Enter for new line, text files only in this mode</span>
                     <span id="chat-voice-status" class="chat-voice-status"></span>
                 </div>
             </div>
@@ -1198,6 +1320,9 @@ Screens.chat = function () {
             chatStopVoiceUI();
         };
     }
+
+    chatApplyComposerCapabilities();
+    chatRefreshCapabilities();
 
     // Load sessions
     chatLoadHistory();
@@ -1314,7 +1439,7 @@ function chatShowWelcome() {
                 <span>Writing</span>
             </button>
         </div>
-        <p class="chat-welcome-hint">Tip: Paste screenshots directly with Ctrl+V</p>
+        <p class="chat-welcome-hint">Tip: You can send a text file even without typing a message</p>
     </div>`;
 }
 
@@ -1339,9 +1464,10 @@ function chatRenderMessages() {
         if (files && files.length > 0) {
             filesHtml = '<div class="chat-msg-files">' + files.map(f => '<span class="chat-file-tag"><span>\U0001f4ce</span>' + escH(f) + '</span>').join('') + '</div>';
         }
+        const bubbleHtml = content ? '<div class="chat-bubble">' + chatRenderMd(content) + '</div>' : '';
         const div = document.createElement('div');
         div.className = 'chat-msg ' + role;
-        div.innerHTML = '<div class="chat-msg-inner"><div class="chat-msg-avatar">' + avatarSvg + '</div><div class="chat-msg-body"><div class="chat-bubble">' + chatRenderMd(content) + '</div>' + filesHtml + (time ? '<div class="chat-msg-time">' + time + '</div>' : '') + '</div></div>';
+        div.innerHTML = '<div class="chat-msg-inner"><div class="chat-msg-avatar">' + avatarSvg + '</div><div class="chat-msg-body">' + bubbleHtml + filesHtml + (time ? '<div class="chat-msg-time">' + time + '</div>' : '') + '</div></div>';
         msgs.appendChild(div);
     });
     msgs.scrollTop = msgs.scrollHeight;
@@ -1612,15 +1738,18 @@ function chatAppendMsg(role, content, files = []) {
         filesHtml = '<div class="chat-msg-files">' + files.map(f => '<span class="chat-file-tag"><span>\U0001f4ce</span>' + escH(f) + '</span>').join('') + '</div>';
     }
 
-    // Plain text for copying
-    const tmp = document.createElement('div');
-    tmp.innerHTML = chatRenderMd(content);
-    const plainText = tmp.textContent || tmp.innerText || content;
-    const escapedPlain = escH(plainText);
+    let bubbleHtml = '';
+    if (content) {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = chatRenderMd(content);
+        const plainText = tmp.textContent || tmp.innerText || content;
+        const escapedPlain = escH(plainText);
+        bubbleHtml = '<div class="chat-bubble"><div class="chat-bubble-content">' + chatRenderMd(content) + '</div><button class="chat-msg-copy" onclick="chatCopyMsg(this)" data-text="' + escapedPlain + '" title="Copy message"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>';
+    }
 
     const div = document.createElement('div');
     div.className = 'chat-msg ' + role;
-    div.innerHTML = '<div class="chat-msg-inner"><div class="chat-msg-avatar">' + avatarSvg + '</div><div class="chat-msg-body"><div class="chat-bubble"><div class="chat-bubble-content">' + chatRenderMd(content) + '</div><button class="chat-msg-copy" onclick="chatCopyMsg(this)" data-text="' + escapedPlain + '" title="Copy message"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>' + filesHtml + '<div class="chat-msg-time">' + time + '</div></div></div>';
+    div.innerHTML = '<div class="chat-msg-inner"><div class="chat-msg-avatar">' + avatarSvg + '</div><div class="chat-msg-body">' + bubbleHtml + filesHtml + '<div class="chat-msg-time">' + time + '</div></div></div>';
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
 }
@@ -1706,6 +1835,11 @@ window.chatAutoResize = function (el) {
 };
 
 async function chatUploadFile(file) {
+    const unsupportedReason = chatDescribeUnsupportedFile(file);
+    if (unsupportedReason) {
+        toast(unsupportedReason, 'warning', 5000);
+        return;
+    }
     const fd = new FormData();
     fd.append('file', file);
     try {
@@ -1745,8 +1879,23 @@ function chatRenderFileBar() {
 function chatFileIcon(mime) { return mime?.startsWith('image/') ? '\U0001f5bc\ufe0f' : mime?.startsWith('audio/') ? '\U0001f3b5' : mime?.includes('pdf') ? '\U0001f4d5' : '\U0001f4c4'; }
 function chatFmtSize(b) { return b < 1024 ? b + ' B' : b < 1048576 ? (b / 1024).toFixed(1) + ' KB' : (b / 1048576).toFixed(1) + ' MB'; }
 
-window.chatRemoveFile = function (i) { chatState.pendingFiles.splice(i, 1); chatRenderFileBar(); };
-window.chatClearFiles = function () { chatState.pendingFiles = []; chatRenderFileBar(); };
+function chatSyncSendButton() {
+    const input = document.getElementById('chat-input');
+    const sendBtn = document.getElementById('chat-send-btn');
+    if (!sendBtn) return;
+    sendBtn.disabled = !(input?.value.trim() || chatState.pendingFiles.length > 0);
+}
+
+window.chatRemoveFile = function (i) {
+    chatState.pendingFiles.splice(i, 1);
+    chatRenderFileBar();
+    chatSyncSendButton();
+};
+window.chatClearFiles = function () {
+    chatState.pendingFiles = [];
+    chatRenderFileBar();
+    chatSyncSendButton();
+};
 
 // ── VOICE (continuous mode) ───────────────────────────────
 
@@ -1775,7 +1924,7 @@ function chatStartVoice() {
         btn.classList.add('recording');
         status.textContent = 'Listening... (click mic to stop)';
         status.classList.add('active');
-    } else if (navigator.mediaDevices) {
+    } else if (chatState.capabilities.audioAttachments && navigator.mediaDevices) {
         navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
             chatState.mediaRecorder = new MediaRecorder(stream);
             chatState.audioChunks = [];
@@ -1793,6 +1942,8 @@ function chatStartVoice() {
             status.textContent = 'Recording... (click mic to stop)';
             status.classList.add('active');
         }).catch(() => toast('Microphone access denied', 'error'));
+    } else {
+        toast('Voice input is unavailable in this browser and Hermes does not support audio uploads here.', 'warning');
     }
 }
 
