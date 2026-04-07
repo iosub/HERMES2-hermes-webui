@@ -68,10 +68,25 @@ async function authFetch(path, options = {}, signal) {
         if (/not configured/i.test(errMsg)) {
             throw new Error(errMsg);
         }
-        if (token) clearToken();
+
+        // Another request may have prompted and stored a newer token while this
+        // request was still resolving its own 401. Retry once with the latest
+        // saved token before prompting again.
+        const latestSavedToken = getToken();
+        if (latestSavedToken && latestSavedToken !== token) {
+            resp = await fetchWithToken(latestSavedToken);
+            if (resp.ok) return resp;
+            if (resp.status !== 401) return resp;
+            token = latestSavedToken;
+            errMsg = await readAuthError(resp);
+        }
+
+        // Only clear the token we actually attempted. Another request may have
+        // already replaced localStorage with a newer valid token.
+        if (token && getToken() === token) clearToken();
 
         let savedToken = null;
-        if (_tokenPromptActive) {
+        if (_tokenPromptActive && _tokenPromptDeferred) {
             savedToken = await _tokenPromptDeferred;
         } else {
             savedToken = promptForToken();
@@ -81,7 +96,7 @@ async function authFetch(path, options = {}, signal) {
         resp = await fetchWithToken(savedToken);
         if (resp.ok) return resp;
         if (resp.status === 401) {
-            clearToken();
+            if (getToken() === savedToken) clearToken();
             errMsg = await readAuthError(resp);
             throw new Error(errMsg || 'Authentication failed: check your token');
         }
@@ -1400,7 +1415,8 @@ function chatRenderContextPanel() {
     const panel = document.getElementById('chat-context-panel');
     if (!panel) return;
     const folder = chatCurrentFolderSummary();
-    if (!folder) {
+    const showingFolderOverviewOnly = !!folder && !chatState.currentSessionId && (chatState.selectedFolderId || '') === (folder.id || '');
+    if (!folder || showingFolderOverviewOnly) {
         panel.className = 'chat-context-panel hidden';
         panel.innerHTML = '';
         return;
@@ -1784,13 +1800,14 @@ Screens.folders = async function () {
         </div>
         ${folders.map(folder => {
             const collapsed = collapsedState[folder.id] !== false;
+            const duplicateMeta = chatFolderDuplicateMeta(folder, folders);
             return `<div class="card folder-admin-card">
                 <div class="card-header folder-admin-header">
                     <button class="folder-admin-main" onclick="toggleFoldersScreenFolder('${escA(folder.id)}')" aria-expanded="${collapsed ? 'false' : 'true'}">
                         <span class="folder-admin-toggle">
                             <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform:${collapsed ? 'rotate(-90deg)' : 'rotate(0deg)'}"><polyline points="6 9 12 15 18 9"/></svg>
                         </span>
-                        <span class="folder-admin-title">${escH(folder.title || 'Folder')}</span>
+                        <span class="folder-admin-title-wrap"><span class="folder-admin-title">${escH(folder.title || 'Folder')}</span>${duplicateMeta ? '<span class="folder-admin-duplicate-meta">' + escH(duplicateMeta) + '</span>' : ''}</span>
                         <span class="folder-admin-summary">
                             <span class="badge">${escH(String(folder.chat_count || 0))} chats</span>
                             <span class="badge">${escH(String((folder.source_docs || []).length))} sources</span>
@@ -2007,13 +2024,14 @@ async function renderSidebarFoldersTree() {
             folders.map(folder => {
                 const hidden = !!collapsed[folder.id];
                 const chats = folder.sessions || [];
+                const duplicateMeta = chatFolderDuplicateMeta(folder, folders);
                 return '<div class="sidebar-folder-node">' +
                     '<div class="sidebar-folder-node-row" ondragover="chatFolderDragOver(event,\'' + escA(folder.id) + '\')" ondrop="chatDropSessionOnFolder(event,\'' + escA(folder.id) + '\')">' +
                     '<button class="sidebar-folder-toggle" onclick="event.stopPropagation(); toggleSidebarFolderNode(\'' + escA(folder.id) + '\')" title="' + (hidden ? 'Expand' : 'Collapse') + '">' +
                     '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform:' + (hidden ? 'rotate(-90deg)' : 'rotate(0deg)') + '"><polyline points="6 9 12 15 18 9"/></svg>' +
                     '</button>' +
                     '<button class="sidebar-folder-node-target' + (((chatState.selectedFolderId || chatState.currentFolderId) === folder.id && !chatState.currentSessionId) ? ' active' : '') + '" onclick="sidebarOpenFolder(\'' + escA(folder.id) + '\')">' +
-                    '<span class="sidebar-folder-name">' + escH(folder.title || 'Folder') + '</span>' +
+                    '<span class="sidebar-folder-name-wrap"><span class="sidebar-folder-name">' + escH(folder.title || 'Folder') + '</span>' + (duplicateMeta ? '<span class="sidebar-folder-duplicate-meta">' + escH(duplicateMeta) + '</span>' : '') + '</span>' +
                     '<span class="sidebar-folder-count">' + escH(String(folder.chat_count || chats.length || 0)) + '</span>' +
                     '</button>' +
                     '<div class="sidebar-folder-actions">' +
@@ -2068,6 +2086,7 @@ async function chatLoadHistory() {
                 const collapsed = chatIsFolderCollapsed(folder.id);
                 const isSelected = folder.id === chatState.selectedFolderId;
                 const chats = folder.sessions || [];
+                const duplicateMeta = chatFolderDuplicateMeta(folder, folders);
                 return '<div class="chat-folder-tree">' +
                     '<div class="chat-folder-row' + (isSelected ? ' active' : '') + '" ondragover="chatFolderDragOver(event,\'' + escA(folder.id) + '\')" ondrop="chatDropSessionOnFolder(event,\'' + escA(folder.id) + '\')">' +
                     '<button class="chat-folder-toggle" onclick="event.stopPropagation();chatToggleFolderGroup(\'' + escA(folder.id) + '\')" title="' + (collapsed ? 'Expand' : 'Collapse') + '">' +
@@ -2075,7 +2094,7 @@ async function chatLoadHistory() {
                     '</button>' +
                     '<button class="chat-folder-main" onclick="chatShowFolderOverview(\'' + escA(folder.id) + '\')">' +
                     '<div class="chat-folder-name">' + escH(folder.title || 'Folder') + '</div>' +
-                    '<div class="chat-folder-meta">' + escH((folder.chat_count || chats.length || 0) + ' chats') + (folder.source_docs && folder.source_docs.length ? ' • ' + escH(folder.source_docs.length + ' sources') : '') + '</div>' +
+                    '<div class="chat-folder-meta">' + escH((folder.chat_count || chats.length || 0) + ' chats') + (folder.source_docs && folder.source_docs.length ? ' • ' + escH(folder.source_docs.length + ' sources') : '') + (duplicateMeta ? ' • ' + escH(duplicateMeta) : '') + '</div>' +
                     '</button>' +
                     '<div class="chat-folder-actions">' +
                     '<button class="btn-icon" title="Add to folder" onclick="event.stopPropagation();chatOpenFolderAddMenu(\'' + escA(folder.id) + '\')" style="width:22px;height:22px"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>' +
@@ -2274,8 +2293,20 @@ window.chatAddSelectedSessionsAsSources = async function (folderId) {
 };
 
 window.chatShowFolderOverview = async function (folderId) {
-    const folder = chatFindFolder(folderId);
-    if (!folder) return;
+    if (!folderId) return;
+    let folder = chatFindFolder(folderId);
+    if (!folder) {
+        await chatLoadHistory();
+        folder = chatFindFolder(folderId);
+    }
+    if (!folder) {
+        toast('Folder not found', 'warning');
+        return;
+    }
+    const activeScreen = document.querySelector('.nav-item.active')?.dataset.screen || '';
+    if (activeScreen !== 'chat') {
+        navigate('chat');
+    }
     setSidebarFoldersExpanded(true);
     chatState.selectedFolderId = folderId;
     chatState.draftFolderId = folderId;
@@ -2290,7 +2321,7 @@ window.chatShowFolderOverview = async function (folderId) {
         source_docs: folder.source_docs || [],
     });
     chatRenderFolderOverview(folder);
-    chatLoadHistory();
+    await chatLoadHistory();
 };
 
 window.chatToggleHistory = function () {
@@ -2362,6 +2393,15 @@ function chatRenderFolderOverview(folder) {
     </div>`;
 }
 
+function chatPrepareTranscriptForConversation() {
+    const msgs = document.getElementById('chat-messages');
+    if (!msgs) return null;
+    if (msgs.querySelector('#chat-welcome') || msgs.querySelector('.chat-folder-overview')) {
+        msgs.innerHTML = '';
+    }
+    return msgs;
+}
+
 function chatRenderMessages() {
     const msgs = document.getElementById('chat-messages');
     if (!msgs) return;
@@ -2422,6 +2462,26 @@ function chatEnhanceCodeBlocks() {
     });
 }
 
+function chatFolderDuplicateMeta(folder, folders = null) {
+    if (!folder) return '';
+    const allFolders = Array.isArray(folders) ? folders : (chatState.folders || []);
+    const titleKey = String(folder.title || '').trim().toLowerCase();
+    if (!titleKey) return '';
+    const duplicateCount = allFolders.filter(item => String(item.title || '').trim().toLowerCase() === titleKey).length;
+    if (duplicateCount < 2) return '';
+    const stamp = folder.created || folder.updated || '';
+    const date = stamp ? new Date(stamp) : null;
+    if (date && !Number.isNaN(date.getTime())) {
+        return 'Duplicate · created ' + new Intl.DateTimeFormat(undefined, {
+            month: 'short',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+        }).format(date);
+    }
+    return 'Duplicate · ref ' + String(folder.id || '').slice(0, 8);
+}
+
 function chatOpenSessionFromAnyView(sessionId) {
     const activeScreen = document.querySelector('.nav-item.active')?.dataset.screen || 'chat';
     if (activeScreen !== 'chat') navigate('chat');
@@ -2445,6 +2505,10 @@ function renderSidebarFolderSessionItem(session, extraClass = 'sidebar-folder-ch
 }
 
 window.chatNewSession = function (folderId = '') {
+    const activeScreen = document.querySelector('.nav-item.active')?.dataset.screen || '';
+    if (activeScreen !== 'chat') {
+        navigate('chat');
+    }
     chatState.currentSessionId = null;
     chatState.localMessages = [];
     chatState.lastSubmission = null;
@@ -2515,7 +2579,7 @@ window.chatCreateFolder = async function () {
         setSidebarFoldersExpanded(true);
         await chatLoadHistory();
         renderSidebarFoldersTree();
-        chatShowFolderOverview(resp.folder.id);
+        await chatShowFolderOverview(resp.folder.id);
         toast('Folder created', 'success', 1500);
     } catch (e) {
         toast(e.message || 'Failed to create folder', 'error');
@@ -2764,6 +2828,7 @@ window.chatSend = async function () {
     // Remove welcome if present
     const welcome = document.getElementById('chat-welcome');
     if (welcome) welcome.remove();
+    chatPrepareTranscriptForConversation();
 
     chatState.isThinking = true;
     chatState.currentRequestCancelSupported = chatExpectedCancelSupport();
@@ -2836,6 +2901,9 @@ window.chatSend = async function () {
                 if (last) last.remove();
             }
             chatResetComposerAfterRequest();
+            if (chatState.localMessages.length === 0) {
+                chatRenderMessages();
+            }
             chatLoadHistory();
             toast('Request cancelled', 'info', 2000);
             input.focus();
@@ -2851,6 +2919,9 @@ window.chatSend = async function () {
             if (lastUser) lastUser.remove();
         }
         chatResetComposerAfterRequest();
+        if (chatState.localMessages.length === 0) {
+            chatRenderMessages();
+        }
         chatLoadHistory();
         toast(e.message || 'Request failed', 'error', 5000);
         input.focus();

@@ -53,7 +53,21 @@ if [ "${DEV}" = "1" ]; then
 else
     echo "  [PRODUCTION] Using gunicorn"
     CHAT_TIMEOUT="${HERMES_CHAT_TIMEOUT:-300}"
-    GUNICORN_TIMEOUT="${GUNICORN_TIMEOUT:-$((CHAT_TIMEOUT + 30))}"
+    GUNICORN_TIMEOUT_HEADROOM="${GUNICORN_TIMEOUT_HEADROOM:-90}"
+    GUNICORN_TIMEOUT="${GUNICORN_TIMEOUT:-$((CHAT_TIMEOUT + GUNICORN_TIMEOUT_HEADROOM))}"
+    GUNICORN_WORKERS="${GUNICORN_WORKERS:-2}"
+    GUNICORN_GRACEFUL_TIMEOUT="${GUNICORN_GRACEFUL_TIMEOUT:-30}"
+    GUNICORN_KEEPALIVE="${GUNICORN_KEEPALIVE:-10}"
+    GUNICORN_MAX_REQUESTS="${GUNICORN_MAX_REQUESTS:-200}"
+    GUNICORN_MAX_REQUESTS_JITTER="${GUNICORN_MAX_REQUESTS_JITTER:-25}"
+    GUNICORN_LOG_LEVEL="${GUNICORN_LOG_LEVEL:-info}"
+    GUNICORN_ACCESS_LOG_FORMAT="${GUNICORN_ACCESS_LOG_FORMAT:-%(h)s pid=%(p)s [%(t)s] \"%(r)s\" %(s)s %(B)s dur_ms=%(M)s ref=\"%(f)s\" ua=\"%(a)s\"}"
+    GUNICORN_CONFIG="${GUNICORN_CONFIG:-$APP_DIR/gunicorn.conf.py}"
+    export CHAT_TIMEOUT GUNICORN_TIMEOUT_HEADROOM GUNICORN_TIMEOUT GUNICORN_WORKERS \
+        GUNICORN_GRACEFUL_TIMEOUT GUNICORN_KEEPALIVE GUNICORN_MAX_REQUESTS \
+        GUNICORN_MAX_REQUESTS_JITTER GUNICORN_LOG_LEVEL
+    echo "  workers=$GUNICORN_WORKERS timeout=${GUNICORN_TIMEOUT}s (chat=${CHAT_TIMEOUT}s + headroom=${GUNICORN_TIMEOUT_HEADROOM}s)"
+    echo "  graceful_timeout=${GUNICORN_GRACEFUL_TIMEOUT}s keepalive=${GUNICORN_KEEPALIVE}s max_requests=${GUNICORN_MAX_REQUESTS}+${GUNICORN_MAX_REQUESTS_JITTER}"
     if [ -d /dev/shm ]; then
         GUNICORN_WORKER_TMP="${GUNICORN_WORKER_TMP:-/dev/shm}"
     else
@@ -65,12 +79,19 @@ else
         GUNICORN_CMD=("$PYTHON_BIN" -m gunicorn)
     fi
     "${GUNICORN_CMD[@]}" \
+        --config "$GUNICORN_CONFIG" \
         --bind "127.0.0.1:$PORT" \
-        --workers 2 \
+        --workers "$GUNICORN_WORKERS" \
         --chdir "$APP_DIR" \
         --worker-tmp-dir "$GUNICORN_WORKER_TMP" \
         --timeout "$GUNICORN_TIMEOUT" \
+        --graceful-timeout "$GUNICORN_GRACEFUL_TIMEOUT" \
+        --keep-alive "$GUNICORN_KEEPALIVE" \
+        --max-requests "$GUNICORN_MAX_REQUESTS" \
+        --max-requests-jitter "$GUNICORN_MAX_REQUESTS_JITTER" \
+        --log-level "$GUNICORN_LOG_LEVEL" \
         --access-logfile - \
+        --access-logformat "$GUNICORN_ACCESS_LOG_FORMAT" \
         --error-logfile - \
         app:app &
     SERVER_PID=$!

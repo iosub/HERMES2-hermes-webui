@@ -610,6 +610,23 @@ pre code {
   text-overflow: ellipsis;
 }
 
+.sidebar-folder-name-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sidebar-folder-duplicate-meta {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .sidebar-folder-count {
   font-size: 10px;
   color: var(--text-muted);
@@ -2747,6 +2764,19 @@ pre code {
   min-width: 0;
   font-size: 15px;
   font-weight: 600;
+}
+
+.folder-admin-title-wrap {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.folder-admin-duplicate-meta {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
 }
 
 .folder-admin-summary {

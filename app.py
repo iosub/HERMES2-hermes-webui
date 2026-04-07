@@ -23,9 +23,10 @@ from contextlib import contextmanager
 
 import yaml
 from dotenv import dotenv_values, load_dotenv, set_key, unset_key
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, g, has_request_context, jsonify, request, send_from_directory
 from flask_cors import CORS
 import uuid
+from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
 # ---------------------------------------------------------------------------
@@ -118,6 +119,13 @@ UPLOADS_DIR = Path.home() / "hermes-web-ui" / "uploads"
 UPLOAD_FOLDER = APP_ROOT / "uploads"
 UPLOAD_FOLDER.mkdir(exist_ok=True)
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
+DEFAULT_MAX_REQUEST_BODY_SIZE = (MAX_UPLOAD_SIZE * 3) // 2 + (2 * 1024 * 1024)
+MAX_REQUEST_BODY_SIZE = max(
+    MAX_UPLOAD_SIZE,
+    int(_runtime_env_value("HERMES_WEBUI_MAX_REQUEST_BYTES", str(DEFAULT_MAX_REQUEST_BODY_SIZE))),
+)
+REQUEST_LOG_SLOW_MS = max(250, int(_runtime_env_value("HERMES_WEBUI_SLOW_REQUEST_MS", "1500")))
+UPLOAD_STREAM_CHUNK_SIZE = 1024 * 1024
 HERMES_API_URL = _runtime_env_value("HERMES_API_URL", "http://127.0.0.1:8642")
 BACKUP_DIR = HERMES_HOME / "backups"
 
@@ -129,6 +137,12 @@ CHAT_FOLDERS_PATH = CHAT_DATA_DIR / ".folders.json"
 CHAT_REQUEST_DIR = APP_ROOT / "run" / "chat_requests"
 CHAT_REQUEST_DIR.mkdir(parents=True, exist_ok=True)
 CHAT_REQUEST_TIMEOUT = int(_runtime_env_value("HERMES_CHAT_TIMEOUT", "300"))
+CHAT_SERVER_TIMEOUT = int(
+    _runtime_env_value(
+        "GUNICORN_TIMEOUT",
+        str(CHAT_REQUEST_TIMEOUT + int(_runtime_env_value("GUNICORN_TIMEOUT_HEADROOM", "90"))),
+    )
+)
 CHAT_CANCEL_POLL_INTERVAL = 0.25
 CHAT_CANCEL_GRACE_SECONDS = 5.0
 CHAT_CONTEXT_SOURCE_DOC_LIMIT = 64 * 1024
@@ -396,6 +410,9 @@ def _ensure_folder_exists(folder_id: str) -> dict | None:
     existing = _folder_with_fallback(folder_id)
     if existing:
         return existing
+    conflict = _folder_title_conflict(folder_id)
+    if conflict:
+        return conflict
     now = datetime.now().isoformat()
     return _write_folder({
         "id": folder_id,
@@ -877,6 +894,7 @@ app = Flask(
     template_folder=str(APP_ROOT / "templates"),
     static_folder=str(APP_ROOT / "static"),
 )
+app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BODY_SIZE
 # Restrict CORS to localhost by default
 CORS(app, resources={
     r"/*": {
@@ -886,6 +904,92 @@ CORS(app, resources={
         ]
     }
 })
+
+
+def _request_id_or_dash() -> str:
+    if has_request_context():
+        return getattr(g, "request_id", "-")
+    return "-"
+
+
+def _should_log_request_summary(path: str, status_code: int, duration_ms: int) -> bool:
+    if status_code >= 400:
+        return True
+    if duration_ms >= REQUEST_LOG_SLOW_MS:
+        return True
+    return path.startswith("/api/chat") or path.startswith("/api/upload")
+
+
+@app.before_request
+def _start_request_tracking():
+    raw_request_id = (request.headers.get("X-Request-ID") or "").strip()
+    if raw_request_id:
+        sanitized = re.sub(r"[^A-Za-z0-9._:-]", "", raw_request_id)[:64]
+        g.request_id = sanitized or uuid.uuid4().hex[:12]
+    else:
+        g.request_id = uuid.uuid4().hex[:12]
+    g.request_started_at = time.monotonic()
+
+
+@app.after_request
+def _finish_request_tracking(response):
+    request_id = _request_id_or_dash()
+    response.headers.setdefault("X-Request-ID", request_id)
+    started_at = getattr(g, "request_started_at", None)
+    if started_at is None:
+        return response
+    duration_ms = int((time.monotonic() - started_at) * 1000)
+    if _should_log_request_summary(request.path, response.status_code, duration_ms):
+        logger.info(
+            "HTTP %s %s status=%s duration_ms=%s request_id=%s content_length=%s remote=%s",
+            request.method,
+            request.path,
+            response.status_code,
+            duration_ms,
+            request_id,
+            request.content_length,
+            request.remote_addr,
+        )
+    return response
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def _handle_request_too_large(exc):
+    logger.warning(
+        "Rejected oversized request path=%s request_id=%s content_length=%s remote=%s limit=%s",
+        request.path,
+        _request_id_or_dash(),
+        request.content_length,
+        request.remote_addr,
+        MAX_REQUEST_BODY_SIZE,
+    )
+    if request.path.startswith("/api/"):
+        return jsonify({
+            "ok": False,
+            "error": f"Request too large (max upload {MAX_UPLOAD_SIZE // (1024 * 1024)}MB)",
+            "request_id": _request_id_or_dash(),
+            "max_upload_mb": MAX_UPLOAD_SIZE // (1024 * 1024),
+        }), 413
+    return "Request too large", 413
+
+
+@app.errorhandler(BadRequest)
+def _handle_bad_request(exc):
+    if not request.path.startswith("/api/"):
+        return exc
+    logger.warning(
+        "Rejected bad request path=%s request_id=%s remote=%s detail=%s",
+        request.path,
+        _request_id_or_dash(),
+        request.remote_addr,
+        exc.description,
+    )
+    return jsonify({
+        "ok": False,
+        "error": "Invalid request body",
+        "detail": exc.description,
+        "request_id": _request_id_or_dash(),
+    }), 400
 
 # ---------------------------------------------------------------------------
 # Authentication
@@ -1227,8 +1331,12 @@ def _skill_frontmatter(skill_md: Path) -> dict:
 
 
 def _http_error(msg: str, status: int = 500):
-    logger.error("HTTP error %d: %s", status, msg)
-    return jsonify({"ok": False, "error": msg}), status
+    request_id = _request_id_or_dash()
+    logger.error("HTTP error %d request_id=%s: %s", status, request_id, msg)
+    payload = {"ok": False, "error": msg}
+    if request_id != "-":
+        payload["request_id"] = request_id
+    return jsonify(payload), status
 
 
 # ===================================================================
@@ -1556,8 +1664,9 @@ def api_providers_test(name):
                 return jsonify({"ok": True, "latency_ms": latency, "response": body[:200]})
         except urllib.error.HTTPError as e:
             latency = int((time.time() - start) * 1000)
-            body = e.read().decode("utf-8", errors="replace")[:300]
-            return jsonify({"ok": False, "error": f"HTTP {e.code}: {body}", "latency_ms": latency}), 200
+            body = e.read().decode("utf-8", errors="replace")
+            detail = _summarize_upstream_error_detail(body, str(e.reason))[:300]
+            return jsonify({"ok": False, "error": f"HTTP {e.code}: {detail}", "latency_ms": latency}), 200
         except urllib.error.URLError as e:
             latency = int((time.time() - start) * 1000)
             return jsonify({"ok": False, "error": str(e.reason), "latency_ms": latency}), 200
@@ -2632,7 +2741,7 @@ def _call_api_server(
             return content
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace").strip()
-        detail = body or exc.reason or "upstream request failed"
+        detail = _summarize_upstream_error_detail(body, str(exc.reason or "upstream request failed"))
         raise ChatBackendError(f"API server returned HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", exc)
@@ -2757,6 +2866,69 @@ def _openrouter_model_supports_images(target: dict, timeout: int = 3) -> tuple[b
         return False, f"The configured OpenRouter model {model_id} does not advertise image input support"
 
     return None, f"Could not find model metadata for {model_id} on OpenRouter"
+
+
+def _summarize_upstream_error_detail(raw_body: str, fallback: str = "") -> str:
+    detail = (raw_body or "").strip()
+    if not detail:
+        return fallback or "upstream request failed"
+    try:
+        payload = json.loads(detail)
+    except Exception:
+        return detail
+
+    if isinstance(payload, dict):
+        error_payload = payload.get("error", payload)
+        if isinstance(error_payload, dict):
+            metadata = error_payload.get("metadata") if isinstance(error_payload.get("metadata"), dict) else {}
+            metadata_raw = str(metadata.get("raw") or "").strip()
+            message = str(error_payload.get("message") or "").strip()
+            code = str(error_payload.get("code") or "").strip()
+            if metadata_raw:
+                return metadata_raw
+            if message and code and message.lower() != code.lower():
+                return f"{message} ({code})"
+            if message:
+                return message
+            if code:
+                return code
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    return detail
+
+
+def _estimate_base64_decoded_size(payload: str) -> int:
+    cleaned = "".join(str(payload).split())
+    if not cleaned:
+        return 0
+    if len(cleaned) % 4 != 0:
+        raise ValueError("Invalid base64 length")
+    padding = len(cleaned) - len(cleaned.rstrip("="))
+    return (len(cleaned) * 3) // 4 - padding
+
+
+def _save_upload_stream(file_storage, destination: Path) -> int:
+    temp_path = destination.with_name(f".{destination.name}.part")
+    total = 0
+    stream = getattr(file_storage, "stream", file_storage)
+    if hasattr(stream, "seek"):
+        stream.seek(0)
+    try:
+        with temp_path.open("wb") as handle:
+            while True:
+                chunk = stream.read(UPLOAD_STREAM_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_UPLOAD_SIZE:
+                    raise RequestEntityTooLarge()
+                handle.write(chunk)
+        temp_path.replace(destination)
+        return total
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 def _build_openai_api_url(base_url: str, path: str) -> str:
@@ -2892,7 +3064,8 @@ def _rollback_failed_chat_turn(session: dict, session_id: str, user_msg: dict) -
 @require_token
 @rate_limit
 def api_chat():
-    data = request.get_json() or {}
+    chat_started_at = time.monotonic()
+    data = request.get_json(silent=True) or {}
     message = data.get("message", "").strip()
     session_id = data.get("session_id")
     requested_folder_id = str(data.get("folder_id") or "").strip()
@@ -2928,6 +3101,15 @@ def api_chat():
     attachment_errors = _validate_attachment_selection(files, request_plan["image_support"])
     if attachment_errors:
         return jsonify({"error": "Unsupported attachment selection", "details": attachment_errors}), 400
+
+    logger.info(
+        "Chat request started request_id=%s session_id=%s transport=%s files=%s folder_id=%s",
+        request_id,
+        sid,
+        request_plan["transport"],
+        len(files),
+        sess.get("folder_id") or "",
+    )
 
     _register_chat_request(
         request_id,
@@ -3000,14 +3182,33 @@ def api_chat():
     except ChatRequestCancelled:
         _rollback_failed_chat_turn(sess, sid, user_msg)
         _update_chat_request(request_id, status="cancelled")
+        logger.info(
+            "Chat request cancelled request_id=%s session_id=%s duration_ms=%s",
+            request_id,
+            sid,
+            int((time.monotonic() - chat_started_at) * 1000),
+        )
         return jsonify({"ok": False, "cancelled": True, "session_id": sid}), 499
     except ChatBackendError as exc:
         _rollback_failed_chat_turn(sess, sid, user_msg)
         _update_chat_request(request_id, status="failed", error=str(exc))
+        logger.warning(
+            "Chat request failed request_id=%s session_id=%s duration_ms=%s detail=%s",
+            request_id,
+            sid,
+            int((time.monotonic() - chat_started_at) * 1000),
+            exc,
+        )
         return jsonify({"error": str(exc), "request_id": request_id, "session_id": sid}), exc.status_code
     except Exception as exc:
         _rollback_failed_chat_turn(sess, sid, user_msg)
         _update_chat_request(request_id, status="failed", error=str(exc))
+        logger.exception(
+            "Unexpected chat request failure request_id=%s session_id=%s duration_ms=%s",
+            request_id,
+            sid,
+            int((time.monotonic() - chat_started_at) * 1000),
+        )
         return jsonify({"error": f"Unexpected chat error: {exc}", "request_id": request_id, "session_id": sid}), 500
     finally:
         _remove_chat_request(request_id)
@@ -3016,6 +3217,14 @@ def api_chat():
     sess["messages"].append(assistant_msg)
     sess["updated"] = datetime.now().isoformat()
     _write_session(sess)
+    logger.info(
+        "Chat request completed request_id=%s session_id=%s duration_ms=%s response_chars=%s transport=%s",
+        request_id,
+        sid,
+        int((time.monotonic() - chat_started_at) * 1000),
+        len(response_text),
+        sess.get("transport_mode"),
+    )
     session_meta = _chat_session_meta(sess)
     return jsonify({"session_id": sid, "response": response_text,
                      "message_count": len(sess["messages"]), "title": sess.get("title", ""),
@@ -3027,7 +3236,7 @@ def api_chat():
 @require_token
 @rate_limit
 def api_chat_cancel():
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     request_id = (data.get("request_id") or "").strip()
     if not request_id:
         return jsonify({"error": "request_id is required"}), 400
@@ -3042,17 +3251,36 @@ def api_chat_cancel():
 @require_token
 @rate_limit
 def api_upload():
+    if request.content_length and request.content_length > MAX_REQUEST_BODY_SIZE:
+        raise RequestEntityTooLarge()
     if "file" not in request.files:
         return jsonify({"error": "No file"}), 400
     f = request.files["file"]
     if not f.filename:
         return jsonify({"error": "No filename"}), 400
-    f.seek(0, 2); size = f.tell(); f.seek(0)
-    if size > MAX_UPLOAD_SIZE:
-        return jsonify({"error": f"Too large (max {MAX_UPLOAD_SIZE//(1024*1024)}MB)"}), 400
     safe = secure_filename(f.filename) or "file"
     unique = f"{uuid.uuid4().hex[:8]}_{safe}"
-    (UPLOAD_FOLDER / unique).write_bytes(f.read())
+    target = UPLOAD_FOLDER / unique
+    try:
+        size = _save_upload_stream(f, target)
+    except RequestEntityTooLarge:
+        logger.warning(
+            "Rejected oversized multipart upload request_id=%s name=%s content_length=%s remote=%s",
+            _request_id_or_dash(),
+            safe,
+            request.content_length,
+            request.remote_addr,
+        )
+        raise
+    logger.info(
+        "Stored upload request_id=%s stored_as=%s name=%s size=%s type=%s remote=%s",
+        _request_id_or_dash(),
+        unique,
+        safe,
+        size,
+        f.content_type,
+        request.remote_addr,
+    )
     return jsonify({"name": safe, "stored_as": unique, "size": size,
                      "type": f.content_type, "url": f"/uploads/{unique}"})
 
@@ -3062,7 +3290,9 @@ def api_upload():
 @rate_limit
 def api_upload_base64():
     """Accept a base64-encoded image (from clipboard paste) and save it."""
-    data = request.get_json() or {}
+    if request.content_length and request.content_length > MAX_REQUEST_BODY_SIZE:
+        raise RequestEntityTooLarge()
+    data = request.get_json(silent=True) or {}
     b64 = data.get("data", "")
     if not b64:
         return jsonify({"error": "No data"}), 400
@@ -3070,17 +3300,39 @@ def api_upload_base64():
     if "," in b64:
         b64 = b64.split(",", 1)[1]
     try:
+        estimated_size = _estimate_base64_decoded_size(b64)
+    except ValueError:
+        return jsonify({"error": "Invalid base64"}), 400
+    if estimated_size > MAX_UPLOAD_SIZE:
+        logger.warning(
+            "Rejected oversized base64 upload request_id=%s estimated_size=%s remote=%s",
+            _request_id_or_dash(),
+            estimated_size,
+            request.remote_addr,
+        )
+        return jsonify({"error": f"Too large (max {MAX_UPLOAD_SIZE//(1024*1024)}MB)"}), 400
+    try:
         import base64
-        img_bytes = base64.b64decode(b64)
+        img_bytes = base64.b64decode(b64, validate=True)
     except Exception:
         return jsonify({"error": "Invalid base64"}), 400
     if len(img_bytes) > MAX_UPLOAD_SIZE:
         return jsonify({"error": f"Too large (max {MAX_UPLOAD_SIZE//(1024*1024)}MB)"}), 400
-    ext = data.get("ext", "png")
+    ext = secure_filename(str(data.get("ext", "png"))).lower().lstrip(".") or "png"
+    if ext not in {"png", "jpg", "jpeg", "webp", "gif"}:
+        ext = "png"
     unique = f"{uuid.uuid4().hex[:8]}_clipboard.{ext}"
     (UPLOAD_FOLDER / unique).write_bytes(img_bytes)
+    logger.info(
+        "Stored base64 upload request_id=%s stored_as=%s size=%s type=image/%s remote=%s",
+        _request_id_or_dash(),
+        unique,
+        len(img_bytes),
+        "jpeg" if ext == "jpg" else ext,
+        request.remote_addr,
+    )
     return jsonify({"name": f"clipboard.{ext}", "stored_as": unique,
-                     "size": len(img_bytes), "type": f"image/{ext}",
+                     "size": len(img_bytes), "type": f"image/{'jpeg' if ext == 'jpg' else ext}",
                      "url": f"/uploads/{unique}"})
 
 
@@ -3399,6 +3651,7 @@ def api_chat_status():
         },
         "request_lifecycle": {
             "chat_timeout_seconds": CHAT_REQUEST_TIMEOUT,
+            "server_timeout_seconds": CHAT_SERVER_TIMEOUT,
             "cancel_supported": {
                 CHAT_TRANSPORT_CLI: True,
                 CHAT_TRANSPORT_API: False,
@@ -3407,6 +3660,10 @@ def api_chat_status():
                 CHAT_TRANSPORT_CLI: CHAT_CONTINUITY_HERMES,
                 CHAT_TRANSPORT_API: CHAT_CONTINUITY_LOCAL,
             },
+        },
+        "limits": {
+            "max_upload_bytes": MAX_UPLOAD_SIZE,
+            "max_request_body_bytes": MAX_REQUEST_BODY_SIZE,
         },
         "readiness": {
             "screenshots_ready": image_support,

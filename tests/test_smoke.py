@@ -1,3 +1,5 @@
+import base64
+import io
 import json
 import os
 import tempfile
@@ -139,6 +141,27 @@ class HermesWebUISmokeTests(unittest.TestCase):
         content = captured["payload"]["messages"][-1]["content"]
         self.assertTrue(any(item["type"] == "image_url" for item in content))
 
+    def test_summarize_upstream_error_detail_prefers_metadata_raw(self):
+        payload = json.dumps({
+            "error": {
+                "message": "Provider returned error",
+                "code": 429,
+                "metadata": {
+                    "raw": "vision-model is temporarily rate-limited upstream. Please retry shortly."
+                },
+            }
+        })
+        self.assertEqual(
+            mod._summarize_upstream_error_detail(payload),
+            "vision-model is temporarily rate-limited upstream. Please retry shortly.",
+        )
+
+    def test_summarize_upstream_error_detail_handles_plain_text(self):
+        self.assertEqual(
+            mod._summarize_upstream_error_detail("plain upstream failure", "fallback"),
+            "plain upstream failure",
+        )
+
     def test_call_api_server_can_stay_on_vision_target_without_new_image(self):
         captured = {}
 
@@ -200,6 +223,59 @@ class HermesWebUISmokeTests(unittest.TestCase):
         self.assertEqual(data["readiness"]["vision_api_url"], "https://vision.example.test/v1")
         self.assertEqual(data["readiness"]["vision_model"], "vision-model")
         self.assertFalse(data["readiness"]["screenshots_ready"])
+        self.assertEqual(data["request_lifecycle"]["server_timeout_seconds"], mod.CHAT_SERVER_TIMEOUT)
+        self.assertEqual(data["limits"]["max_upload_bytes"], mod.MAX_UPLOAD_SIZE)
+        self.assertEqual(data["limits"]["max_request_body_bytes"], mod.MAX_REQUEST_BODY_SIZE)
+
+    def test_save_upload_stream_enforces_limit_and_cleans_partial_file(self):
+        destination = mod.UPLOAD_FOLDER / "too-big.bin"
+        partial = destination.with_name(f".{destination.name}.part")
+        original_limit = mod.MAX_UPLOAD_SIZE
+        try:
+            mod.MAX_UPLOAD_SIZE = 4
+            with self.assertRaises(mod.RequestEntityTooLarge):
+                mod._save_upload_stream(SimpleNamespace(stream=io.BytesIO(b"abcdef")), destination)
+        finally:
+            mod.MAX_UPLOAD_SIZE = original_limit
+
+        self.assertFalse(destination.exists())
+        self.assertFalse(partial.exists())
+
+    def test_api_upload_base64_rejects_large_request_with_json_error(self):
+        original_limit = mod.MAX_REQUEST_BODY_SIZE
+        original_app_limit = mod.app.config["MAX_CONTENT_LENGTH"]
+        try:
+            mod.MAX_REQUEST_BODY_SIZE = 16
+            mod.app.config["MAX_CONTENT_LENGTH"] = 16
+            resp = self.client.post(
+                "/api/upload/base64",
+                data=json.dumps({"data": "A" * 128}),
+                headers={**self.headers, "Content-Type": "application/json"},
+            )
+        finally:
+            mod.MAX_REQUEST_BODY_SIZE = original_limit
+            mod.app.config["MAX_CONTENT_LENGTH"] = original_app_limit
+
+        self.assertEqual(resp.status_code, 413, resp.data)
+        body = resp.get_json()
+        self.assertEqual(body["error"], "Request too large (max upload 50MB)")
+        self.assertIn("request_id", body)
+
+    def test_api_upload_base64_rejects_oversized_decoded_payload(self):
+        payload = base64.b64encode(b"0123456789").decode("ascii")
+        original_limit = mod.MAX_UPLOAD_SIZE
+        try:
+            mod.MAX_UPLOAD_SIZE = 4
+            resp = self.client.post(
+                "/api/upload/base64",
+                json={"data": payload, "ext": "png"},
+                headers=self.headers,
+            )
+        finally:
+            mod.MAX_UPLOAD_SIZE = original_limit
+
+        self.assertEqual(resp.status_code, 400, resp.data)
+        self.assertIn("Too large", resp.get_json()["error"])
 
     def test_image_session_stays_on_api_replay_for_followups(self):
         image_path = mod.UPLOAD_FOLDER / "shot.png"
@@ -520,6 +596,17 @@ class HermesWebUISmokeTests(unittest.TestCase):
         self.assertEqual(len(audit_folders), 1)
         self.assertEqual(audit_folders[0]["id"], folder_id)
         self.assertEqual(audit_folders[0]["chat_count"], 1)
+
+    def test_ensure_folder_exists_does_not_create_new_duplicate_title(self):
+        now = "2026-01-01T00:00:00"
+        mod._write_folder({"id": "dup-one", "title": "Folder", "created": now, "updated": now})
+        mod._write_folder({"id": "dup-two", "title": "Folder", "created": now, "updated": now})
+
+        ensured = mod._ensure_folder_exists("Folder")
+        self.assertIn(ensured["id"], {"dup-one", "dup-two"})
+
+        folders = mod._load_all_folders()
+        self.assertEqual(sorted(folder["title"] for folder in folders.values()).count("Folder"), 2)
 
     def test_folder_can_add_chat_transcript_as_source(self):
         folder_resp = self.client.post("/api/chat/folders", json={"title": "Folder"}, headers=self.headers)
