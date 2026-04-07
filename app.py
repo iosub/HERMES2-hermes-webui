@@ -1197,6 +1197,42 @@ def _mask_value(key: str, value: str) -> str:
     return value
 
 
+_KEEP_EXISTING_SECRET = object()
+
+
+def _preserve_masked_secret_updates(current, update, parent_key: str = ""):
+    """Drop masked secret placeholders from updates so existing secrets survive."""
+    if isinstance(update, dict):
+        current_dict = current if isinstance(current, dict) else {}
+        sanitized = {}
+        for key, value in update.items():
+            result = _preserve_masked_secret_updates(current_dict.get(key), value, key)
+            if result is _KEEP_EXISTING_SECRET:
+                continue
+            sanitized[key] = result
+        return sanitized
+    if isinstance(update, list):
+        current_list = current if isinstance(current, list) else []
+        sanitized = []
+        for index, value in enumerate(update):
+            current_value = current_list[index] if index < len(current_list) else None
+            result = _preserve_masked_secret_updates(current_value, value, parent_key)
+            if result is _KEEP_EXISTING_SECRET:
+                sanitized.append(copy.deepcopy(current_value))
+            else:
+                sanitized.append(result)
+        return sanitized
+    if (
+        isinstance(update, str)
+        and isinstance(current, str)
+        and current
+        and _SECRET_PATTERNS.search(parent_key)
+        and update == _mask_value(parent_key, current)
+    ):
+        return _KEEP_EXISTING_SECRET
+    return copy.deepcopy(update)
+
+
 def _normalized_model_config() -> dict:
     raw = cfg.get_raw()
     model_cfg = raw.get("model", {}) or {}
@@ -1424,6 +1460,8 @@ def api_config_get_section(section):
 def api_config_put_section(section):
     try:
         data = request.get_json(force=True)
+        current = cfg.get_raw(section)
+        data = _preserve_masked_secret_updates(current, data)
         cfg.update(section, data)
         return jsonify({"ok": True})
     except Exception as exc:
@@ -1482,6 +1520,14 @@ def api_env_update(key):
     try:
         data = request.get_json(force=True)
         value = data.get("value", "")
+        current = dotenv_values(str(ENV_PATH)).get(key) if ENV_PATH.exists() else None
+        if (
+            isinstance(value, str)
+            and isinstance(current, str)
+            and current
+            and value == _mask_value(key, current)
+        ):
+            return jsonify({"ok": True})
         set_key(str(ENV_PATH), key, value)
         return jsonify({"ok": True})
     except Exception as exc:
@@ -1576,7 +1622,8 @@ def api_providers_update(name):
         found = False
         for i, p in enumerate(custom):
             if p.get("name") == name:
-                custom[i] = ConfigManager.deep_merge(p, data)
+                sanitized = _preserve_masked_secret_updates(p, data)
+                custom[i] = ConfigManager.deep_merge(p, sanitized)
                 custom[i]["name"] = name  # preserve name if not in payload
                 found = True
                 break

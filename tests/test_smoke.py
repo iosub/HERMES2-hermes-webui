@@ -1,4 +1,5 @@
 import base64
+import copy
 import io
 import json
 import os
@@ -45,10 +46,12 @@ class HermesWebUISmokeTests(unittest.TestCase):
         mod.CRON_JOBS_PATH = tmp / "run" / "cron_jobs.json"
         mod.chat_sessions.clear()
         mod.chat_folders.clear()
+        self.original_config = copy.deepcopy(mod.cfg._config)
         self.client = mod.app.test_client()
         self.headers = {"Authorization": "Bearer test-token"}
 
     def tearDown(self):
+        mod.cfg._config = self.original_config
         self.tmpdir.cleanup()
 
     def test_chat_resume_and_disk_backed_crud(self):
@@ -317,6 +320,34 @@ class HermesWebUISmokeTests(unittest.TestCase):
             self.assertEqual(api_calls[1]["files"], [])
             self.assertTrue(api_calls[1]["prefer_vision"])
 
+    def test_cli_session_switch_to_api_replay_sets_transport_notice(self):
+        image_path = mod.UPLOAD_FOLDER / "shot.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\nstub")
+
+        with patch.object(mod, "_check_api_server", return_value=False), \
+             patch.object(mod, "_image_attachment_support_status", return_value=(True, "")), \
+             patch.object(mod, "_call_hermes_direct", return_value=("cli ok", "hermes-session-1")), \
+             patch.object(mod, "_call_api_server", return_value="api ok"):
+            first = self.client.post(
+                "/api/chat",
+                json={"message": "plain text"},
+                headers=self.headers,
+            )
+            self.assertEqual(first.status_code, 200, first.data)
+            session_id = first.get_json()["session_id"]
+
+            second = self.client.post(
+                "/api/chat",
+                json={"message": "look at this", "session_id": session_id, "files": [image_path.name]},
+                headers=self.headers,
+            )
+
+        self.assertEqual(second.status_code, 200, second.data)
+        session_meta = second.get_json()["session"]
+        self.assertEqual(session_meta["transport_mode"], "api")
+        self.assertEqual(session_meta["continuity_mode"], "local_replay")
+        self.assertIn("switched to API replay", session_meta["transport_notice"])
+
     def test_api_transport_cannot_be_cancelled(self):
         mod._register_chat_request(
             "req-api",
@@ -418,6 +449,69 @@ class HermesWebUISmokeTests(unittest.TestCase):
 
         self.assertEqual(target["provider"], "openrouter")
         self.assertEqual(target["api_key"], "router-secret")
+
+    def test_provider_update_preserves_existing_secret_when_masked_value_is_sent(self):
+        mod.cfg._config = {
+            "custom_providers": [
+                {
+                    "name": "demo",
+                    "base_url": "https://example.test/v1",
+                    "model": "demo-model",
+                    "api_key": "sk-real-secret",
+                }
+            ]
+        }
+        masked = mod.cfg.mask_secrets({"api_key": "sk-real-secret"})["api_key"]
+
+        with patch.object(mod.cfg, "save", return_value=None):
+            resp = self.client.put(
+                "/api/providers/demo",
+                json={
+                    "base_url": "https://example.test/v2",
+                    "model": "demo-model-2",
+                    "api_key": masked,
+                },
+                headers=self.headers,
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        provider = mod.cfg._config["custom_providers"][0]
+        self.assertEqual(provider["api_key"], "sk-real-secret")
+        self.assertEqual(provider["base_url"], "https://example.test/v2")
+        self.assertEqual(provider["model"], "demo-model-2")
+
+    def test_config_auxiliary_update_preserves_existing_secret_when_masked_value_is_sent(self):
+        mod.cfg._config = {
+            "auxiliary": {
+                "vision": {
+                    "provider": "openai",
+                    "model": "vision-model",
+                    "base_url": "https://vision.example.test/v1",
+                    "api_key": "vision-secret",
+                }
+            }
+        }
+        masked = mod.cfg.mask_secrets({"api_key": "vision-secret"})["api_key"]
+
+        with patch.object(mod.cfg, "save", return_value=None):
+            resp = self.client.put(
+                "/api/config/auxiliary",
+                json={
+                    "vision": {
+                        "provider": "openai",
+                        "model": "vision-model-2",
+                        "base_url": "https://vision.example.test/v2",
+                        "api_key": masked,
+                    }
+                },
+                headers=self.headers,
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        vision = mod.cfg._config["auxiliary"]["vision"]
+        self.assertEqual(vision["api_key"], "vision-secret")
+        self.assertEqual(vision["model"], "vision-model-2")
+        self.assertEqual(vision["base_url"], "https://vision.example.test/v2")
 
     def test_chat_context_update_persists_and_survives_clear(self):
         workspace_root = Path(self.tmpdir.name) / "workspace"

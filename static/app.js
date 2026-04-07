@@ -273,7 +273,7 @@ async function checkHealth() {
         const txt = document.querySelector('#connection-status .status-text');
         const running = d.gateway_running;
         dot.className = 'status-dot ' + (running ? 'online' : 'warning');
-        txt.textContent = running ? 'Gateway Running' : 'Running via CLI';
+        txt.textContent = running ? 'Gateway Running' : 'Gateway Stopped';
         const ver = document.getElementById('sidebar-version');
         if (ver && d.version) {
             const firstLine = d.version.split('\n')[0].replace('Hermes Agent ', '');
@@ -682,12 +682,12 @@ Screens.providers = async function () {
     }
 };
 
-window.providerModal = function (title, name, base_url, model, api_key, saveFn) {
+window.providerModal = function (title, name, base_url, model, api_key, saveFn, hasSavedApiKey = false) {
     showModal(title,
         '<div class="form-group"><label class="form-label">Name</label>' + inputH('prov-name', name, 'text', 'e.g. my-provider', name ? 'disabled' : '') + '</div>' +
         '<div class="form-group"><label class="form-label">Base URL</label>' + inputH('prov-url', base_url, 'url', 'https://api.example.com/v1') + '</div>' +
         '<div class="form-group"><label class="form-label">Model</label>' + inputH('prov-model', model, 'text', 'e.g. gpt-4') + '</div>' +
-        '<div class="form-group"><label class="form-label">API Key <span class="form-label-hint">(optional)</span></label>' + inputH('prov-api-key', api_key || '', 'password', 'Leave blank to keep current') + '</div>',
+        '<div class="form-group"><label class="form-label">API Key <span class="form-label-hint">(optional)</span></label>' + inputH('prov-api-key', api_key || '', 'password', hasSavedApiKey ? 'Leave blank to keep current secret' : 'Optional API key') + '</div>',
         '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="' + saveFn + '">Save</button>'
     );
 };
@@ -697,7 +697,7 @@ window.editProvider = async function (name) {
         const data = await api('GET', '/api/providers');
         const p = (data.custom || []).find(x => x.name === name);
         if (!p) { toast('Provider not found', 'error'); return; }
-        window.providerModal('Edit Provider: ' + name, p.name, p.base_url, p.model, p.api_key || '', 'saveEditProvider()');
+        window.providerModal('Edit Provider: ' + name, p.name, p.base_url, p.model, '', 'saveEditProvider()', !!p.api_key);
     } catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 window.saveNewProvider = async function () {
@@ -1478,9 +1478,11 @@ function chatExpectedCancelSupport() {
 function chatRenderSessionBanner() {
     const banner = document.getElementById('chat-session-banner');
     if (!banner) return;
-    let text = '';
+    let text = chatState.currentTransportNotice || '';
     let cls = 'info';
-    if (chatState.currentContinuity === 'local_replay') {
+    if (text) {
+        cls = 'warning';
+    } else if (chatState.currentContinuity === 'local_replay') {
         text = 'This chat is using API memory mode instead of Hermes CLI resume.';
         cls = 'warning';
     } else if (chatState.currentContinuity === 'cli_without_resume') {

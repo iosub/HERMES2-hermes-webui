@@ -111,6 +111,26 @@ def main() -> int:
         wait(page, 1000)
         page.screenshot(path=str(shot_dir / "home.png"), full_page=True)
         expect("Hermes Agent" in page.locator("#content").inner_text(timeout=3000), "Home screen did not render")
+        connection_status = page.locator("#connection-status .status-text").inner_text(timeout=3000).strip()
+        expect(connection_status != "Running via CLI", "Sidebar still shows misleading stopped-state text")
+        page.evaluate(
+            """
+            () => {
+                window.chatApplySessionMetadata({
+                    continuity_mode: 'local_replay',
+                    transport_notice: 'This chat switched to API replay because image attachments require the vision/API path.',
+                });
+            }
+            """
+        )
+        wait(page, 250)
+        expect(
+            "image attachments require the vision/API path"
+            in page.locator("#chat-session-banner").inner_text(timeout=3000),
+            "Chat banner did not surface the specific transport notice",
+        )
+        page.evaluate("() => window.chatApplySessionMetadata(null)")
+        wait(page, 150)
 
         page.click('button[data-screen="folders"]')
         page.wait_for_selector(".folder-admin-card", timeout=10000)
