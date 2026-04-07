@@ -1,8 +1,14 @@
-# Hermes Web UI - Production Ready Status
+# Hermes Web UI - Deployment Status
 
-## ✅ PRODUCTION READY
+## Production Status
 
-All 13 production-readiness fixes have been implemented and tested.
+The web UI is hardened enough for local deployment, but image chat and a few deployment checks still depend on correct Hermes/provider configuration.
+
+Recent runtime improvements in this repo:
+- Chat sessions now stay on one backend transport once established, so follow-up turns do not silently hop between Hermes CLI resume and API replay.
+- The UI shows when a chat is Hermes-resumable versus local API replay.
+- Stop/cancel is only offered for real Hermes CLI subprocesses; API/vision requests no longer pretend to be cancellable.
+- `start.sh` now launches from the repo it lives in rather than assuming `~/hermes-web-ui`.
 
 ---
 
@@ -34,7 +40,7 @@ EOF
 DEV=1 ./start.sh 5000
 
 # Or run gunicorn directly from the repo root
-~/.hermes/.venv/bin/gunicorn --bind 127.0.0.1:5000 app:app
+~/.hermes/.venv/bin/gunicorn --chdir "$(pwd)" --bind 127.0.0.1:5000 --workers 2 --worker-tmp-dir /dev/shm app:app
 ```
 
 ### 4. Access the UI
@@ -84,7 +90,7 @@ All core endpoints tested and working:
 - ✓ /api/logs - Returns Hermes logs
 - ✓ /api/tools - Returns tool list
 - ✓ /api/onboarding - Returns onboarding status
-- ✓ /api/chat/status - Returns chat API server status
+- ✓ /api/chat/status - Returns chat readiness and image capability status
 
 **Authentication**: Working correctly
 - 401 responses for missing/invalid tokens
@@ -112,6 +118,33 @@ All core endpoints tested and working:
 
 ---
 
+## Image Chat Requirements
+
+For pasted screenshots to work end-to-end, all of these must be true:
+
+1. A vision-capable auxiliary model is configured in Hermes.
+2. An OpenAI-compatible API endpoint is reachable.
+3. The API endpoint accepts the configured model and API key.
+
+This repo now helps with the repo-side pieces:
+- the Providers screen shows screenshot readiness
+- the Providers screen lets you edit the Hermes `auxiliary.vision` config
+- image chat probes generic OpenAI-compatible APIs, not just `/health`
+- image-only pasted screenshots are sent correctly as multimodal payloads
+- chats that use image/API mode stay on API replay for later turns instead of quietly dropping back to CLI resume
+
+Minimum configuration:
+```bash
+# App auth
+export HERMES_WEBUI_TOKEN=your-secure-token
+
+# OpenAI-compatible image chat endpoint
+export HERMES_API_URL=https://your-api.example.com/v1
+export HERMES_API_KEY=your-api-key
+```
+
+Then set `auxiliary.vision.model` in Hermes to your image-capable model, either in the Providers screen or in `~/.hermes/config.yaml`.
+
 ## Production Deployment
 
 ### Environment Variables
@@ -119,8 +152,8 @@ All core endpoints tested and working:
 # Required
 export HERMES_WEBUI_TOKEN=your-secure-token
 
-# Optional
-export HERMES_API_URL=http://127.0.0.1:8642
+# Optional for OpenAI-compatible API mode
+export HERMES_API_URL=https://your-api.example.com/v1
 export HERMES_API_KEY=your-api-key
 export API_SERVER_KEY=your-api-key
 export HERMES_USE_API=true
@@ -165,8 +198,10 @@ sudo systemctl start hermes-webui
 1. **In-Memory Rate Limiting**: Doesn't persist across restarts or work across multiple gunicorn workers
 2. **No HTTPS**: Should be behind nginx/caddy with SSL for external access
 3. **Single Token**: No per-user authentication or role-based access control
-4. **No Session Persistence**: Chat sessions stored locally, not synced with Hermes Agent sessions
+4. **Vision Depends on Provider Setup**: Screenshot paste only works after a real image-capable API/model is configured
 5. **Basic Logging**: No log rotation or structured JSON output
+6. **Voice Input**: Browser speech-to-text is supported when available; raw audio upload is still unsupported
+7. **API Requests Are Not Server-Cancellable**: The UI now reflects this honestly by only showing Stop for CLI-backed requests
 
 These are acceptable for a local admin tool on localhost.
 
@@ -183,7 +218,7 @@ If you want to enhance further:
 - Create systemd service unit
 - Add health check monitoring
 
-But the current state is **production-ready** for local admin use!
+Treat the current state as **deployable with configuration checks**, not “set and forget” production-ready.
 
 ---
 
@@ -195,8 +230,9 @@ If issues occur:
 3. Verify token: `echo $HERMES_WEBUI_TOKEN`
 4. Test backend auth: `curl -H "Authorization: Bearer $HERMES_WEBUI_TOKEN" http://127.0.0.1:5000/api/health`
 5. Check browser localStorage has token: Open dev tools → Application → Local Storage
+6. Run repo smoke tests: `~/.hermes/.venv/bin/python -m unittest discover -s tests -q`
 
 ---
 
-Generated: 2026-03-26
-Version: 1.0.0 (Production Ready)
+Generated: 2026-04-07
+Version: 1.1.1 (Deployment Checklist)

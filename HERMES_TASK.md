@@ -41,16 +41,22 @@
 - [x] **Fix 12:** Frontend authentication - token handling in browser
 - [x] **Fix 13:** Update Hermes executable and sessions paths to current layout
 - [x] **Fix 14:** Fix chat history header layout (prevent button cutoff)
+- [x] **Fix 15:** Preserve existing provider/config secrets when masked values are resubmitted
+- [x] **Fix 16:** Show honest gateway stopped-state and transport fallback messaging in the UI
+- [x] **Fix 17:** Extend smoke coverage for chat continuity, service controls, uploads, and broken UI literals
+- [x] **Fix 18:** Replace leaked Unicode codepoint literals that rendered raw `U000...` text in the UI
 
 ## Status
 
-**Production Readiness: COMPLETE**
+**Production Readiness: Deployable With Configuration Checks**
 
-All security, stability, and UX fixes implemented and tested.
-Web UI is fully functional and ready for production use.
-## Pending Queue
+Core repo-side hardening, honest UI behavior, and deployment docs are in place. Image chat works through the Hermes vision/API path when a real provider, API URL, model, and key are configured correctly, so the remaining risk is mostly environment configuration and external service readiness rather than missing repo plumbing.
 
-- Future enhancements and features
+## Remaining Follow-Ups
+
+- Verify real deployment provider settings before treating screenshot paste as ready in a given environment
+- Expand browser automation for full chat/send/upload flows when a stable seeded local app state is available
+- Keep local runtime artifacts (`run/`, `.codex`) ignored so future publish steps stay clean
 
 ---
 

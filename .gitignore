@@ -26,6 +26,8 @@ logs/
 # Runtime / user data
 chat_data/
 uploads/
+/run/
+/.codex
 
 # Cache / temp
 .cache/
