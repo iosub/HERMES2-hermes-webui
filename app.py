@@ -16,8 +16,9 @@ import subprocess
 import signal
 import time
 import logging
-from datetime import datetime
-from pathlib import Path
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
 from functools import wraps
 from contextlib import contextmanager
 
@@ -258,6 +259,15 @@ PROVIDER_PRESETS = [
         "intro": "Use a local OpenAI-compatible server as a provider profile.",
     },
 ]
+SKILL_INSTALL_ERROR_MARKERS = (
+    "error:",
+    "could not fetch",
+    "failed to fetch",
+    "failed to install",
+    "not a valid skill",
+    "no skill found",
+)
+SKILL_SOURCE_METADATA_FILENAME = ".hermes-webui-source.json"
 INTEGRATION_SECTION_LABELS = {
     "discord": "Discord",
     "whatsapp": "WhatsApp",
@@ -365,10 +375,10 @@ STARTER_PACK_SKILL_GROUPS = (
         ),
     },
     {
-        "id": "summaries",
-        "label": "Docs & Video Summaries",
-        "terms": ("summarize", "youtube-content", "ocr-and-documents"),
-        "description": "Useful summarization helpers for documents, scans, and YouTube.",
+        "id": "summarize",
+        "label": "Summarize",
+        "terms": ("summarize",),
+        "description": "Recommended summaries and transcripts for URLs, podcasts, videos, and local files.",
         "query": "summarize",
         "setup_notes": [
             "The summarize skill may need the local summarize CLI after the skill files are installed.",
@@ -377,7 +387,7 @@ STARTER_PACK_SKILL_GROUPS = (
         "install_candidates": (
             {
                 "identifier": "skills-sh/steipete/clawdis/summarize",
-                "label": "summarize",
+                "label": "Summarize",
                 "source": "skills.sh",
                 "description": "Summaries and transcripts for URLs, videos, and local files.",
                 "recommended": True,
@@ -2058,6 +2068,320 @@ def _run_hermes(*args, timeout: int = 30) -> subprocess.CompletedProcess:
     )
 
 
+def _combined_process_output(result: subprocess.CompletedProcess) -> str:
+    return "\n".join(
+        part.strip()
+        for part in (result.stdout, result.stderr)
+        if part and part.strip()
+    ).strip()
+
+
+def _hermes_skill_install_failed(result: subprocess.CompletedProcess, combined_output: str) -> bool:
+    lowered_output = str(combined_output or "").lower()
+    if "already installed" in lowered_output:
+        return False
+    if result.returncode != 0:
+        return True
+    return any(marker in lowered_output for marker in SKILL_INSTALL_ERROR_MARKERS)
+
+
+def _normalize_skill_rel_path(value: str | Path) -> str:
+    text = str(value or "").strip().replace("\\", "/").strip("/")
+    return text
+
+
+def _skill_source_metadata_path(skill_dir: Path) -> Path:
+    return skill_dir / SKILL_SOURCE_METADATA_FILENAME
+
+
+def _parse_skill_source_reference(identifier: str) -> dict:
+    text = str(identifier or "").strip()
+    if not text:
+        return {
+            "identifier": "",
+            "source_repo": "",
+            "source_path": "",
+        }
+
+    url_match = re.match(
+        r"^https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/#?]+?)(?:\.git)?(?:/tree/(?P<ref>[^/]+)(?:/(?P<path>[^?#]+))?)?/?(?:[?#].*)?$",
+        text,
+        re.IGNORECASE,
+    )
+    if url_match:
+        owner = str(url_match.group("owner") or "").strip()
+        repo = str(url_match.group("repo") or "").strip()
+        source_path = _normalize_skill_rel_path(url_match.group("path") or "")
+        return {
+            "identifier": text,
+            "source_repo": f"{owner}/{repo}" if owner and repo else "",
+            "source_path": source_path,
+        }
+
+    parts = [part for part in text.replace("\\", "/").split("/") if part]
+    if len(parts) >= 2:
+        return {
+            "identifier": text,
+            "source_repo": "/".join(parts[:2]),
+            "source_path": "/".join(parts[2:]),
+        }
+    return {
+        "identifier": text,
+        "source_repo": "",
+        "source_path": "",
+    }
+
+
+def _build_skill_source_record(
+    identifier: str,
+    *,
+    install_mode: str,
+    display: str = "",
+    catalog_source: str = "",
+) -> dict:
+    parsed = _parse_skill_source_reference(identifier)
+    source_repo = parsed.get("source_repo") or ""
+    source_path = parsed.get("source_path") or ""
+    identifier_text = parsed.get("identifier") or str(identifier or "").strip()
+    if display:
+        display_text = str(display).strip()
+    elif install_mode == "github_repo" and source_repo:
+        display_text = source_repo
+    else:
+        display_text = identifier_text or source_repo or "Local / Unknown"
+    return {
+        "display": display_text,
+        "identifier": identifier_text,
+        "source_repo": source_repo,
+        "source_path": source_path,
+        "catalog_source": str(catalog_source or "").strip(),
+        "install_mode": str(install_mode or "").strip(),
+        "recorded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def _read_skill_source_metadata(skill_dir: Path) -> dict:
+    meta_path = _skill_source_metadata_path(skill_dir)
+    if not meta_path.exists():
+        return {}
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    source_repo = _normalize_skill_rel_path(payload.get("source_repo") or "")
+    source_path = _normalize_skill_rel_path(payload.get("source_path") or "")
+    identifier = str(payload.get("identifier") or "").strip()
+    display = str(payload.get("display") or "").strip() or identifier or source_repo or "Local / Unknown"
+    return {
+        "display": display,
+        "identifier": identifier,
+        "source_repo": source_repo,
+        "source_path": source_path,
+        "catalog_source": str(payload.get("catalog_source") or "").strip(),
+        "install_mode": str(payload.get("install_mode") or "").strip(),
+        "recorded_at": str(payload.get("recorded_at") or "").strip(),
+        "tracked": True,
+    }
+
+
+def _write_skill_source_metadata(skill_dir: Path, metadata: dict) -> dict:
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    normalized = _read_skill_source_metadata(skill_dir)
+    normalized.update({
+        "display": str(metadata.get("display") or normalized.get("display") or "").strip(),
+        "identifier": str(metadata.get("identifier") or normalized.get("identifier") or "").strip(),
+        "source_repo": _normalize_skill_rel_path(metadata.get("source_repo") or normalized.get("source_repo") or ""),
+        "source_path": _normalize_skill_rel_path(metadata.get("source_path") or normalized.get("source_path") or ""),
+        "catalog_source": str(metadata.get("catalog_source") or normalized.get("catalog_source") or "").strip(),
+        "install_mode": str(metadata.get("install_mode") or normalized.get("install_mode") or "").strip(),
+        "recorded_at": str(metadata.get("recorded_at") or normalized.get("recorded_at") or "").strip()
+        or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    })
+    if not normalized.get("display"):
+        normalized["display"] = normalized.get("identifier") or normalized.get("source_repo") or "Local / Unknown"
+    _skill_source_metadata_path(skill_dir).write_text(
+        json.dumps(normalized, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    normalized["tracked"] = True
+    return normalized
+
+
+def _record_skill_install_source(
+    rel_paths: list[str],
+    *,
+    identifier: str,
+    install_mode: str,
+    display: str = "",
+    catalog_source: str = "",
+) -> list[str]:
+    record = _build_skill_source_record(
+        identifier,
+        install_mode=install_mode,
+        display=display,
+        catalog_source=catalog_source,
+    )
+    updated = []
+    seen = set()
+    for rel_path in rel_paths or []:
+        normalized_rel = _normalize_skill_rel_path(rel_path)
+        if not normalized_rel or normalized_rel in seen:
+            continue
+        seen.add(normalized_rel)
+        skill_dir = SKILLS_DIR / normalized_rel
+        if not (skill_dir / "SKILL.md").exists():
+            continue
+        _write_skill_source_metadata(skill_dir, record)
+        updated.append(normalized_rel)
+    return updated
+
+
+def _match_skill_paths_for_identifier(identifier: str, skills: list[dict]) -> list[str]:
+    parsed = _parse_skill_source_reference(identifier)
+    terms = []
+    identifier_text = str(parsed.get("identifier") or "").strip()
+    source_path = str(parsed.get("source_path") or "").strip()
+    if identifier_text:
+        terms.append(identifier_text.lower())
+    if source_path:
+        terms.append(source_path.lower())
+        terms.append(Path(source_path).name.lower())
+    terms = [term for term in dict.fromkeys(terms) if term]
+    if not terms:
+        return []
+    matches = []
+    for skill in skills or []:
+        if _skill_matches_terms(skill, tuple(terms)):
+            rel_path = _normalize_skill_rel_path(skill.get("path") or "")
+            if rel_path:
+                matches.append(rel_path)
+    return list(dict.fromkeys(matches))
+
+
+def _parse_github_skill_install_identifier(identifier: str) -> dict | None:
+    text = str(identifier or "").strip()
+    if not text:
+        return None
+
+    url_match = re.match(
+        r"^https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/#?]+?)(?:\.git)?(?:/tree/(?P<ref>[^/]+)(?:/(?P<path>[^?#]+))?)?/?(?:[?#].*)?$",
+        text,
+        re.IGNORECASE,
+    )
+    if url_match:
+        owner = str(url_match.group("owner") or "").strip()
+        repo = str(url_match.group("repo") or "").strip()
+        if owner and repo:
+            return {
+                "owner": owner,
+                "repo": repo,
+                "ref": str(url_match.group("ref") or "").strip(),
+                "path": str(url_match.group("path") or "").strip("/"),
+                "clone_url": f"https://github.com/{owner}/{repo}.git",
+            }
+        return None
+
+    short_match = re.match(r"^(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)$", text)
+    if not short_match:
+        return None
+    owner = str(short_match.group("owner") or "").strip()
+    repo = str(short_match.group("repo") or "").strip()
+    if not owner or not repo:
+        return None
+    return {
+        "owner": owner,
+        "repo": repo,
+        "ref": "",
+        "path": "",
+        "clone_url": f"https://github.com/{owner}/{repo}.git",
+    }
+
+
+def _discover_skill_dirs(root: Path) -> list[Path]:
+    if not root.exists():
+        return []
+
+    discovered = []
+    for current_root, dirs, files in os.walk(str(root)):
+        dirs[:] = [name for name in dirs if not name.startswith(".")]
+        if "SKILL.md" not in files:
+            continue
+        discovered.append(Path(current_root))
+    return sorted(discovered)
+
+
+def _install_skills_from_github_repo(identifier: str) -> dict | None:
+    spec = _parse_github_skill_install_identifier(identifier)
+    if not spec:
+        return None
+    if not shutil.which("git"):
+        raise RuntimeError("git is required to install skills from GitHub repos")
+
+    clone_cmd = ["git", "clone", "--depth", "1", "--quiet"]
+    if spec.get("ref"):
+        clone_cmd.extend(["--branch", str(spec["ref"]), "--single-branch"])
+    clone_cmd.append(str(spec["clone_url"]))
+
+    with tempfile.TemporaryDirectory(prefix="hermes-skill-import-") as tmpdir:
+        clone_cmd.append(tmpdir)
+        clone_result = subprocess.run(
+            clone_cmd,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if clone_result.returncode != 0:
+            message = _combined_process_output(clone_result) or f"git clone exited with status {clone_result.returncode}"
+            raise RuntimeError(message)
+
+        repo_root = Path(tmpdir)
+        search_root = repo_root / str(spec.get("path") or "") if spec.get("path") else repo_root
+        if not search_root.exists():
+            raise RuntimeError(f"GitHub path not found inside repo: {spec.get('path')}")
+
+        skill_dirs = _discover_skill_dirs(search_root)
+        if not skill_dirs:
+            label = str(spec.get("path") or "").strip() or f"{spec['owner']}/{spec['repo']}"
+            raise RuntimeError(f"No SKILL.md directories found in {label}")
+
+        installed_paths = []
+        skipped_paths = []
+        source_display = f"{spec['owner']}/{spec['repo']}"
+        for skill_dir in skill_dirs:
+            rel_repo_path = skill_dir.relative_to(repo_root)
+            dest_rel_path = rel_repo_path if rel_repo_path != Path(".") else Path(str(spec["repo"]))
+            normalized_rel_path = _normalize_skill_rel_path(dest_rel_path)
+            destination = SKILLS_DIR / normalized_rel_path
+            if destination.exists():
+                _record_skill_install_source(
+                    [normalized_rel_path],
+                    identifier=identifier,
+                    install_mode="github_repo",
+                    display=source_display,
+                )
+                skipped_paths.append(normalized_rel_path)
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(skill_dir, destination)
+            _record_skill_install_source(
+                [normalized_rel_path],
+                identifier=identifier,
+                install_mode="github_repo",
+                display=source_display,
+            )
+            installed_paths.append(normalized_rel_path)
+
+    return {
+        "mode": "github_repo",
+        "source": f"{spec['owner']}/{spec['repo']}",
+        "requested_identifier": identifier,
+        "installed_paths": installed_paths,
+        "skipped_paths": skipped_paths,
+    }
+
+
 def _gateway_status() -> dict:
     """Run `hermes gateway status` and parse the result.
 
@@ -2873,19 +3197,69 @@ def api_skills_get():
 @require_token
 def api_skill_toggle(name):
     try:
-        skill_path = SKILLS_DIR / name
-        disabled_path = SKILLS_DIR / (name + ".disabled")
+        info = _skill_request_paths(name)
+        if not info:
+            return jsonify({"ok": False, "error": "Skill path is required"}), 400
+        action = "disable" if info["base_path"].exists() else "enable"
+        result = _skill_apply_action(name, action)
+        if not result.get("found"):
+            return jsonify({"ok": False, "error": result.get("error") or f"Skill '{name}' not found"}), 404
+        return jsonify({
+            "ok": True,
+            "enabled": bool(result.get("enabled")),
+            "changed": bool(result.get("changed")),
+            "path": result.get("path") or info.get("requested_rel"),
+        })
+    except Exception as exc:
+        return _http_error(str(exc))
 
-        if skill_path.exists():
-            # Disable: rename to .disabled
-            shutil.move(str(skill_path), str(disabled_path))
-            return jsonify({"ok": True, "enabled": False})
-        elif disabled_path.exists():
-            # Enable: remove .disabled suffix
-            shutil.move(str(disabled_path), str(skill_path))
-            return jsonify({"ok": True, "enabled": True})
-        else:
-            return jsonify({"ok": False, "error": f"Skill '{name}' not found"}), 404
+
+@app.route("/api/skills/bulk", methods=["POST"])
+@require_token
+def api_skill_bulk():
+    try:
+        data = request.get_json(force=True) or {}
+        action = str(data.get("action") or "").strip().lower()
+        if action not in {"enable", "disable", "remove"}:
+            return jsonify({"ok": False, "error": "Unsupported bulk action"}), 400
+
+        raw_paths = data.get("paths") if isinstance(data.get("paths"), list) else []
+        paths = []
+        seen = set()
+        for entry in raw_paths:
+            rel_path = _safe_skill_rel_path(entry)
+            if rel_path and rel_path not in seen:
+                paths.append(rel_path)
+                seen.add(rel_path)
+        if not paths:
+            return jsonify({"ok": False, "error": "At least one skill path is required"}), 400
+
+        results = []
+        changed_paths = []
+        missing_paths = []
+        removed_paths = []
+        for rel_path in paths:
+            result = _skill_apply_action(rel_path, action)
+            result["requested"] = rel_path
+            results.append(result)
+            if not result.get("found"):
+                missing_paths.append(rel_path)
+                continue
+            if result.get("changed"):
+                changed_paths.append(result.get("path") or rel_path)
+            if result.get("removed"):
+                removed_paths.append(result.get("path") or rel_path)
+
+        return jsonify({
+            "ok": True,
+            "action": action,
+            "results": results,
+            "changed_count": len(changed_paths),
+            "changed_paths": changed_paths,
+            "removed_paths": removed_paths,
+            "missing_paths": missing_paths,
+            "skills": _discover_skill_entries(),
+        })
     except Exception as exc:
         return _http_error(str(exc))
 
@@ -2899,21 +3273,65 @@ def api_skill_install():
         if not identifier:
             return jsonify({"ok": False, "error": "identifier is required"}), 400
 
+        before_paths = {
+            _normalize_skill_rel_path(skill.get("path") or "")
+            for skill in _discover_skill_entries()
+            if _normalize_skill_rel_path(skill.get("path") or "")
+        }
         result = _run_hermes("skills", "install", identifier, "--yes", timeout=300)
-        combined_output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip()).strip()
-        lowered_output = combined_output.lower()
-        if result.returncode != 0 and "already installed" not in lowered_output:
-            message = combined_output or f"Hermes skills install exited with status {result.returncode}"
-            return jsonify({"ok": False, "error": message}), 502
+        combined_output = _combined_process_output(result)
+        fallback = None
+        if _hermes_skill_install_failed(result, combined_output):
+            fallback = _install_skills_from_github_repo(identifier)
+            if not fallback:
+                message = combined_output or f"Hermes skills install exited with status {result.returncode}"
+                return jsonify({"ok": False, "error": message}), 502
+
+        skills = _discover_skill_entries()
+        after_paths = {
+            _normalize_skill_rel_path(skill.get("path") or "")
+            for skill in skills
+            if _normalize_skill_rel_path(skill.get("path") or "")
+        }
+        installed_skill_paths = sorted(after_paths - before_paths)
+        already_present_paths = []
+        annotated_skill_paths = []
+
+        if fallback:
+            installed_skill_paths = list(fallback.get("installed_paths") or [])
+            already_present_paths = list(fallback.get("skipped_paths") or [])
+            annotated_skill_paths = list(dict.fromkeys(installed_skill_paths + already_present_paths))
+        else:
+            if installed_skill_paths:
+                annotated_skill_paths = _record_skill_install_source(
+                    installed_skill_paths,
+                    identifier=identifier,
+                    install_mode="hermes",
+                )
+            else:
+                already_present_paths = _match_skill_paths_for_identifier(identifier, skills)
+                if already_present_paths:
+                    annotated_skill_paths = _record_skill_install_source(
+                        already_present_paths,
+                        identifier=identifier,
+                        install_mode="hermes",
+                    )
 
         return jsonify({
             "ok": True,
             "identifier": identifier,
             "output": combined_output,
-            "skills": _discover_skill_entries(),
+            "install_mode": (fallback or {}).get("mode", "hermes"),
+            "fallback": fallback,
+            "installed_skill_paths": installed_skill_paths,
+            "already_present_paths": already_present_paths,
+            "annotated_skill_paths": annotated_skill_paths,
+            "skills": skills,
         })
     except subprocess.TimeoutExpired:
         return jsonify({"ok": False, "error": "Hermes skills install timed out"}), 504
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
     except Exception as exc:
         return _http_error(str(exc))
 
@@ -2939,12 +3357,42 @@ def api_starter_pack_install(item_id):
         else:
             chosen = next((candidate for candidate in candidates if candidate.get("recommended")), candidates[0])
 
+        before_paths = {
+            _normalize_skill_rel_path(skill.get("path") or "")
+            for skill in _discover_skill_entries()
+            if _normalize_skill_rel_path(skill.get("path") or "")
+        }
         result = _run_hermes("skills", "install", chosen["identifier"], "--yes", timeout=300)
-        combined_output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip()).strip()
-        lowered_output = combined_output.lower()
-        if result.returncode != 0 and "already installed" not in lowered_output:
+        combined_output = _combined_process_output(result)
+        if _hermes_skill_install_failed(result, combined_output):
             message = combined_output or f"Hermes skills install exited with status {result.returncode}"
             return jsonify({"ok": False, "error": message}), 502
+
+        after_skills = _discover_skill_entries()
+        after_paths = {
+            _normalize_skill_rel_path(skill.get("path") or "")
+            for skill in after_skills
+            if _normalize_skill_rel_path(skill.get("path") or "")
+        }
+        installed_skill_paths = sorted(after_paths - before_paths)
+        already_present_paths = []
+        annotated_skill_paths = []
+        if installed_skill_paths:
+            annotated_skill_paths = _record_skill_install_source(
+                installed_skill_paths,
+                identifier=chosen["identifier"],
+                install_mode="hermes",
+                catalog_source=chosen.get("source") or "",
+            )
+        else:
+            already_present_paths = _match_skill_paths_for_identifier(chosen["identifier"], after_skills)
+            if already_present_paths:
+                annotated_skill_paths = _record_skill_install_source(
+                    already_present_paths,
+                    identifier=chosen["identifier"],
+                    install_mode="hermes",
+                    catalog_source=chosen.get("source") or "",
+                )
 
         runtime = _chat_runtime_status()
         item = next(
@@ -2957,6 +3405,9 @@ def api_starter_pack_install(item_id):
             "candidate": chosen,
             "item": item,
             "output": combined_output,
+            "installed_skill_paths": installed_skill_paths,
+            "already_present_paths": already_present_paths,
+            "annotated_skill_paths": annotated_skill_paths,
             "setup_notes": [str(note).strip() for note in (group.get("setup_notes") or []) if str(note).strip()],
         })
     except subprocess.TimeoutExpired:
@@ -3743,14 +4194,17 @@ def _discover_skill_entries() -> list[dict]:
         fm = _skill_frontmatter(skill_md)
         rel_path = Path(root).relative_to(SKILLS_DIR)
         dir_name = str(rel_path)
-        skills.append({
+        skill = {
             "name": fm.get("name", rel_path.name),
             "category": fm.get("category", ""),
             "description": fm.get("description", ""),
             "path": str(rel_path),
             "enabled": not dir_name.endswith(".disabled"),
             "frontmatter": fm,
-        })
+        }
+        skill["source"] = _read_skill_source_metadata(Path(root))
+        skill["setup"] = _skill_setup_readiness(skill)
+        skills.append(skill)
     return skills
 
 
@@ -3801,16 +4255,138 @@ def _joined_labels(values: list[str]) -> str:
 
 
 def _skill_absolute_path(skill: dict) -> Path | None:
-    rel_path = str(skill.get("path") or "").strip()
+    rel_path = _safe_skill_rel_path(skill.get("path") or "")
     if not rel_path:
         return None
     return SKILLS_DIR / rel_path
+
+
+def _safe_skill_rel_path(value: str | Path) -> str:
+    text = _normalize_skill_rel_path(value)
+    if not text:
+        return ""
+    parts = []
+    for part in PurePosixPath(text).parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            return ""
+        parts.append(part)
+    return "/".join(parts)
+
+
+def _skill_request_paths(requested: str | Path) -> dict:
+    requested_rel = _safe_skill_rel_path(requested)
+    if not requested_rel:
+        return {}
+
+    requested_parts = requested_rel.split("/")
+    base_name = requested_parts[-1]
+    while base_name.endswith(".disabled"):
+        base_name = base_name[:-9]
+    if not base_name:
+        return {}
+
+    base_rel = "/".join(requested_parts[:-1] + [base_name])
+    base_path = SKILLS_DIR / base_rel
+    disabled_rel = base_rel + ".disabled"
+    disabled_path = SKILLS_DIR / disabled_rel
+
+    variants = []
+    seen = set()
+    for rel in (requested_rel, base_rel, disabled_rel):
+        if rel and rel not in seen:
+            variants.append(SKILLS_DIR / rel)
+            seen.add(rel)
+
+    parent_dir = base_path.parent
+    if parent_dir.exists():
+        disabled_prefix = base_path.name + ".disabled"
+        for sibling in sorted(parent_dir.iterdir(), key=lambda item: item.name):
+            if not sibling.is_dir() or not sibling.name.startswith(disabled_prefix):
+                continue
+            sibling_rel = _safe_skill_rel_path(sibling.relative_to(SKILLS_DIR))
+            if sibling_rel and sibling_rel not in seen:
+                variants.append(sibling)
+                seen.add(sibling_rel)
+
+    return {
+        "requested_rel": requested_rel,
+        "base_rel": base_rel,
+        "disabled_rel": disabled_rel,
+        "base_path": base_path,
+        "disabled_path": disabled_path,
+        "variants": variants,
+    }
+
+
+def _replace_skill_dir(src: Path, dst: Path) -> None:
+    if dst.exists() and dst != src:
+        shutil.rmtree(dst)
+    shutil.move(str(src), str(dst))
+
+
+def _skill_apply_action(requested: str | Path, action: str) -> dict:
+    info = _skill_request_paths(requested)
+    if not info:
+        return {"found": False, "error": "Skill path is required"}
+
+    base_path = info["base_path"]
+    disabled_path = info["disabled_path"]
+    existing_variants = [path for path in info["variants"] if path.exists()]
+    action_name = str(action or "").strip().lower()
+
+    if action_name == "enable":
+        if base_path.exists():
+            return {"found": True, "changed": False, "enabled": True, "path": info["base_rel"]}
+        candidate = next((path for path in existing_variants if path != base_path), None)
+        if not candidate:
+            return {"found": False, "error": f"Skill '{requested}' not found"}
+        _replace_skill_dir(candidate, base_path)
+        return {"found": True, "changed": True, "enabled": True, "path": info["base_rel"]}
+
+    if action_name == "disable":
+        if base_path.exists():
+            _replace_skill_dir(base_path, disabled_path)
+            return {"found": True, "changed": True, "enabled": False, "path": info["disabled_rel"]}
+        candidate = next((path for path in existing_variants if path != base_path), None)
+        if candidate:
+            candidate_rel = _safe_skill_rel_path(candidate.relative_to(SKILLS_DIR))
+            return {"found": True, "changed": False, "enabled": False, "path": candidate_rel}
+        return {"found": False, "error": f"Skill '{requested}' not found"}
+
+    if action_name == "remove":
+        target = base_path if base_path.exists() else next(iter(existing_variants), None)
+        if not target:
+            return {"found": False, "error": f"Skill '{requested}' not found"}
+        removed_rel = _safe_skill_rel_path(target.relative_to(SKILLS_DIR))
+        shutil.rmtree(target)
+        return {"found": True, "changed": True, "removed": True, "path": removed_rel}
+
+    return {"found": False, "error": f"Unsupported action '{action}'"}
+
+
+def _skill_wants_integration_setup(skill: dict, env_blockers: list[dict]) -> bool:
+    if any(str(blocker.get("group") or "").strip() == "Channel" for blocker in env_blockers):
+        return True
+    haystack = " ".join(
+        str(value or "").strip().lower()
+        for value in (
+            skill.get("name"),
+            skill.get("path"),
+            skill.get("category"),
+            ((skill.get("source") or {}).get("source_repo") if isinstance(skill.get("source"), dict) else ""),
+        )
+    )
+    return any(hint in haystack for hint in ("discord", "whatsapp", "slack", "telegram", "matrix", "webhook"))
 
 
 def _skill_setup_readiness(skill: dict) -> dict:
     frontmatter = skill.get("frontmatter") if isinstance(skill.get("frontmatter"), dict) else {}
     skill_dir = _skill_absolute_path(skill)
     issues = []
+    blockers = []
+    actions = []
 
     required_files = frontmatter.get("required_credential_files")
     if isinstance(required_files, list):
@@ -3822,15 +4398,35 @@ def _skill_setup_readiness(skill: dict) -> dict:
                 continue
             target = (skill_dir / rel_path).resolve()
             if not target.exists():
-                issues.append(f"missing credential file {rel_path}")
+                message = f"missing credential file {rel_path}"
+                issues.append(message)
+                blockers.append({
+                    "kind": "credential_file",
+                    "path": rel_path,
+                    "absolute_path": str(target),
+                    "message": message,
+                })
 
     prerequisites = frontmatter.get("prerequisites")
     env_vars = []
     if isinstance(prerequisites, dict):
         env_vars = _clean_string_list(prerequisites.get("env_vars"))
+    env_blockers = []
     for env_key in env_vars:
         if not _runtime_env_value(env_key, ""):
-            issues.append(f"missing env var {env_key}")
+            env_meta = _env_var_metadata(env_key)
+            message = f"missing env var {env_key}"
+            issues.append(message)
+            blocker = {
+                "kind": "env_var",
+                "key": env_key,
+                "group": env_meta.get("group") or _classify_env_key(env_key),
+                "label": env_meta.get("label") or env_key,
+                "description": env_meta.get("description") or "",
+                "message": message,
+            }
+            blockers.append(blocker)
+            env_blockers.append(blocker)
 
     metadata = frontmatter.get("metadata")
     required_bins = []
@@ -3840,11 +4436,43 @@ def _skill_setup_readiness(skill: dict) -> dict:
             required_bins = _clean_string_list(((openclaw_meta.get("requires") or {}).get("bins")))
     for binary in required_bins:
         if shutil.which(binary) is None:
-            issues.append(f"missing command {binary}")
+            message = f"missing command {binary}"
+            issues.append(message)
+            blockers.append({
+                "kind": "command",
+                "name": binary,
+                "message": message,
+            })
+
+    for blocker in env_blockers:
+        actions.append({
+            "type": "env_var",
+            "key": blocker.get("key"),
+            "group": blocker.get("group"),
+            "label": f"Set {blocker.get('label') or blocker.get('key')}",
+        })
+
+    if _skill_wants_integration_setup(skill, env_blockers):
+        actions.append({
+            "type": "screen",
+            "screen": "channels",
+            "label": "Open Apps & Integrations",
+        })
+
+    unique_actions = []
+    seen_actions = set()
+    for action in actions:
+        token = json.dumps(action, sort_keys=True)
+        if token in seen_actions:
+            continue
+        seen_actions.add(token)
+        unique_actions.append(action)
 
     return {
         "ready": not issues,
         "issues": issues,
+        "blockers": blockers,
+        "actions": unique_actions,
     }
 
 
@@ -3900,11 +4528,28 @@ def _starter_pack_item_from_group(group: dict, enabled_skills: list[dict]) -> di
     install_available = bool(install_candidates) and not bool(installed_candidates)
     install_action_label = "Install" if not matches else "Install Recommended"
     match_names = [str(skill.get("name") or skill.get("path") or "").strip() for skill in matches]
+    match_paths = [_safe_skill_rel_path(skill.get("path") or "") for skill in matches if _safe_skill_rel_path(skill.get("path") or "")]
     readiness_checks = [_skill_setup_readiness(skill) for skill in matches]
     readiness_issues = []
+    readiness_actions = []
     for check in readiness_checks:
         readiness_issues.extend(check.get("issues") or [])
+        readiness_actions.extend(check.get("actions") or [])
     readiness_issues = list(dict.fromkeys(readiness_issues))
+    deduped_actions = []
+    seen_actions = set()
+    for action in readiness_actions:
+        token = json.dumps(action, sort_keys=True)
+        if token in seen_actions:
+            continue
+        seen_actions.add(token)
+        deduped_actions.append(action)
+    if matches and readiness_issues and not deduped_actions and match_paths:
+        deduped_actions.append({
+            "type": "skill_setup",
+            "path": match_paths[0],
+            "label": "Open Setup",
+        })
 
     if matches and not readiness_issues:
         status = "ready"
@@ -3936,6 +4581,7 @@ def _starter_pack_item_from_group(group: dict, enabled_skills: list[dict]) -> di
         "ready": ready,
         "detail": detail,
         "matches": match_names,
+        "matched_skill_paths": match_paths,
         "query": str(group.get("query") or "").strip(),
         "install_candidates": install_candidates,
         "installed_candidates": installed_candidates,
@@ -3944,6 +4590,7 @@ def _starter_pack_item_from_group(group: dict, enabled_skills: list[dict]) -> di
         "setup_notes": [str(note).strip() for note in (group.get("setup_notes") or []) if str(note).strip()],
         "supports_install": bool(install_candidates),
         "issues": readiness_issues,
+        "setup_actions": deduped_actions,
     }
 
 
@@ -4018,51 +4665,11 @@ def _chat_runtime_status(raw: dict | None = None, *, skills: list[dict] | None =
         cli_reason = ""
 
     starter_items = []
-    memory_status = "ready" if memory.get("semantic_search_ready") else ("attention" if memory.get("enabled") else "missing")
-    starter_items.append({
-        "id": "memory",
-        "label": "Memory",
-        "kind": "runtime",
-        "status": memory_status,
-        "ready": bool(memory.get("semantic_search_ready")),
-        "detail": memory.get("detail"),
-        "supports_install": False,
-        "setup_action": {
-            "type": "env_var",
-            "key": "OPENAI_API_KEY",
-            "label": "Set Up Memory",
-        },
-        "setup_notes": [
-            "Hermes already stores memory locally. OPENAI_API_KEY is optional and only enables better OpenAI-backed semantic memory search.",
-            "For standard OpenAI use, you do not need OPENAI_BASE_URL. Leave it unset unless you are pointing Hermes at a custom OpenAI-compatible gateway.",
-        ],
-    })
-
-    configured_integrations_by_name = {
-        str(item.get("name") or "").strip().lower(): item
-        for item in configured_integrations
-    }
-    for integration_name, integration_label in (("discord", "Discord"), ("whatsapp", "WhatsApp")):
-        integration = configured_integrations_by_name.get(integration_name)
-        starter_items.append({
-            "id": integration_name,
-            "label": integration_label,
-            "kind": "integration",
-            "status": "ready" if integration else "missing",
-            "ready": bool(integration),
-            "detail": (
-                f"{integration_label} integration is configured."
-                if integration
-                else f"{integration_label} is not configured in Hermes yet."
-            ),
-            "supports_install": False,
-            "setup_notes": [
-                f"Configure the {integration_label} block in Hermes config before expecting messages to flow through it.",
-            ],
-        })
-
     for group in STARTER_PACK_SKILL_GROUPS:
-        starter_items.append(_starter_pack_item_from_group(group, enabled_skills))
+        item = _starter_pack_item_from_group(group, enabled_skills)
+        if item.get("status") == "ready":
+            continue
+        starter_items.append(item)
 
     return {
         "requires_cli": requires_cli,

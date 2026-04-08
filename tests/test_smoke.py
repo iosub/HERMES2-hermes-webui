@@ -349,6 +349,40 @@ metadata:
         self.assertIn("missing credential file google_token.json", readiness["issues"])
         self.assertIn("missing env var GOOGLE_API_KEY", readiness["issues"])
         self.assertIn("missing command gog", readiness["issues"])
+        self.assertEqual(readiness["blockers"][0]["kind"], "credential_file")
+        self.assertEqual(readiness["blockers"][1]["kind"], "env_var")
+        self.assertEqual(readiness["blockers"][1]["label"], "Google API Key")
+        self.assertEqual(readiness["blockers"][2]["kind"], "command")
+        self.assertTrue(any(action["type"] == "env_var" and action["key"] == "GOOGLE_API_KEY" for action in readiness["actions"]))
+
+    def test_skill_setup_readiness_adds_integration_route_for_channel_skills(self):
+        skill_root = Path(self.tmpdir.name) / "skills"
+        skill_dir = skill_root / "messaging" / "discord-helper"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            """---
+name: discord-helper
+prerequisites:
+  env_vars: [DISCORD_TOKEN]
+---
+""",
+            encoding="utf-8",
+        )
+        skill = {
+            "name": "discord-helper",
+            "path": "messaging/discord-helper",
+            "frontmatter": mod._skill_frontmatter(skill_dir / "SKILL.md"),
+        }
+
+        with patch.object(mod, "SKILLS_DIR", skill_root), \
+             patch.object(mod, "REPO_ENV_PATH", Path(self.tmpdir.name) / "repo.env"), \
+             patch.object(mod, "ENV_PATH", Path(self.tmpdir.name) / "hermes.env"), \
+             patch.dict(mod.os.environ, {}, clear=True):
+            readiness = mod._skill_setup_readiness(skill)
+
+        self.assertFalse(readiness["ready"])
+        self.assertTrue(any(action["type"] == "env_var" and action["key"] == "DISCORD_TOKEN" for action in readiness["actions"]))
+        self.assertTrue(any(action["type"] == "screen" and action["screen"] == "channels" for action in readiness["actions"]))
 
     def test_chat_runtime_status_marks_installed_skill_needing_setup_as_attention(self):
         skill_root = Path(self.tmpdir.name) / "skills"
@@ -376,7 +410,153 @@ required_credential_files:
         self.assertEqual(google["status"], "attention")
         self.assertTrue(google["supports_install"])
         self.assertIn("missing credential file google_token.json", google["issues"])
+        self.assertEqual(google["matched_skill_paths"], ["productivity/google-workspace"])
+        self.assertTrue(google["setup_actions"])
         self.assertTrue(any(candidate["identifier"] == "skills-sh/steipete/clawdis/gog" for candidate in google["install_candidates"]))
+
+    def test_discover_skill_entries_includes_source_metadata_and_setup_status(self):
+        skill_root = Path(self.tmpdir.name) / "skills"
+        skill_dir = skill_root / "system-design"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            """---
+name: system-design
+required_credential_files:
+  - path: optional-token.json
+---
+""",
+            encoding="utf-8",
+        )
+        (skill_dir / mod.SKILL_SOURCE_METADATA_FILENAME).write_text(
+            json.dumps(
+                {
+                    "display": "wondelai/skills",
+                    "identifier": "wondelai/skills",
+                    "source_repo": "wondelai/skills",
+                    "install_mode": "github_repo",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.object(mod, "SKILLS_DIR", skill_root):
+            skills = mod._discover_skill_entries()
+
+        self.assertEqual(len(skills), 1)
+        skill = skills[0]
+        self.assertEqual(skill["source"]["display"], "wondelai/skills")
+        self.assertEqual(skill["source"]["install_mode"], "github_repo")
+        self.assertFalse(skill["setup"]["ready"])
+        self.assertIn("missing credential file optional-token.json", skill["setup"]["issues"])
+        self.assertEqual(skill["setup"]["blockers"][0]["kind"], "credential_file")
+
+    def test_record_skill_install_source_writes_metadata_for_existing_skill(self):
+        skill_root = Path(self.tmpdir.name) / "skills"
+        skill_dir = skill_root / "weather"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: weather\n---\n", encoding="utf-8")
+
+        with patch.object(mod, "SKILLS_DIR", skill_root):
+            updated = mod._record_skill_install_source(
+                ["weather"],
+                identifier="skills-sh/steipete/clawdis/weather",
+                install_mode="hermes",
+                catalog_source="skills.sh",
+            )
+            skills = mod._discover_skill_entries()
+
+        self.assertEqual(updated, ["weather"])
+        self.assertEqual(skills[0]["source"]["identifier"], "skills-sh/steipete/clawdis/weather")
+        self.assertEqual(skills[0]["source"]["catalog_source"], "skills.sh")
+        self.assertEqual(skills[0]["source"]["install_mode"], "hermes")
+
+    def test_skill_toggle_endpoint_uses_nested_skill_path(self):
+        skill_root = Path(self.tmpdir.name) / "skills"
+        skill_dir = skill_root / "productivity" / "google-workspace"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: google-workspace\n---\n", encoding="utf-8")
+
+        with patch.object(mod, "SKILLS_DIR", skill_root):
+            resp = self.client.post("/api/skills/productivity/google-workspace/toggle", headers=self.headers)
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertFalse(resp.get_json()["enabled"])
+        self.assertFalse(skill_dir.exists())
+        self.assertTrue((skill_root / "productivity" / "google-workspace.disabled" / "SKILL.md").exists())
+
+    def test_skill_toggle_endpoint_reenables_disabled_path(self):
+        skill_root = Path(self.tmpdir.name) / "skills"
+        disabled_dir = skill_root / "productivity" / "google-workspace.disabled"
+        disabled_dir.mkdir(parents=True)
+        (disabled_dir / "SKILL.md").write_text("---\nname: google-workspace\n---\n", encoding="utf-8")
+
+        with patch.object(mod, "SKILLS_DIR", skill_root):
+            resp = self.client.post("/api/skills/productivity/google-workspace.disabled/toggle", headers=self.headers)
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertTrue(resp.get_json()["enabled"])
+        self.assertFalse(disabled_dir.exists())
+        self.assertTrue((skill_root / "productivity" / "google-workspace" / "SKILL.md").exists())
+
+    def test_skill_toggle_endpoint_normalizes_repeated_disabled_suffixes(self):
+        skill_root = Path(self.tmpdir.name) / "skills"
+        disabled_dir = skill_root / "system-design.disabled.disabled"
+        disabled_dir.mkdir(parents=True)
+        (disabled_dir / "SKILL.md").write_text("---\nname: system-design\n---\n", encoding="utf-8")
+
+        with patch.object(mod, "SKILLS_DIR", skill_root):
+            resp = self.client.post("/api/skills/system-design.disabled/toggle", headers=self.headers)
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertTrue(resp.get_json()["enabled"])
+        self.assertFalse(disabled_dir.exists())
+        self.assertTrue((skill_root / "system-design" / "SKILL.md").exists())
+
+    def test_skill_bulk_endpoint_removes_selected_paths(self):
+        skill_root = Path(self.tmpdir.name) / "skills"
+        enabled_dir = skill_root / "system-design"
+        disabled_dir = skill_root / "productivity" / "google-workspace.disabled"
+        enabled_dir.mkdir(parents=True)
+        disabled_dir.mkdir(parents=True)
+        (enabled_dir / "SKILL.md").write_text("---\nname: system-design\n---\n", encoding="utf-8")
+        (disabled_dir / "SKILL.md").write_text("---\nname: google-workspace\n---\n", encoding="utf-8")
+
+        with patch.object(mod, "SKILLS_DIR", skill_root):
+            resp = self.client.post(
+                "/api/skills/bulk",
+                json={"action": "remove", "paths": ["system-design", "productivity/google-workspace.disabled"]},
+                headers=self.headers,
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        body = resp.get_json()
+        self.assertEqual(sorted(body["removed_paths"]), ["productivity/google-workspace.disabled", "system-design"])
+        self.assertFalse(enabled_dir.exists())
+        self.assertFalse(disabled_dir.exists())
+
+    def test_skill_bulk_endpoint_disables_and_enables_paths(self):
+        skill_root = Path(self.tmpdir.name) / "skills"
+        skill_dir = skill_root / "system-design"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: system-design\n---\n", encoding="utf-8")
+
+        with patch.object(mod, "SKILLS_DIR", skill_root):
+            disabled = self.client.post(
+                "/api/skills/bulk",
+                json={"action": "disable", "paths": ["system-design"]},
+                headers=self.headers,
+            )
+            enabled = self.client.post(
+                "/api/skills/bulk",
+                json={"action": "enable", "paths": ["system-design.disabled"]},
+                headers=self.headers,
+            )
+
+        self.assertEqual(disabled.status_code, 200, disabled.data)
+        self.assertEqual(disabled.get_json()["changed_paths"], ["system-design.disabled"])
+        self.assertEqual(enabled.status_code, 200, enabled.data)
+        self.assertEqual(enabled.get_json()["changed_paths"], ["system-design"])
+        self.assertTrue((skill_root / "system-design" / "SKILL.md").exists())
 
     def test_chat_runtime_status_keeps_optional_cli_features_from_forcing_cli(self):
         raw = {
@@ -400,9 +580,30 @@ required_credential_files:
         self.assertIn("Hermes memory is enabled for chat sessions.", runtime["reasons"])
         self.assertIn("1 Hermes skill is enabled.", runtime["reasons"])
         items = {item["id"]: item for item in runtime["starter_pack"]["items"]}
-        self.assertEqual(items["memory"]["setup_action"]["key"], "OPENAI_API_KEY")
+        self.assertNotIn("memory", items)
+        self.assertNotIn("discord", items)
+        self.assertNotIn("whatsapp", items)
+        self.assertNotIn("weather", items)
+        self.assertTrue(runtime["memory"]["enabled"])
 
-    def test_starter_pack_summary_install_stays_available_when_builtins_cover_it(self):
+    def test_chat_runtime_status_marks_memory_action_as_edit_when_openai_key_exists(self):
+        raw = {
+            "memory": {"memory_enabled": True, "user_profile_enabled": True},
+            "platform_toolsets": {"cli": ["memory"]},
+        }
+
+        with patch.dict(mod.os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=True):
+            runtime = mod._chat_runtime_status(raw=raw, skills=[])
+
+        items = {item["id"]: item for item in runtime["starter_pack"]["items"]}
+        self.assertNotIn("memory", items)
+        self.assertIn("google_workspace", items)
+        self.assertIn("summarize", items)
+        self.assertIn("weather", items)
+        self.assertTrue(runtime["memory"]["semantic_search_ready"])
+        self.assertTrue(runtime["memory"]["openai_api_key_present"])
+
+    def test_starter_pack_summarize_stays_installable_when_builtin_summary_skills_exist(self):
         raw = {
             "memory": {"memory_enabled": False},
             "platform_toolsets": {"cli": ["skills"]},
@@ -416,12 +617,28 @@ required_credential_files:
         runtime = mod._chat_runtime_status(raw=raw, skills=skills)
 
         items = {item["id"]: item for item in runtime["starter_pack"]["items"]}
-        summaries = items["summaries"]
-        self.assertEqual(summaries["status"], "ready")
-        self.assertEqual(summaries["matches"], ["youtube-content", "ocr-and-documents"])
-        self.assertTrue(summaries["install_available"])
-        self.assertEqual(summaries["install_action_label"], "Install Recommended")
-        self.assertFalse(summaries["installed_candidates"])
+        summarize = items["summarize"]
+        self.assertEqual(summarize["status"], "missing")
+        self.assertEqual(summarize["matches"], [])
+        self.assertTrue(summarize["install_available"])
+        self.assertEqual(summarize["install_action_label"], "Install")
+        self.assertFalse(summarize["installed_candidates"])
+
+    def test_starter_pack_hides_ready_recommended_skills(self):
+        raw = {
+            "memory": {"memory_enabled": False},
+            "platform_toolsets": {"cli": ["skills"]},
+        }
+        skills = [
+            {"name": "weather", "path": "weather", "enabled": True, "frontmatter": {}},
+            {"name": "google-workspace", "path": "productivity/google-workspace", "enabled": True, "frontmatter": {}},
+        ]
+
+        runtime = mod._chat_runtime_status(raw=raw, skills=skills)
+
+        items = {item["id"]: item for item in runtime["starter_pack"]["items"]}
+        self.assertNotIn("weather", items)
+        self.assertNotIn("google_workspace", items)
 
     def test_parse_sidecar_payload_extracts_embedded_json_and_normalizes_lists(self):
         raw = """
@@ -1278,18 +1495,7 @@ Sidecar output:
         self.assertEqual(session["transport_notice"], "")
 
     def test_starter_pack_install_endpoint_runs_hermes_install(self):
-        runtime = runtime_status_stub(
-            starter_items=[
-                {
-                    "id": "weather",
-                    "label": "Weather",
-                    "kind": "skill",
-                    "status": "ready",
-                    "ready": True,
-                    "detail": "Installed via Weather.",
-                }
-            ]
-        )
+        runtime = runtime_status_stub(starter_items=[])
 
         with patch.object(mod, "_run_hermes", return_value=SimpleNamespace(returncode=0, stdout="installed ok", stderr="")) as run_mock, \
              patch.object(mod, "_chat_runtime_status", return_value=runtime):
@@ -1300,8 +1506,21 @@ Sidecar output:
         body = resp.get_json()
         self.assertTrue(body["ok"])
         self.assertEqual(body["candidate"]["identifier"], "skills-sh/steipete/clawdis/weather")
-        self.assertEqual(body["item"]["status"], "ready")
+        self.assertIsNone(body["item"])
         self.assertTrue(body["setup_notes"])
+
+    def test_starter_pack_install_endpoint_rejects_zero_exit_error_output(self):
+        runtime = runtime_status_stub(starter_items=[])
+
+        with patch.object(
+            mod,
+            "_run_hermes",
+            return_value=SimpleNamespace(returncode=0, stdout="Fetching...\nError: Could not fetch skill", stderr=""),
+        ), patch.object(mod, "_chat_runtime_status", return_value=runtime):
+            resp = self.client.post("/api/starter-pack/weather/install", json={}, headers=self.headers)
+
+        self.assertEqual(resp.status_code, 502, resp.data)
+        self.assertIn("Could not fetch", resp.get_json()["error"])
 
     def test_starter_pack_install_endpoint_rejects_unknown_candidate(self):
         resp = self.client.post(
@@ -1326,7 +1545,63 @@ Sidecar output:
         body = resp.get_json()
         self.assertTrue(body["ok"])
         self.assertEqual(body["identifier"], "wondelai/skills")
+        self.assertEqual(body["install_mode"], "hermes")
         self.assertEqual(body["skills"][0]["name"], "wondelai-skills")
+
+    def test_skill_install_endpoint_falls_back_to_github_repo_when_hermes_output_contains_error(self):
+        fallback = {
+            "mode": "github_repo",
+            "source": "wondelai/skills",
+            "requested_identifier": "wondelai/skills",
+            "installed_paths": ["system-design", "clean-code"],
+            "skipped_paths": [],
+        }
+        with patch.object(
+            mod,
+            "_run_hermes",
+            return_value=SimpleNamespace(
+                returncode=0,
+                stdout="Fetching: wondelai/skills\nError: Could not fetch 'wondelai/skills' from any source.",
+                stderr="",
+            ),
+        ) as run_mock, patch.object(mod, "_install_skills_from_github_repo", return_value=fallback) as fallback_mock, patch.object(
+            mod,
+            "_discover_skill_entries",
+            return_value=[{"name": "system-design", "enabled": True}, {"name": "clean-code", "enabled": True}],
+        ):
+            resp = self.client.post(
+                "/api/skills/install",
+                json={"identifier": "wondelai/skills"},
+                headers=self.headers,
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        run_mock.assert_called_once_with("skills", "install", "wondelai/skills", "--yes", timeout=300)
+        fallback_mock.assert_called_once_with("wondelai/skills")
+        body = resp.get_json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["install_mode"], "github_repo")
+        self.assertEqual(body["fallback"]["installed_paths"], ["system-design", "clean-code"])
+
+    def test_skill_install_endpoint_rejects_zero_exit_fetch_error_without_fallback(self):
+        with patch.object(
+            mod,
+            "_run_hermes",
+            return_value=SimpleNamespace(
+                returncode=0,
+                stdout="Fetching: skills-sh/steipete/clawdis/weather\nError: Could not fetch target.",
+                stderr="",
+            ),
+        ) as run_mock:
+            resp = self.client.post(
+                "/api/skills/install",
+                json={"identifier": "skills-sh/steipete/clawdis/weather"},
+                headers=self.headers,
+            )
+
+        self.assertEqual(resp.status_code, 502, resp.data)
+        run_mock.assert_called_once_with("skills", "install", "skills-sh/steipete/clawdis/weather", "--yes", timeout=300)
+        self.assertIn("Could not fetch", resp.get_json()["error"])
 
     def test_skill_install_endpoint_requires_identifier(self):
         resp = self.client.post(

@@ -250,7 +250,7 @@ function screenTitle(s) {
     return {
         dashboard: 'Dashboard', settings: 'Settings', 'env-vars': 'Environment Variables',
         folders: 'Folders', service: 'Service Controls', providers: 'Providers', models: 'Models',
-        agents: 'Agents', skills: 'Skills', channels: 'Integrations',
+        agents: 'Agents', skills: 'Skills', channels: 'Apps & Integrations',
         hooks: 'Hooks / Webhooks', cron: 'Cron Jobs', sessions: 'Session Reset', logs: 'Log File Tail', chat: 'Chat'
     }[s] || s;
 }
@@ -273,6 +273,15 @@ function navigate(screen) {
     if (Screens[screen]) Screens[screen]();
     else content.innerHTML = '<div class="empty-state"><div class="empty-icon">\u2753</div><h3>Screen not found</h3></div>';
     setTimeout(() => { if (window.renderSidebarFoldersTree) renderSidebarFoldersTree(); }, 0);
+}
+
+function currentScreenId() {
+    return document.querySelector('.nav-item.active')?.dataset.screen || 'dashboard';
+}
+
+function refreshCurrentScreen() {
+    const screen = currentScreenId();
+    if (Screens[screen]) Screens[screen]();
 }
 
 let _healthCache = null, _healthTs = 0;
@@ -414,8 +423,12 @@ async function reloadConfig() {
 Screens.settings = async function () {
     const content = document.getElementById('content');
     try {
-        const cfg = await api('GET', '/api/config');
+        const [cfg, status] = await Promise.all([
+            api('GET', '/api/config'),
+            api('GET', '/api/chat/status').catch(() => ({})),
+        ]);
         const personalities = Object.keys(cfg.personalities || {});
+        const runtime = status.runtime || {};
         const tabs = [
             { id: 'general', label: 'General', sections: ['display'] },
             { id: 'agent', label: 'Agent', sections: ['agent'] },
@@ -435,6 +448,9 @@ Screens.settings = async function () {
             t.sections.forEach(sec => {
                 const data = cfg[sec];
                 if (!data || typeof data !== 'object') return;
+                if (t.id === 'memory' && sec === 'memory') {
+                    formHtml += renderSettingsMemoryStatusCard(runtime.memory || {});
+                }
                 formHtml += '<div class="form-section"><div class="form-section-title">' + escH(sec) + '</div>';
                 // Theme chooser in General > display
                 if (sec === 'display') {
@@ -476,6 +492,39 @@ Screens.settings = async function () {
         content.innerHTML = '<div class="empty-state"><div class="empty-icon">\u26a0\ufe0f</div><h3>Error</h3><p>' + escH(e.message) + '</p></div>';
     }
 };
+
+function runtimeEnvSourceLabel(source) {
+    if (source === 'process_env') return 'Process environment';
+    if (source === 'repo_env') return 'Repo .env';
+    if (source === 'hermes_env') return 'Hermes env vars';
+    return 'Not found';
+}
+
+function renderSettingsMemoryStatusCard(memory) {
+    const enabled = !!memory.enabled;
+    const cliTool = !!memory.cli_tool_enabled;
+    const ready = !!memory.semantic_search_ready;
+    const keyPresent = !!memory.openai_api_key_present;
+    const keySource = runtimeEnvSourceLabel(memory.openai_api_key_source || '');
+    const actionLabel = keyPresent ? 'Edit OpenAI Key' : 'Set OpenAI Key';
+    const actionClass = ready ? 'btn' : 'btn btn-primary';
+    let html = '<div class="card mb-16"><div class="card-header"><span>Memory Status</span>' +
+        '<span class="badge ' + (ready ? 'badge-success' : (enabled ? 'badge-warning' : 'badge-secondary')) + '">' +
+        escH(ready ? 'OpenAI Ready' : (enabled ? 'Needs OpenAI Key' : 'Local Only')) +
+        '</span></div><div class="card-body">';
+    html += '<div class="runtime-readiness-grid">';
+    html += '<div class="runtime-readiness-item"><div class="runtime-readiness-label">Local Memory</div><div class="runtime-readiness-value">' + escH(enabled ? 'Enabled' : 'Disabled') + '</div><div class="runtime-readiness-detail">' + escH(enabled ? 'Hermes will keep using its built-in local memory.' : 'Turn memory on below if you want Hermes to retain memory locally.') + '</div></div>';
+    html += '<div class="runtime-readiness-item"><div class="runtime-readiness-label">OpenAI Recall</div><div class="runtime-readiness-value">' + escH(ready ? 'Ready' : (keyPresent ? 'Waiting on CLI' : 'Key Missing')) + '</div><div class="runtime-readiness-detail">' + escH(memory.detail || 'Memory status unavailable.') + '</div></div>';
+    html += '<div class="runtime-readiness-item"><div class="runtime-readiness-label">CLI Memory Tool</div><div class="runtime-readiness-value">' + escH(cliTool ? 'Active' : 'Inactive') + '</div><div class="runtime-readiness-detail">' + escH(cliTool ? 'CLI chats can use Hermes memory.' : 'Enable the CLI memory tool if you want memory available during Hermes CLI turns.') + '</div></div>';
+    html += '<div class="runtime-readiness-item"><div class="runtime-readiness-label">OpenAI Key</div><div class="runtime-readiness-value">' + escH(keyPresent ? 'Saved' : 'Missing') + '</div><div class="runtime-readiness-detail">' + escH(keyPresent ? ('Found in ' + keySource + '.') : 'Add OPENAI_API_KEY to enable OpenAI-backed semantic recall.') + '</div></div>';
+    html += '</div>';
+    html += '<p class="text-sm text-secondary mt-16">Saving your OpenAI key here does not replace Hermes local memory. It only adds stronger OpenAI-backed semantic recall. You do not need <span class="font-mono">OPENAI_BASE_URL</span> for normal OpenAI use.</p>';
+    html += '<div class="starter-pack-item-actions">';
+    html += '<button class="' + actionClass + '" onclick="openEnvVarSetup(\'OPENAI_API_KEY\', \'Provider\')">' + escH(actionLabel) + '</button>';
+    html += '<button class="btn" onclick="navigate(\'env-vars\')">Open Env Vars</button>';
+    html += '</div></div></div>';
+    return html;
+}
 
 window.saveSettings = async function (btn) {
     const activePane = document.querySelector('.tab-pane.active');
@@ -671,7 +720,7 @@ window.saveNewEnvVar = async function () {
     const key = document.getElementById('env-key').value.trim();
     const value = document.getElementById('env-value').value.trim();
     if (!key) { toast('Key is required', 'error'); return; }
-    try { await api('POST', '/api/env', { key, value }); toast('Variable added', 'success'); closeModal(); Screens['env-vars'](); }
+    try { await api('POST', '/api/env', { key, value }); toast('Variable added', 'success'); closeModal(); refreshCurrentScreen(); }
     catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 window.editEnvVar = async function (key) {
@@ -695,7 +744,7 @@ window.editEnvVar = async function (key) {
 };
 window.saveEditEnvVar = async function (key) {
     const value = document.getElementById('env-edit-value').value;
-    try { await api('PUT', '/api/env/' + key, { value }); toast('Variable updated', 'success'); closeModal(); Screens['env-vars'](); }
+    try { await api('PUT', '/api/env/' + key, { value }); toast('Variable updated', 'success'); closeModal(); refreshCurrentScreen(); }
     catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 window.deleteEnvVar = function (key) {
@@ -704,7 +753,7 @@ window.deleteEnvVar = function (key) {
     );
 };
 window.confirmDeleteEnvVar = async function (key) {
-    try { await api('DELETE', '/api/env/' + key); toast('Variable deleted', 'success'); closeModal(); Screens['env-vars'](); }
+    try { await api('DELETE', '/api/env/' + key); toast('Variable deleted', 'success'); closeModal(); refreshCurrentScreen(); }
     catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 
@@ -1555,6 +1604,759 @@ function starterPackBadgeLabel(status) {
 const starterPackState = {
     items: {},
 };
+const skillCatalogState = {
+    items: {},
+    list: [],
+    runtime: {},
+    policy: {},
+    searchQuery: '',
+    statusFilter: 'all',
+    sourceFilter: 'all',
+    collapsedSources: {},
+    selectedPaths: {},
+    selectedSourceKey: '',
+    recentPaths: {},
+};
+
+function rememberSkills(skills) {
+    const nextList = Array.isArray(skills) ? skills : [];
+    skillCatalogState.list = nextList;
+    skillCatalogState.items = {};
+    nextList.forEach(skill => {
+        if (skill && skill.path) skillCatalogState.items[skill.path] = skill;
+    });
+
+    Object.keys(skillCatalogState.selectedPaths || {}).forEach(path => {
+        if (!skillCatalogState.items[path]) delete skillCatalogState.selectedPaths[path];
+    });
+    if (!selectedSkillPaths().length) {
+        skillCatalogState.selectedSourceKey = '';
+    } else if (
+        skillCatalogState.selectedSourceKey &&
+        skillCatalogState.selectedSourceKey !== '__starter_pack__' &&
+        !selectedSkillPaths().some(path => skillSourceKey(skillCatalogState.items[path] || {}) === skillCatalogState.selectedSourceKey)
+    ) {
+        skillCatalogState.selectedSourceKey = skillSourceKey(skillCatalogState.items[selectedSkillPaths()[0]] || {}) || '';
+    }
+    Object.keys(skillCatalogState.recentPaths || {}).forEach(path => {
+        if (!skillCatalogState.items[path]) delete skillCatalogState.recentPaths[path];
+    });
+
+    const validSourceKeys = new Set(nextList.map(skill => skillSourceKey(skill)));
+    if (skillCatalogState.sourceFilter !== 'all' && !validSourceKeys.has(skillCatalogState.sourceFilter)) {
+        skillCatalogState.sourceFilter = 'all';
+    }
+}
+
+function skillSourceLabel(skill) {
+    const source = (skill && skill.source) || {};
+    return source.display || source.identifier || source.source_repo || 'Local / Unknown';
+}
+
+function skillSourceKey(skill) {
+    const source = (skill && skill.source) || {};
+    return source.identifier || source.source_repo || source.display || 'Local / Unknown';
+}
+
+function skillSourceMeta(skill) {
+    const source = (skill && skill.source) || {};
+    if (!source.identifier && !source.source_repo && !source.catalog_source) {
+        return 'Manual or older skills without recorded repo metadata.';
+    }
+    if (source.install_mode === 'github_repo' && source.source_repo) {
+        return 'Imported from GitHub repo.';
+    }
+    if (source.catalog_source) {
+        return 'Installed via ' + source.catalog_source + '.';
+    }
+    if (source.install_mode === 'hermes') {
+        return 'Installed through the Hermes CLI.';
+    }
+    return 'Recorded source metadata is available for this skill.';
+}
+
+function skillSetupStatus(skill) {
+    const setup = (skill && skill.setup) || {};
+    return {
+        ready: setup.ready !== false,
+        issues: Array.isArray(setup.issues) ? setup.issues : [],
+        blockers: Array.isArray(setup.blockers) ? setup.blockers : [],
+        actions: Array.isArray(setup.actions) ? setup.actions : [],
+    };
+}
+
+function renderSkillInstallPathList(paths) {
+    const list = Array.isArray(paths) ? paths.filter(Boolean) : [];
+    if (!list.length) {
+        return '<div class="empty-state"><p>No matching skill paths reported.</p></div>';
+    }
+    return '<ul class="plain-list">' + list.map(path => '<li><span class="font-mono">' + escH(path) + '</span></li>').join('') + '</ul>';
+}
+
+function skillSortKey(skill) {
+    return String((skill && (skill.name || skill.path)) || '').toLowerCase();
+}
+
+function sortSkillsStable(skills) {
+    return (Array.isArray(skills) ? skills.slice() : []).sort((a, b) => {
+        const aKey = skillSortKey(a);
+        const bKey = skillSortKey(b);
+        if (aKey < bKey) return -1;
+        if (aKey > bKey) return 1;
+        return String((a && a.path) || '').localeCompare(String((b && b.path) || ''));
+    });
+}
+
+function skillSearchText(skill) {
+    const source = skill.source || {};
+    const setup = skillSetupStatus(skill);
+    return [
+        skill.name,
+        skill.path,
+        skill.description,
+        skill.category || '',
+        skillSourceLabel(skill),
+        source.identifier || '',
+        source.source_repo || '',
+        ...setup.issues,
+    ].join(' ').toLowerCase();
+}
+
+function availableSkillSourceKeys() {
+    return Array.from(new Set(skillCatalogState.list.map(skill => skillSourceKey(skill)))).sort((a, b) => {
+        if (a === 'Local / Unknown') return -1;
+        if (b === 'Local / Unknown') return 1;
+        return String(a).localeCompare(String(b));
+    });
+}
+
+function isSkillSelected(path) {
+    return !!skillCatalogState.selectedPaths[path];
+}
+
+function selectedSkillPaths() {
+    return Object.keys(skillCatalogState.selectedPaths || {}).filter(path => skillCatalogState.selectedPaths[path]);
+}
+
+function selectedSkillPathsForSource(sourceKey) {
+    if (sourceKey === '__starter_pack__') {
+        return skillCatalogState.selectedSourceKey === '__starter_pack__' ? selectedSkillPaths() : [];
+    }
+    return selectedSkillPaths().filter(path => skillSourceKey(skillCatalogState.items[path] || {}) === sourceKey);
+}
+
+function clearSelectedSkillsState() {
+    skillCatalogState.selectedPaths = {};
+    skillCatalogState.selectedSourceKey = '';
+}
+
+function activateSelectionSource(sourceKey) {
+    const nextKey = String(sourceKey || '');
+    if (!nextKey) {
+        clearSelectedSkillsState();
+        return;
+    }
+    if (skillCatalogState.selectedSourceKey && skillCatalogState.selectedSourceKey !== nextKey) {
+        skillCatalogState.selectedPaths = {};
+    }
+    skillCatalogState.selectedSourceKey = nextKey;
+}
+
+function skillMatchesFilters(skill) {
+    const searchNeedle = String(skillCatalogState.searchQuery || '').trim().toLowerCase();
+    const statusFilter = skillCatalogState.statusFilter || 'all';
+    const sourceFilter = skillCatalogState.sourceFilter || 'all';
+    const setup = skillSetupStatus(skill);
+    const enabled = skill.enabled !== false;
+
+    if (sourceFilter !== 'all' && skillSourceKey(skill) !== sourceFilter) {
+        return false;
+    }
+    if (statusFilter === 'enabled' && !enabled) {
+        return false;
+    }
+    if (statusFilter === 'disabled' && enabled) {
+        return false;
+    }
+    if (statusFilter === 'needs_setup' && setup.ready) {
+        return false;
+    }
+    if (statusFilter === 'ready' && !setup.ready) {
+        return false;
+    }
+    if (searchNeedle && !skillSearchText(skill).includes(searchNeedle)) {
+        return false;
+    }
+    return true;
+}
+
+function visibleSkills() {
+    return skillCatalogState.list.filter(skillMatchesFilters);
+}
+
+function visibleSkillsForSource(sourceKey, section = 'all') {
+    return visibleSkills().filter(skill => {
+        if (skillSourceKey(skill) !== sourceKey) return false;
+        if (section === 'enabled') return skill.enabled !== false;
+        if (section === 'disabled') return skill.enabled === false;
+        return true;
+    });
+}
+
+function summarizeSkillGroup(skills) {
+    const list = Array.isArray(skills) ? skills : [];
+    return {
+        total: list.length,
+        enabled: list.filter(skill => skill.enabled !== false).length,
+        disabled: list.filter(skill => skill.enabled === false).length,
+        needsSetup: list.filter(skill => skillSetupStatus(skill).ready === false).length,
+    };
+}
+
+function starterPackCollapsed(defaultCollapsed = true) {
+    if (!Object.prototype.hasOwnProperty.call(skillCatalogState.collapsedSources, '__starter_pack__')) {
+        skillCatalogState.collapsedSources.__starter_pack__ = !!defaultCollapsed;
+    }
+    return skillCatalogState.collapsedSources.__starter_pack__ === true;
+}
+
+function skillSourceBlocks(skills) {
+    const grouped = {};
+    (Array.isArray(skills) ? skills : []).forEach(skill => {
+        const key = skillSourceKey(skill);
+        if (!grouped[key]) {
+            grouped[key] = {
+                key,
+                title: skillSourceLabel(skill),
+                meta: skillSourceMeta(skill),
+                representativePath: skill.path,
+                skills: [],
+            };
+        }
+        grouped[key].skills.push(skill);
+    });
+    return Object.values(grouped).sort((a, b) => {
+        if (a.key === 'Local / Unknown') return -1;
+        if (b.key === 'Local / Unknown') return 1;
+        return a.title.localeCompare(b.title);
+    });
+}
+
+function renderSkillFilterBar(totalSkills) {
+    const sourceOptions = availableSkillSourceKeys();
+    const sourceSelect = '<select class="form-select skill-filter-select" id="skill-source-filter" onchange="setSkillSourceFilter(this.value)">' +
+        '<option value="all"' + (skillCatalogState.sourceFilter === 'all' ? ' selected' : '') + '>All sources</option>' +
+        sourceOptions.map(key => '<option value="' + escA(key) + '"' + (skillCatalogState.sourceFilter === key ? ' selected' : '') + '>' + escH(key) + '</option>').join('') +
+        '</select>';
+    const filters = [
+        ['all', 'All'],
+        ['enabled', 'Enabled'],
+        ['disabled', 'Disabled'],
+        ['needs_setup', 'Needs Setup'],
+        ['ready', 'Ready'],
+    ];
+    let html = '<div class="section-header skill-page-header"><span>' + totalSkills + ' Skills</span><div class="skill-page-actions">';
+    html += '<button class="btn btn-primary" onclick="openSkillInstallModal()">Install Skill</button>';
+    html += '<button class="btn" onclick="navigate(\'channels\')">Open Apps & Integrations</button>';
+    html += '<button class="btn" onclick="navigate(\'env-vars\')">Open Env Vars</button>';
+    html += '</div></div>';
+    html += '<div class="card mb-16"><div class="card-body">';
+    html += '<div class="skill-filter-bar">';
+    html += '<div class="skill-filter-group">' + filters.map(([value, label]) =>
+        '<button class="btn btn-sm ' + (skillCatalogState.statusFilter === value ? 'btn-primary' : '') + '" onclick="setSkillStatusFilter(\'' + escA(value) + '\')">' + escH(label) + '</button>'
+    ).join('') + '</div>';
+    html += '<div class="skill-filter-controls">';
+    html += '<label class="skill-filter-label">Source</label>' + sourceSelect;
+    html += '<div class="search-box skill-search-box"><span class="search-icon">' + UI_ICONS.search + '</span><input type="text" class="form-input" id="skill-search" placeholder="Search skills..." value="' + escA(skillCatalogState.searchQuery) + '" oninput="setSkillSearch(this.value)"></div>';
+    if (skillCatalogState.searchQuery || skillCatalogState.statusFilter !== 'all' || skillCatalogState.sourceFilter !== 'all') {
+        html += '<button class="btn btn-sm" onclick="clearSkillFilters()">Clear Filters</button>';
+    }
+    html += '</div></div></div></div>';
+    return html;
+}
+
+function renderSkillSourceSelectionBar(sourceKey, scopeLabel) {
+    const paths = selectedSkillPathsForSource(sourceKey);
+    if (!paths.length) {
+        return '';
+    }
+    const detail = paths.length + ' selected';
+    return '<div class="card skill-source-selection-bar"><div class="card-body skill-source-selection-body">' +
+        '<div><div class="skill-bulk-title">' + escH(detail) + '</div><div class="text-sm text-secondary">Selection stays inside this block so bulk actions are tied to the repo you are working in.</div></div>' +
+        '<div class="skill-bulk-actions">' +
+            '<button class="btn btn-sm btn-selection" onclick="clearSkillSourceSelection(\'' + escA(sourceKey) + '\')">Clear Selected</button>' +
+            '<button class="btn btn-sm btn-success" onclick="runSelectedSkillAction(\'enable\', \'' + escA(sourceKey) + '\', \'' + escA(scopeLabel || sourceKey) + '\')">Enable Selected</button>' +
+            '<button class="btn btn-sm btn-warning" onclick="runSelectedSkillAction(\'disable\', \'' + escA(sourceKey) + '\', \'' + escA(scopeLabel || sourceKey) + '\')">Disable Selected</button>' +
+            '<button class="btn btn-sm btn-danger" onclick="runSelectedSkillAction(\'remove\', \'' + escA(sourceKey) + '\', \'' + escA(scopeLabel || sourceKey) + '\')">Remove Selected</button>' +
+        '</div>' +
+    '</div></div>';
+}
+
+function collapseToggleLabel(expanded) {
+    return (expanded ? '&#9662; Collapse' : '&#9656; Expand');
+}
+
+function starterPackSelectablePaths(item) {
+    const paths = Array.isArray(item?.matched_skill_paths) ? item.matched_skill_paths : [];
+    return Array.from(new Set(paths.filter(path => path && skillCatalogState.items[path])));
+}
+
+function renderStarterPackBlock(items) {
+    const list = Array.isArray(items) ? items : [];
+    starterPackState.items = {};
+    list.forEach(item => {
+        if (item && item.id) starterPackState.items[item.id] = item;
+    });
+    const collapsed = starterPackCollapsed(list.length === 0);
+    const summary = {
+        total: list.length,
+        needsSetup: list.filter(item => item && item.status === 'attention').length,
+        missing: list.filter(item => item && item.status === 'missing').length,
+    };
+
+    let html = '<div class="card mb-16 skill-source-block skill-source-block-wide starter-pack-block"><div class="card-header skill-source-block-header">';
+    html += '<div><div class="skill-source-block-title">Starter Pack</div><div class="skill-source-block-meta">Recommended starter skills that still need attention. Ready installs move down into their real source blocks.</div></div>';
+    html += '<div class="skill-source-block-summary">';
+    html += '<span class="badge badge-info">' + summary.total + ' items</span>';
+    if (summary.needsSetup) {
+        html += '<span class="badge badge-warning">' + summary.needsSetup + ' need setup</span>';
+    }
+    if (summary.missing) {
+        html += '<span class="badge badge-secondary">' + summary.missing + ' missing</span>';
+    }
+    html += '</div></div><div class="card-body">';
+    html += '<div class="skill-source-block-actions">';
+    html += '<button class="btn btn-sm" onclick="toggleStarterPackCollapsed()">' + collapseToggleLabel(!collapsed) + '</button>';
+    html += '<button class="btn btn-sm" onclick="showStarterPackDetails()">Block Details</button>';
+    html += '</div>';
+    if (!collapsed) {
+        html += renderStarterPackGrid(list);
+    }
+    html += '</div></div>';
+    return html;
+}
+
+function renderSkillSourceBlock(group) {
+    const visibleGroupSkills = sortSkillsStable(group.skills);
+    const summary = summarizeSkillGroup(visibleGroupSkills);
+    const expanded = skillCatalogState.collapsedSources[group.key] !== true;
+    const selectedPaths = selectedSkillPathsForSource(group.key);
+    const allSelected = visibleGroupSkills.length > 0 && visibleGroupSkills.every(skill => isSkillSelected(skill.path));
+    const enabledSkills = visibleGroupSkills.filter(skill => skill.enabled !== false);
+    const disabledSkills = visibleGroupSkills.filter(skill => skill.enabled === false);
+
+    let html = '<div class="card mb-16 skill-source-block"><div class="card-header skill-source-block-header">';
+    html += '<div><div class="skill-source-block-title">' + escH(group.title) + '</div><div class="skill-source-block-meta">' + escH(group.meta) + '</div></div>';
+    html += '<div class="skill-source-block-summary">';
+    html += '<span class="badge badge-info">' + summary.total + ' total</span>';
+    html += '<span class="badge badge-success">' + summary.enabled + ' enabled</span>';
+    if (summary.disabled) {
+        html += '<span class="badge badge-danger">' + summary.disabled + ' disabled</span>';
+    }
+    if (summary.needsSetup) {
+        html += '<span class="badge badge-warning">' + summary.needsSetup + ' need setup</span>';
+    }
+    html += '</div></div>';
+    html += '<div class="card-body">';
+    html += '<div class="skill-source-block-actions">';
+    html += '<button class="btn btn-sm" onclick="toggleSkillSourceCollapsed(\'' + escA(group.key) + '\')">' + collapseToggleLabel(expanded) + '</button>';
+    html += '<button class="btn btn-sm" onclick="showSkillSourceDetails(\'' + escA(group.representativePath) + '\')">Block Details</button>';
+    html += '<button class="btn btn-sm btn-selection" onclick="toggleSkillSourceSelection(\'' + escA(group.key) + '\', ' + (allSelected ? 'false' : 'true') + ')">' + (allSelected ? 'Clear Block' : 'Select Block') + '</button>';
+    html += '</div>';
+    html += renderSkillSourceSelectionBar(group.key, group.title);
+    if (expanded) {
+        html += renderSkillTileSection('Enabled', enabledSkills);
+        html += renderSkillTileSection('Disabled', disabledSkills);
+    }
+    html += '</div></div>';
+    return html;
+}
+
+function renderSkillTileSection(title, skills) {
+    const list = sortSkillsStable(skills);
+    if (!list.length) {
+        return '';
+    }
+    let html = '<div class="skill-subsection">';
+    html += '<div class="skill-subsection-header"><div class="skill-subsection-title">' + escH(title) + '</div><div class="skill-subsection-actions"><span class="badge badge-info">' + list.length + '</span></div></div>';
+    html += '<div class="starter-pack-grid skill-card-grid">';
+    list.forEach(skill => {
+        html += renderSkillTile(skill);
+    });
+    html += '</div></div>';
+    return html;
+}
+
+function renderSkillTile(skill) {
+    const setup = skillSetupStatus(skill);
+    const recent = skillCatalogState.recentPaths[skill.path];
+    const checked = isSkillSelected(skill.path);
+    let html = '<div class="starter-pack-item skill-item-card" data-skill-name="' + escA(skill.name) + '" data-skill-path="' + escA(skill.path) + '" data-skill-search="' + escA(skillSearchText(skill)) + '">';
+    html += '<div class="starter-pack-item-top"><div><div class="skill-name-line"><span class="starter-pack-item-title">' + escH(skill.name) + '</span>' +
+        (recent ? '<span class="badge badge-info">New</span>' : '') + '</div>';
+    if (skill.category) {
+        html += '<div class="starter-pack-item-kind">' + escH(skill.category) + '</div>';
+    } else {
+        html += '<div class="starter-pack-item-kind">Skill</div>';
+    }
+    html += '</div><div class="skill-card-badges">';
+    html += '<span class="badge ' + (skill.enabled !== false ? 'badge-success' : 'badge-danger') + '">' + (skill.enabled !== false ? 'Enabled' : 'Disabled') + '</span>';
+    if (setup.ready) {
+        html += '<span class="badge badge-success">Ready</span>';
+    } else {
+        html += '<span class="badge badge-warning">Needs Setup</span>';
+    }
+    html += '</div></div>';
+    html += '<div class="starter-pack-item-detail">' + escH(skill.description || 'No description provided.') + '</div>';
+    html += '<div class="starter-pack-item-actions skill-card-actions">';
+    html += '<label class="skill-select-toggle"><input type="checkbox" ' + (checked ? 'checked ' : '') + 'onchange="toggleSkillSelection(\'' + escA(skill.path) + '\', this.checked)"><span>Select</span></label>';
+    if (!setup.ready) {
+        html += '<button class="btn btn-sm btn-warning" onclick="showSkillSetupDetails(\'' + escA(skill.path) + '\')">Needs Setup</button>';
+    }
+    html += '<button class="btn btn-sm" onclick="toggleSkill(\'' + escA(skill.path) + '\', \'' + escA(skill.name) + '\')">' + (skill.enabled !== false ? 'Disable' : 'Enable') + '</button>';
+    html += '<button class="btn btn-sm" onclick="showSkillSourceDetails(\'' + escA(skill.path) + '\')">View Source</button>';
+    html += '</div></div>';
+    return html;
+}
+
+function renderSkillsInventory() {
+    const content = document.getElementById('content');
+    if (!content) return;
+
+    const skills = skillCatalogState.list || [];
+    const runtime = skillCatalogState.runtime || {};
+    const policy = skillCatalogState.policy || {};
+    const visible = visibleSkills();
+    const blocks = skillSourceBlocks(visible);
+    const starterPackItems = (runtime.starter_pack || {}).items || [];
+
+    let html = renderSkillFilterBar(skills.length);
+    html += '<div class="card mb-16"><div class="card-body"><p class="text-sm text-secondary">Skills are grouped by where they came from so repo imports stay manageable. <span class="font-mono">Enabled</span> means Hermes can consider a skill on CLI turns. <span class="font-mono">Needs Setup</span> opens exact blockers plus shortcuts to the right setup flow.</p></div></div>';
+    html += '<div class="skills-source-grid">' + renderStarterPackBlock(starterPackItems);
+
+    if (!skills.length) {
+        html += '<div class="empty-state"><div class="empty-icon">' + UI_ICONS.books + '</div><h3>No Skills Found</h3><p>Skills directory is empty or no <span class="font-mono">SKILL.md</span> files were discovered.</p></div>';
+        html += '</div>';
+        content.innerHTML = html;
+        return;
+    }
+
+    if (!visible.length) {
+        html += '<div class="empty-state"><div class="empty-icon">' + UI_ICONS.books + '</div><h3>No Matching Skills</h3><p>Try clearing filters or searching for a different skill name.</p></div>';
+        html += '</div>';
+        content.innerHTML = html;
+        return;
+    }
+
+    html += blocks.map(renderSkillSourceBlock).join('') + '</div>';
+    content.innerHTML = html;
+}
+
+window.setSkillSearch = function (value) {
+    skillCatalogState.searchQuery = String(value || '');
+    clearSelectedSkillsState();
+    renderSkillsInventory();
+};
+
+window.setSkillStatusFilter = function (value) {
+    skillCatalogState.statusFilter = value || 'all';
+    clearSelectedSkillsState();
+    renderSkillsInventory();
+};
+
+window.setSkillSourceFilter = function (value) {
+    skillCatalogState.sourceFilter = value || 'all';
+    clearSelectedSkillsState();
+    renderSkillsInventory();
+};
+
+window.clearSkillFilters = function () {
+    skillCatalogState.searchQuery = '';
+    skillCatalogState.statusFilter = 'all';
+    skillCatalogState.sourceFilter = 'all';
+    clearSelectedSkillsState();
+    renderSkillsInventory();
+};
+
+window.clearSelectedSkills = function () {
+    clearSelectedSkillsState();
+    renderSkillsInventory();
+};
+
+window.toggleSkillSelection = function (path, checked) {
+    if (!path) return;
+    const skill = skillCatalogState.items[path];
+    const sourceKey = skillSourceKey(skill || {});
+    if (checked) {
+        activateSelectionSource(sourceKey);
+        skillCatalogState.selectedPaths[path] = true;
+    } else {
+        delete skillCatalogState.selectedPaths[path];
+        if (!selectedSkillPaths().length) {
+            skillCatalogState.selectedSourceKey = '';
+        }
+    }
+    renderSkillsInventory();
+};
+
+window.toggleSkillSourceSelection = function (sourceKey, checked) {
+    const paths = visibleSkillsForSource(sourceKey).map(skill => skill.path);
+    if (checked) {
+        activateSelectionSource(sourceKey);
+        paths.forEach(path => {
+            skillCatalogState.selectedPaths[path] = true;
+        });
+    } else {
+        paths.forEach(path => {
+            delete skillCatalogState.selectedPaths[path];
+        });
+        if (!selectedSkillPaths().length) {
+            skillCatalogState.selectedSourceKey = '';
+        }
+    }
+    renderSkillsInventory();
+};
+
+window.clearSkillSourceSelection = function (sourceKey) {
+    selectedSkillPathsForSource(sourceKey).forEach(path => {
+        delete skillCatalogState.selectedPaths[path];
+    });
+    if (!selectedSkillPaths().length) {
+        skillCatalogState.selectedSourceKey = '';
+    }
+    renderSkillsInventory();
+};
+
+window.toggleSkillSourceCollapsed = function (sourceKey) {
+    skillCatalogState.collapsedSources[sourceKey] = !(skillCatalogState.collapsedSources[sourceKey] === true);
+    renderSkillsInventory();
+};
+
+window.toggleStarterPackCollapsed = function () {
+    skillCatalogState.collapsedSources.__starter_pack__ = !starterPackCollapsed();
+    renderSkillsInventory();
+};
+
+window.showSkillSourceDetails = function (path) {
+    const skill = skillCatalogState.items[path];
+    if (!skill) {
+        toast('Skill details not found', 'error');
+        return;
+    }
+    const source = skill.source || {};
+    let html = '<div class="card mb-16"><div class="card-header"><span>Installed From</span></div><div class="card-body">';
+    html += '<div class="form-group"><label class="form-label">Display</label><div class="font-mono text-sm">' + escH(skillSourceLabel(skill)) + '</div></div>';
+    if (source.identifier) {
+        html += '<div class="form-group"><label class="form-label">Identifier</label><div class="font-mono text-sm">' + escH(source.identifier) + '</div></div>';
+    }
+    if (source.source_repo) {
+        html += '<div class="form-group"><label class="form-label">Repo</label><div class="font-mono text-sm">' + escH(source.source_repo) + '</div></div>';
+    }
+    if (source.source_path) {
+        html += '<div class="form-group"><label class="form-label">Repo Path</label><div class="font-mono text-sm">' + escH(source.source_path) + '</div></div>';
+    }
+    if (source.catalog_source) {
+        html += '<div class="form-group"><label class="form-label">Catalog</label><div class="text-sm">' + escH(source.catalog_source) + '</div></div>';
+    }
+    html += '<div class="form-group"><label class="form-label">Install Mode</label><div class="text-sm">' + escH(source.install_mode || 'manual/local') + '</div></div>';
+    if (source.recorded_at) {
+        html += '<div class="form-group"><label class="form-label">Recorded</label><div class="text-sm">' + escH(source.recorded_at) + '</div></div>';
+    }
+    html += '</div></div>';
+    showModal(
+        'Skill Source: ' + (skill.name || skill.path),
+        html,
+        '<button class="btn" onclick="closeModal()">Close</button>'
+    );
+};
+
+async function openEnvVarSetup(key, groupHint = '') {
+    const data = await api('GET', '/api/env');
+    envVarsState.vars = data.vars || {};
+    envVarsState.groups = data.groups || {};
+    envVarsState.metadata = data.metadata || {};
+    envVarsState.presets = data.presets || {};
+    envVarsState.groupHelp = data.group_help || {};
+    const meta = envVarMeta(key);
+    envVarsState.activeGroup = groupHint || meta.group || 'Provider';
+    closeModal();
+    if (Object.prototype.hasOwnProperty.call(envVarsState.vars || {}, key)) {
+        editEnvVar(key);
+    } else {
+        addEnvVar(envVarsState.activeGroup, key);
+    }
+}
+
+window.runSkillSetupAction = async function (path, index) {
+    const skill = skillCatalogState.items[path];
+    const setup = skillSetupStatus(skill);
+    const action = setup.actions[index];
+    if (!action) {
+        toast('Setup action not found', 'error');
+        return;
+    }
+    try {
+        if (action.type === 'env_var') {
+            await openEnvVarSetup(action.key, action.group || '');
+            return;
+        }
+        if (action.type === 'screen') {
+            closeModal();
+            navigate(action.screen);
+            return;
+        }
+        toast('Unsupported setup action', 'warning');
+    } catch (e) {
+        toast('Setup action failed: ' + e.message, 'error');
+    }
+};
+
+window.showSkillSetupDetails = function (path) {
+    const skill = skillCatalogState.items[path];
+    if (!skill) {
+        toast('Skill details not found', 'error');
+        return;
+    }
+    const setup = skillSetupStatus(skill);
+    let html = '<p class="text-sm text-secondary mb-16">' + escH(skill.name || skill.path || 'Skill') + '</p>';
+    if (setup.blockers.length) {
+        html += '<div class="card mb-16"><div class="card-header"><span>Still Needed</span></div><div class="card-body"><div class="skill-setup-blocker-list">';
+        setup.blockers.forEach(blocker => {
+            html += '<div class="skill-setup-blocker">';
+            html += '<div class="skill-setup-blocker-title">' + escH(blocker.message || 'Setup needed') + '</div>';
+            if (blocker.kind === 'env_var') {
+                html += '<div class="skill-setup-blocker-detail">Group: ' + escH(blocker.group || 'System') + '</div>';
+            } else if (blocker.kind === 'credential_file') {
+                html += '<div class="skill-setup-blocker-detail">Expected at <span class="font-mono">' + escH(blocker.absolute_path || blocker.path || '') + '</span></div>';
+            } else if (blocker.kind === 'command') {
+                html += '<div class="skill-setup-blocker-detail">Install or expose <span class="font-mono">' + escH(blocker.name || '') + '</span> in your PATH before using this skill.</div>';
+            }
+            html += '</div>';
+        });
+        html += '</div></div></div>';
+    } else {
+        html += '<div class="empty-state"><p>No declared setup blockers were detected for this skill.</p></div>';
+    }
+
+    let footer = '<button class="btn" onclick="closeModal()">Close</button>';
+    setup.actions.forEach((action, index) => {
+        footer += '<button class="btn btn-primary" onclick="runSkillSetupAction(\'' + escA(path) + '\', ' + index + ')">' + escH(action.label || 'Set Up') + '</button>';
+    });
+    footer += '<button class="btn" onclick="showSkillSourceDetails(\'' + escA(path) + '\')">View Source</button>';
+    footer += '<button class="btn" onclick="closeModal(); navigate(\'env-vars\')">Open Env Vars</button>';
+    footer += '<button class="btn" onclick="closeModal(); navigate(\'channels\')">Open Apps & Integrations</button>';
+
+    showModal(
+        'Skill Setup: ' + (skill.name || skill.path),
+        html,
+        footer
+    );
+};
+
+function showSkillInstallResult(identifier, result) {
+    const installed = Array.isArray(result.installed_skill_paths) ? result.installed_skill_paths : [];
+    const alreadyPresent = Array.isArray(result.already_present_paths) ? result.already_present_paths : [];
+    const total = installed.length + alreadyPresent.length;
+    if (!total && result.install_mode !== 'github_repo') {
+        return false;
+    }
+
+    skillCatalogState.recentPaths = {};
+    installed.forEach(path => {
+        skillCatalogState.recentPaths[path] = true;
+    });
+
+    let html = '<p class="text-sm text-secondary mb-16">Install target: <span class="font-mono">' + escH(identifier) + '</span></p>';
+    if (result.install_mode === 'github_repo' && result.fallback && result.fallback.source) {
+        html += '<div class="card mb-16"><div class="card-header"><span>Repo Import</span></div><div class="card-body">';
+        html += '<p class="text-sm text-secondary">Imported every <span class="font-mono">SKILL.md</span> folder discovered in <span class="font-mono">' + escH(result.fallback.source) + '</span>.</p>';
+        html += '</div></div>';
+    }
+    if (installed.length) {
+        html += '<div class="card mb-16"><div class="card-header"><span>Installed Now</span><span class="badge badge-success">' + installed.length + '</span></div><div class="card-body">' +
+            renderSkillInstallPathList(installed) + '</div></div>';
+    }
+    if (alreadyPresent.length) {
+        html += '<div class="card mb-16"><div class="card-header"><span>Already Present</span><span class="badge badge-info">' + alreadyPresent.length + '</span></div><div class="card-body">' +
+            renderSkillInstallPathList(alreadyPresent) + '</div></div>';
+    }
+    if (result.output) {
+        html += '<div class="card"><div class="card-header"><span>Installer Output</span></div><div class="card-body"><pre class="font-mono text-xs" style="max-height:260px;overflow:auto">' + escH(result.output) + '</pre></div></div>';
+    }
+    showModal(
+        'Installed Skills',
+        html,
+        '<button class="btn btn-primary" onclick="closeModal()">Close</button>'
+    );
+    return true;
+}
+
+function describeSkillActionPaths(paths) {
+    const list = Array.isArray(paths) ? paths.filter(Boolean) : [];
+    const sources = Array.from(new Set(list.map(path => skillSourceLabel(skillCatalogState.items[path] || {})))).filter(Boolean);
+    return {
+        count: list.length,
+        sources,
+    };
+}
+
+function confirmSkillBulkAction(action, paths, scopeLabel) {
+    const summary = describeSkillActionPaths(paths);
+    let html = '<p class="text-sm text-secondary mb-16">This will remove ' + summary.count + ' skill' + (summary.count === 1 ? '' : 's') + ' from Hermes.</p>';
+    if (scopeLabel) {
+        html += '<p class="text-sm text-secondary mb-16">Scope: ' + escH(scopeLabel) + '</p>';
+    }
+    if (summary.sources.length) {
+        html += '<div class="card"><div class="card-header"><span>Sources Affected</span></div><div class="card-body"><ul class="plain-list">' +
+            summary.sources.map(source => '<li>' + escH(source) + '</li>').join('') +
+            '</ul></div></div>';
+    }
+    showModal(
+        'Remove Skills',
+        html,
+        '<button class="btn" onclick="closeModal()">Cancel</button>' +
+        '<button class="btn btn-danger" onclick="confirmSkillBulkActionRun(\'' + escA(action) + '\')">Remove from Hermes</button>'
+    );
+    window.__pendingSkillBulkAction = { action, paths };
+}
+
+window.confirmSkillBulkActionRun = async function () {
+    const pending = window.__pendingSkillBulkAction || {};
+    if (!pending.action || !Array.isArray(pending.paths)) {
+        toast('No pending skill action', 'error');
+        return;
+    }
+    closeModal();
+    await runSkillBulkAction(pending.action, pending.paths, '', true);
+    window.__pendingSkillBulkAction = null;
+};
+
+async function runSkillBulkAction(action, paths, scopeLabel = '', skipConfirm = false) {
+    const uniquePaths = Array.from(new Set((Array.isArray(paths) ? paths : []).filter(Boolean)));
+    if (!uniquePaths.length) {
+        toast('No skills selected', 'warning');
+        return;
+    }
+    if (action === 'remove' && !skipConfirm) {
+        confirmSkillBulkAction(action, uniquePaths, scopeLabel);
+        return;
+    }
+    toast((action.charAt(0).toUpperCase() + action.slice(1)) + ' ' + uniquePaths.length + ' skill' + (uniquePaths.length === 1 ? '' : 's') + '...', 'info', 2000);
+    try {
+        const resp = await api('POST', '/api/skills/bulk', { action, paths: uniquePaths });
+        rememberSkills(resp.skills || []);
+        clearSelectedSkillsState();
+        renderSkillsInventory();
+        toast((resp.changed_count || 0) + ' skill' + ((resp.changed_count || 0) === 1 ? '' : 's') + ' updated', 'success');
+    } catch (e) {
+        toast('Bulk action failed: ' + e.message, 'error');
+    }
+}
+
+window.runSelectedSkillAction = async function (action, sourceKey = '', scopeLabel = '') {
+    const paths = sourceKey ? selectedSkillPathsForSource(sourceKey) : selectedSkillPaths();
+    await runSkillBulkAction(action, paths, scopeLabel || 'Selected skills');
+};
 
 function renderStarterPackGrid(items) {
     const list = Array.isArray(items) ? items : [];
@@ -1563,7 +2365,7 @@ function renderStarterPackGrid(items) {
         if (item && item.id) starterPackState.items[item.id] = item;
     });
     if (!list.length) {
-        return '<div class="empty-state"><p>No starter-pack recommendations available right now.</p></div>';
+        return '<div class="empty-state"><p>All recommended starter skills are ready right now. Manage the installed ones in their source blocks below.</p></div>';
     }
     return '<div class="starter-pack-grid">' + list.map(item =>
         '<div class="starter-pack-item">' +
@@ -1573,10 +2375,11 @@ function renderStarterPackGrid(items) {
             '</div>' +
             '<div class="starter-pack-item-kind">' + escH((item.kind || 'runtime').replace(/_/g, ' ')) + '</div>' +
             '<div class="starter-pack-item-detail">' + escH(item.detail || '') + '</div>' +
-            '<div class="starter-pack-item-actions">' +
-                ((item.setup_action && item.setup_action.type === 'env_var')
-                    ? '<button class="btn btn-sm btn-primary" onclick="starterPackRunSetup(\'' + escA(item.id) + '\')">' + escH((item.setup_action || {}).label || 'Set Up') + '</button>'
+            '<div class="starter-pack-item-actions skill-card-actions">' +
+                (starterPackSelectablePaths(item).length
+                    ? '<button class="btn btn-sm" onclick="starterPackShowSource(\'' + escA(item.id) + '\')">' + escH(starterPackSelectablePaths(item).length === 1 ? 'View Source' : 'View Sources') + '</button>'
                     : '') +
+                (starterPackPrimaryAction(item)) +
                 ((item.supports_install && item.install_available !== false)
                     ? '<button class="btn btn-sm btn-primary" onclick="starterPackInstallPrompt(\'' + escA(item.id) + '\')">' + escH(item.install_action_label || 'Install') + '</button>'
                     : '') +
@@ -1587,6 +2390,61 @@ function renderStarterPackGrid(items) {
         '</div>'
     ).join('') + '</div>';
 }
+
+function starterPackPrimaryAction(item) {
+    if (!item) return '';
+    const setupAction = item.setup_action || {};
+    const matchedSkillPaths = Array.isArray(item.matched_skill_paths) ? item.matched_skill_paths : [];
+    const hasSetupFlow = !!(matchedSkillPaths.length || (setupAction && setupAction.type) || (Array.isArray(item.setup_actions) && item.setup_actions.length));
+    if (!hasSetupFlow) {
+        return '';
+    }
+    if (item.kind === 'skill' && item.status === 'ready') {
+        return '';
+    }
+    const label = item.status === 'attention'
+        ? 'Needs Setup'
+        : ((setupAction || {}).label || (item.status === 'missing' ? 'Preview Setup' : 'Set Up'));
+    const btnClass = item.status === 'attention' ? 'btn btn-sm btn-warning' : 'btn btn-sm btn-primary';
+    return '<button class="' + btnClass + '" onclick="starterPackRunSetup(\'' + escA(item.id) + '\')">' + escH(label) + '</button>';
+}
+
+window.showStarterPackDetails = function () {
+    const items = Object.values(starterPackState.items || {});
+    let html = '<p class="text-sm text-secondary mb-16">Starter Pack keeps recommended starter skills that are still missing or still need setup in one place.</p>';
+    html += '<div class="card mb-16"><div class="card-header"><span>How This Block Works</span></div><div class="card-body"><ul class="plain-list">';
+    html += '<li>Starter Pack only shows starter skills that are missing or still need setup.</li>';
+    html += '<li>Ready starter skills disappear from this block and stay manageable in their source blocks below.</li>';
+    html += '<li>Runtime memory and chat apps live outside this block so it stays about real Hermes skills only.</li>';
+    html += '</ul></div></div>';
+    html += '<div class="card"><div class="card-header"><span>Summary</span></div><div class="card-body">';
+    html += '<div class="form-group"><label class="form-label">Items</label><div class="text-sm">' + escH(String(items.length)) + '</div></div>';
+    html += '<div class="form-group"><label class="form-label">Needs Setup</label><div class="text-sm">' + escH(String(items.filter(item => item && item.status === 'attention').length)) + '</div></div>';
+    html += '<div class="form-group"><label class="form-label">Missing</label><div class="text-sm">' + escH(String(items.filter(item => item && item.status === 'missing').length)) + '</div></div>';
+    html += '</div></div>';
+    showModal('Starter Pack Details', html, '<button class="btn btn-primary" onclick="closeModal()">Close</button>');
+};
+
+window.starterPackShowSource = function (itemId) {
+    const item = starterPackState.items[itemId];
+    const paths = starterPackSelectablePaths(item);
+    if (!paths.length) {
+        toast('No starter-pack skill sources found', 'warning');
+        return;
+    }
+    if (paths.length === 1) {
+        showSkillSourceDetails(paths[0]);
+        return;
+    }
+    let html = '<p class="text-sm text-secondary mb-16">This starter-pack item is backed by multiple installed skills.</p>';
+    html += '<div class="card"><div class="card-header"><span>Matched Skills</span></div><div class="card-body"><div class="starter-pack-candidate-list">';
+    paths.forEach(path => {
+        const skill = skillCatalogState.items[path] || {};
+        html += '<div class="starter-pack-candidate"><div class="starter-pack-candidate-top"><div><div class="font-mono text-sm">' + escH(path) + '</div><div class="text-xs text-secondary mt-8">' + escH(skill.description || 'Installed skill') + '</div></div></div><div class="starter-pack-candidate-actions"><button class="btn btn-sm" onclick="closeModal(); showSkillSourceDetails(\'' + escA(path) + '\')">View Source</button></div></div>';
+    });
+    html += '</div></div></div>';
+    showModal(item?.label || 'Starter Pack Sources', html, '<button class="btn btn-primary" onclick="closeModal()">Close</button>');
+};
 
 window.starterPackShowNotes = function (itemId) {
     const item = starterPackState.items[itemId];
@@ -1613,9 +2471,7 @@ window.starterPackShowNotes = function (itemId) {
         item.label || 'Starter Pack Item',
         html,
         '<button class="btn" onclick="closeModal()">Close</button>' +
-        ((item.setup_action && item.setup_action.type === 'env_var')
-            ? '<button class="btn btn-primary" onclick="starterPackRunSetup(\'' + escA(item.id) + '\')">' + escH((item.setup_action || {}).label || 'Set Up') + '</button>'
-            : '') +
+        (starterPackPrimaryAction(item) ? starterPackPrimaryAction(item).replace('btn btn-sm', 'btn') : '') +
         ((item.supports_install && item.install_available !== false)
             ? '<button class="btn btn-primary" onclick="starterPackInstallPrompt(\'' + escA(item.id) + '\')">' + escH(item.install_action_label || 'Install') + '</button>'
             : '')
@@ -1628,13 +2484,35 @@ window.starterPackRunSetup = async function (itemId) {
         toast('Starter-pack item not found', 'error');
         return;
     }
+    const matchedSkillPaths = Array.isArray(item.matched_skill_paths) ? item.matched_skill_paths : [];
+    if (matchedSkillPaths.length && skillCatalogState.items[matchedSkillPaths[0]]) {
+        closeModal();
+        showSkillSetupDetails(matchedSkillPaths[0]);
+        return;
+    }
+    const setupActions = Array.isArray(item.setup_actions) ? item.setup_actions : [];
+    const skillSetupAction = setupActions.find(action => action && action.type === 'skill_setup' && action.path && skillCatalogState.items[action.path]);
+    if (skillSetupAction) {
+        closeModal();
+        showSkillSetupDetails(skillSetupAction.path);
+        return;
+    }
     const action = item.setup_action || {};
+    if (action.type === 'screen' && action.screen) {
+        closeModal();
+        navigate(action.screen);
+        return;
+    }
     if (action.type !== 'env_var' || !action.key) {
         starterPackShowNotes(itemId);
         return;
     }
     closeModal();
     if (action.key === 'OPENAI_API_KEY') {
+        if (action.mode === 'edit' || item.status === 'ready') {
+            editEnvVar('OPENAI_API_KEY');
+            return;
+        }
         showModal(
             action.label || 'Set Up Memory',
             '<p class="text-sm text-secondary mb-16">Hermes already stores memory locally. Adding your OpenAI API key is optional and only turns on stronger OpenAI-backed semantic memory search.</p>' +
@@ -1712,6 +2590,16 @@ window.starterPackInstall = async function (itemId, identifier) {
         });
         closeModal();
         let html = '<p class="text-sm text-secondary mb-16">' + escH((resp.candidate || {}).label || label) + ' installed.</p>';
+        const installed = Array.isArray(resp.installed_skill_paths) ? resp.installed_skill_paths : [];
+        const alreadyPresent = Array.isArray(resp.already_present_paths) ? resp.already_present_paths : [];
+        if (installed.length) {
+            html += '<div class="card mb-16"><div class="card-header"><span>Installed Now</span><span class="badge badge-success">' + installed.length + '</span></div><div class="card-body">' +
+                renderSkillInstallPathList(installed) + '</div></div>';
+        }
+        if (alreadyPresent.length) {
+            html += '<div class="card mb-16"><div class="card-header"><span>Already Present</span><span class="badge badge-info">' + alreadyPresent.length + '</span></div><div class="card-body">' +
+                renderSkillInstallPathList(alreadyPresent) + '</div></div>';
+        }
         const setupNotes = Array.isArray(resp.setup_notes) ? resp.setup_notes : [];
         if (setupNotes.length) {
             html += '<div class="card mb-16"><div class="card-header"><span>Next Steps</span></div><div class="card-body"><ul class="plain-list">' +
@@ -1748,7 +2636,7 @@ function renderRuntimeReadinessCard(runtime, policy) {
             ? 'The CLI skills tool is not enabled for chat sessions.'
             : 'Enabled skills are only available through Hermes CLI turns.'
     ) + '</div></div>';
-    html += '<div class="runtime-readiness-item"><div class="runtime-readiness-label">Integrations</div><div class="runtime-readiness-value">' + escH(String(integrations.configured_count || 0)) + ' configured</div><div class="runtime-readiness-detail">' + escH(
+    html += '<div class="runtime-readiness-item"><div class="runtime-readiness-label">Apps & Integrations</div><div class="runtime-readiness-value">' + escH(String(integrations.configured_count || 0)) + ' configured</div><div class="runtime-readiness-detail">' + escH(
         integrations.configured_count
             ? 'Configured integrations should run through Hermes CLI.'
             : 'No Discord, WhatsApp, Slack, Telegram, Matrix, or webhook integrations are configured yet.'
@@ -1773,62 +2661,31 @@ Screens.skills = async function () {
             api('GET', '/api/skills'),
             api('GET', '/api/chat/status').catch(() => ({})),
         ]);
-        const skills = data.skills || [];
-        const runtime = status.runtime || {};
-        const policy = status.transport_policy || {};
-        let html = '<div class="section-header"><span>' + skills.length + ' Skills</span><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn btn-primary" onclick="openSkillInstallModal()">Install Skill</button><div class="search-box"><span class="search-icon">' + UI_ICONS.search + '</span><input type="text" class="form-input" id="skill-search" placeholder="Search skills..." oninput="filterSkills()"></div></div></div>';
-        html += '<div class="card mb-16"><div class="card-header"><span>Starter Pack</span><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-sm" onclick="navigate(\'channels\')">Open Integrations</button><button class="btn btn-sm" onclick="navigate(\'env-vars\')">Open Env Vars</button></div></div><div class="card-body">';
-        html += '<p class="text-sm text-secondary mb-16">Safe-route defaults for everyday use. Missing items are shown here so you can decide what to add next without auto-installing anything behind your back.</p>';
-        if (policy.reason) {
-            html += '<p class="text-sm text-secondary mb-16">' + escH(policy.reason) + '</p>';
-        }
-        html += renderStarterPackGrid((runtime.starter_pack || {}).items || []);
-        html += '</div></div>';
-
-        const categories = {};
-        skills.forEach(s => { const cat = s.category || 'general'; if (!categories[cat]) categories[cat] = []; categories[cat].push(s); });
-
-        if (skills.length === 0) {
-            html += '<div class="empty-state"><div class="empty-icon">' + UI_ICONS.books + '</div><h3>No Skills Found</h3><p>Skills directory is empty or no SKILL.md files found.</p></div>';
-        } else {
-            for (const [cat, catSkills] of Object.entries(categories)) {
-                html += '<div class="card mb-16"><div class="card-header"><span>' + escH(cat) + '</span><span class="badge badge-info">' + catSkills.length + '</span></div>';
-                html += '<div class="table-container"><table class="table skill-table"><thead><tr><th>Name</th><th>Description</th><th style="width:100px">Status</th></tr></thead><tbody>';
-                catSkills.forEach(s => {
-                    html += '<tr data-skill-name="' + escA(s.name) + '" data-skill-search="' + escA((s.name + ' ' + s.description + ' ' + (s.category || '')).toLowerCase()) + '">';
-                    html += '<td class="font-mono text-sm">' + escH(s.name) + '</td>';
-                    html += '<td class="text-sm">' + escH(s.description || '') + '</td>';
-                    html += '<td><span class="badge ' + (s.enabled !== false ? 'badge-success' : 'badge-danger') + '" style="cursor:pointer" onclick="toggleSkill(\'' + escA(s.name) + '\')">' + (s.enabled !== false ? 'Enabled' : 'Disabled') + '</span></td></tr>';
-                });
-                html += '</tbody></table></div></div>';
-            }
-        }
-        content.innerHTML = html;
+        rememberSkills(data.skills || []);
+        skillCatalogState.runtime = status.runtime || {};
+        skillCatalogState.policy = status.transport_policy || {};
+        renderSkillsInventory();
     } catch (e) {
         content.innerHTML = '<div class="empty-state"><div class="empty-icon">\u26a0\ufe0f</div><h3>Error</h3><p>' + escH(e.message) + '</p></div>';
     }
 };
 
-window.filterSkills = function () {
-    const q = (document.getElementById('skill-search')?.value || '').toLowerCase();
-    document.querySelectorAll('.skill-table tr[data-skill-search]').forEach(tr => {
-        tr.style.display = tr.dataset.skillSearch.includes(q) ? '' : 'none';
-    });
-};
-
-window.toggleSkill = async function (name) {
-    toast('Toggling ' + name + '...', 'info', 1500);
+window.toggleSkill = async function (path, label) {
+    const skillLabel = label || path;
+    toast('Toggling ' + skillLabel + '...', 'info', 1500);
     try {
-        const r = await api('POST', '/api/skills/' + name + '/toggle');
-        toast(name + ': ' + (r.enabled ? 'Enabled' : 'Disabled'), 'success');
-        Screens.skills();
+        const encodedPath = String(path || '').split('/').map(part => encodeURIComponent(part)).join('/');
+        const r = await api('POST', '/api/skills/' + encodedPath + '/toggle');
+        toast(skillLabel + ': ' + (r.enabled ? 'Enabled' : 'Disabled'), 'success');
+        await Screens.skills();
     } catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 
 window.openSkillInstallModal = function () {
     showModal(
         'Install Skill',
-        '<p class="text-sm text-secondary mb-16">Paste a Hermes skill identifier exactly the way you would use it in the CLI. GitHub repos such as <span class="font-mono">wondelai/skills</span> work here, and so do registry targets like <span class="font-mono">skills-sh/steipete/clawdis/weather</span>.</p>' +
+        '<p class="text-sm text-secondary mb-12">Paste a Hermes skill identifier exactly the way you would use it in the CLI.</p>' +
+        '<p class="text-sm text-secondary mb-16">Use <span class="font-mono">skills-sh/steipete/clawdis/weather</span> for a single registry skill, or <span class="font-mono">wondelai/skills</span> to import every skill folder discovered in that GitHub repo.</p>' +
         '<div class="form-group"><label class="form-label">Skill Identifier</label>' + inputH('skill-install-identifier', '', 'text', 'wondelai/skills') + '</div>',
         '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="installSkillFromModal()">Install</button>'
     );
@@ -1842,10 +2699,20 @@ window.installSkillFromModal = async function () {
     }
     toast('Installing ' + identifier + '...', 'info', 2500);
     try {
-        await api('POST', '/api/skills/install', { identifier });
+        const result = await api('POST', '/api/skills/install', { identifier });
         closeModal();
-        toast('Skill installed: ' + identifier, 'success');
-        Screens.skills();
+        const openedResult = showSkillInstallResult(identifier, result);
+        const installedCount = (result.installed_skill_paths || []).length;
+        const skippedCount = (result.already_present_paths || []).length;
+        if (result.install_mode === 'github_repo' && result.fallback) {
+            const summary = [];
+            if (installedCount) summary.push(installedCount + ' installed');
+            if (skippedCount) summary.push(skippedCount + ' already present');
+            toast('Imported from GitHub: ' + identifier + (summary.length ? ' (' + summary.join(', ') + ')' : ''), 'success', 5000);
+        } else if (!openedResult) {
+            toast('Skill installed: ' + identifier, 'success');
+        }
+        await Screens.skills();
     } catch (e) {
         toast('Install failed: ' + e.message, 'error');
     }
@@ -1864,14 +2731,14 @@ Screens.channels = async function () {
         const policy = status.transport_policy || {};
         let html = renderRuntimeReadinessCard(runtime, policy);
         html += '<div class="card mb-16"><div class="card-body">';
-        html += '<p class="text-sm text-secondary mb-16">This screen edits Hermes integration config directly. Top-level sections like <span class="font-mono">discord</span> and <span class="font-mono">whatsapp</span> appear here, while Hooks remains a separate editor for the raw <span class="font-mono">hooks</span> block.</p>';
+        html += '<p class="text-sm text-secondary mb-16">This screen edits Hermes app and integration config directly. Top-level sections like <span class="font-mono">discord</span> and <span class="font-mono">whatsapp</span> appear here, while Hooks remains a separate editor for the raw <span class="font-mono">hooks</span> block.</p>';
         html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
         html += '<button class="btn" onclick="navigate(\'hooks\')">Open Hooks</button>';
         html += '<button class="btn" onclick="navigate(\'skills\')">Open Skills</button>';
         html += '<button class="btn" onclick="navigate(\'env-vars\')">Open Env Vars</button>';
         html += '</div></div></div>';
         if (channels.length === 0) {
-            html += '<div class="empty-state"><div class="empty-icon">' + UI_ICONS.speechBubble + '</div><h3>No Integrations</h3><p>No Discord, WhatsApp, Slack, Telegram, Matrix, or webhook integrations were found in your Hermes config.</p></div>';
+            html += '<div class="empty-state"><div class="empty-icon">' + UI_ICONS.speechBubble + '</div><h3>No Apps or Integrations</h3><p>No Discord, WhatsApp, Slack, Telegram, Matrix, or webhook integrations were found in your Hermes config.</p></div>';
             content.innerHTML = html;
             return;
         }
