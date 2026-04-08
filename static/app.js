@@ -1453,8 +1453,8 @@ function renderStarterPackGrid(items) {
             '<div class="starter-pack-item-kind">' + escH((item.kind || 'runtime').replace(/_/g, ' ')) + '</div>' +
             '<div class="starter-pack-item-detail">' + escH(item.detail || '') + '</div>' +
             '<div class="starter-pack-item-actions">' +
-                ((item.supports_install && item.status === 'missing')
-                    ? '<button class="btn btn-sm btn-primary" onclick="starterPackInstallPrompt(\'' + escA(item.id) + '\')">Install</button>'
+                ((item.supports_install && item.install_available !== false)
+                    ? '<button class="btn btn-sm btn-primary" onclick="starterPackInstallPrompt(\'' + escA(item.id) + '\')">' + escH(item.install_action_label || 'Install') + '</button>'
                     : '') +
                 ((Array.isArray(item.setup_notes) && item.setup_notes.length)
                     ? '<button class="btn btn-sm" onclick="starterPackShowNotes(\'' + escA(item.id) + '\')">' + (item.status === 'missing' ? 'Preview Setup' : 'Setup Notes') + '</button>'
@@ -1489,8 +1489,8 @@ window.starterPackShowNotes = function (itemId) {
         item.label || 'Starter Pack Item',
         html,
         '<button class="btn" onclick="closeModal()">Close</button>' +
-        ((item.supports_install && item.status === 'missing')
-            ? '<button class="btn btn-primary" onclick="starterPackInstallPrompt(\'' + escA(item.id) + '\')">Install</button>'
+        ((item.supports_install && item.install_available !== false)
+            ? '<button class="btn btn-primary" onclick="starterPackInstallPrompt(\'' + escA(item.id) + '\')">' + escH(item.install_action_label || 'Install') + '</button>'
             : '')
     );
 };
@@ -2215,7 +2215,27 @@ function chatRenderTransportControls() {
     ).join('');
     let note = chatTransportDescription(current);
     if (!chatState.transportPolicy.requiresCli && current !== 'cli') {
-        note += ' Hermes skills require CLI.';
+        const activeCliFeatures = Array.isArray(chatState.runtimeStatus?.active_features)
+            ? chatState.runtimeStatus.active_features.filter(Boolean)
+            : [];
+        if (activeCliFeatures.length) {
+            const labels = activeCliFeatures.map(feature => {
+                if (feature === 'memory') return 'memory';
+                if (feature === 'skills') return 'skills';
+                if (feature === 'integrations') return 'integrations';
+                if (feature === 'hooks') return 'hooks';
+                return String(feature || '').trim();
+            }).filter(Boolean);
+            const uniqueLabels = [...new Set(labels)];
+            const labelText = uniqueLabels.length === 1
+                ? uniqueLabels[0]
+                : uniqueLabels.length === 2
+                    ? uniqueLabels[0] + ' and ' + uniqueLabels[1]
+                    : uniqueLabels.slice(0, -1).join(', ') + ', and ' + uniqueLabels[uniqueLabels.length - 1];
+            note += ' Hermes ' + labelText + ' ' + (uniqueLabels.length === 1 ? 'only runs' : 'only run') + ' through CLI when you want ' + (uniqueLabels.length === 1 ? 'it' : 'them') + '.';
+        } else {
+            note += ' Hermes skills require CLI.';
+        }
     }
     if (chatState.currentSessionId && chatState.currentTransport && current !== chatState.currentTransport) {
         note += ' Next turn preference: ' + chatTransportPreferenceLabel(current) + '.';

@@ -362,6 +362,49 @@ required_credential_files:
         self.assertIn("missing credential file google_token.json", google["issues"])
         self.assertTrue(any(candidate["identifier"] == "skills-sh/steipete/clawdis/gog" for candidate in google["install_candidates"]))
 
+    def test_chat_runtime_status_keeps_optional_cli_features_from_forcing_cli(self):
+        raw = {
+            "memory": {"memory_enabled": True, "user_profile_enabled": True},
+            "platform_toolsets": {"cli": ["memory", "skills"]},
+            "discord": {"require_mention": True},
+        }
+        skills = [{
+            "name": "weather",
+            "path": "weather",
+            "enabled": True,
+            "frontmatter": {},
+        }]
+
+        runtime = mod._chat_runtime_status(raw=raw, skills=skills)
+
+        self.assertFalse(runtime["requires_cli"])
+        self.assertEqual(runtime["cli_reason"], "")
+        self.assertEqual(runtime["active_features"], ["memory", "skills", "integrations"])
+        self.assertEqual(runtime["blocking_features"], [])
+        self.assertIn("Hermes memory is enabled for chat sessions.", runtime["reasons"])
+        self.assertIn("1 Hermes skill is enabled.", runtime["reasons"])
+
+    def test_starter_pack_summary_install_stays_available_when_builtins_cover_it(self):
+        raw = {
+            "memory": {"memory_enabled": False},
+            "platform_toolsets": {"cli": ["skills"]},
+        }
+        skills = [
+            {"name": "youtube-content", "path": "media/youtube-content", "enabled": True, "frontmatter": {}},
+            {"name": "ocr-and-documents", "path": "productivity/ocr-and-documents", "enabled": True, "frontmatter": {}},
+            {"name": "arxiv", "path": "research/arxiv", "enabled": True, "frontmatter": {}},
+        ]
+
+        runtime = mod._chat_runtime_status(raw=raw, skills=skills)
+
+        items = {item["id"]: item for item in runtime["starter_pack"]["items"]}
+        summaries = items["summaries"]
+        self.assertEqual(summaries["status"], "ready")
+        self.assertEqual(summaries["matches"], ["youtube-content", "ocr-and-documents"])
+        self.assertTrue(summaries["install_available"])
+        self.assertEqual(summaries["install_action_label"], "Install Recommended")
+        self.assertFalse(summaries["installed_candidates"])
+
     def test_parse_sidecar_payload_extracts_embedded_json_and_normalizes_lists(self):
         raw = """
 The screenshot shows a test page. Here is the structured summary:
@@ -1171,6 +1214,27 @@ Sidecar output:
         session = created.get_json()["session"]
         self.assertEqual(session["transport_preference"], "cli")
         self.assertEqual(session["transport_notice"], "Hermes CLI is required because memory and skills are active.")
+
+    def test_validated_transport_preference_allows_api_when_only_optional_cli_features_exist(self):
+        raw = {
+            "memory": {"memory_enabled": True, "user_profile_enabled": True},
+            "platform_toolsets": {"cli": ["memory", "skills"]},
+            "discord": {"require_mention": True},
+        }
+        skills = [{
+            "name": "weather",
+            "path": "weather",
+            "enabled": True,
+            "frontmatter": {},
+        }]
+
+        with patch.object(mod.cfg, "get_raw", return_value=raw), \
+             patch.object(mod, "_discover_skill_entries", return_value=skills), \
+             patch.object(mod, "_check_api_server", return_value=True):
+            preference, notice = mod._validated_transport_preference("api")
+
+        self.assertEqual(preference, "api")
+        self.assertEqual(notice, "")
 
     def test_chat_request_forces_cli_when_runtime_requires_it(self):
         runtime = runtime_status_stub(

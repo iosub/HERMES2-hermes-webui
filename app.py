@@ -3634,13 +3634,26 @@ def _configured_hook_keys(raw: dict | None = None) -> list[str]:
 
 
 def _skill_matches_terms(skill: dict, terms: tuple[str, ...]) -> bool:
-    haystack = " ".join([
-        str(skill.get("name") or ""),
-        str(skill.get("path") or ""),
-        str(skill.get("description") or ""),
-        str(skill.get("category") or ""),
-    ]).lower()
-    return any(term in haystack for term in terms)
+    needles = {
+        str(term or "").strip().lower()
+        for term in terms or ()
+        if str(term or "").strip()
+    }
+    if not needles:
+        return False
+
+    haystack = set()
+    for value in (
+        skill.get("name"),
+        skill.get("path"),
+        ((skill.get("frontmatter") or {}).get("name") if isinstance(skill.get("frontmatter"), dict) else ""),
+    ):
+        text = str(value or "").strip().lower().replace("\\", "/")
+        if not text:
+            continue
+        haystack.add(text)
+        haystack.update(part for part in text.split("/") if part)
+    return bool(haystack & needles)
 
 
 def _joined_labels(values: list[str]) -> str:
@@ -3727,6 +3740,19 @@ def _starter_pack_install_candidates(group: dict) -> list[dict]:
     return [candidate for candidate in candidates if candidate.get("identifier")]
 
 
+def _starter_pack_candidate_matches_enabled_skill(candidate: dict, enabled_skills: list[dict]) -> bool:
+    terms = set()
+    for value in (candidate.get("identifier"), candidate.get("label")):
+        text = str(value or "").strip().lower().replace("\\", "/")
+        if not text:
+            continue
+        terms.add(text)
+        terms.update(part for part in text.split("/") if part)
+    if not terms:
+        return False
+    return any(_skill_matches_terms(skill, tuple(terms)) for skill in enabled_skills)
+
+
 def _starter_pack_item_from_group(group: dict, enabled_skills: list[dict]) -> dict:
     terms = tuple(str(term).lower() for term in group.get("terms") or ())
     matches = [
@@ -3734,6 +3760,12 @@ def _starter_pack_item_from_group(group: dict, enabled_skills: list[dict]) -> di
         if _skill_matches_terms(skill, terms)
     ]
     install_candidates = _starter_pack_install_candidates(group)
+    installed_candidates = [
+        candidate for candidate in install_candidates
+        if _starter_pack_candidate_matches_enabled_skill(candidate, enabled_skills)
+    ]
+    install_available = bool(install_candidates) and not bool(installed_candidates)
+    install_action_label = "Install" if not matches else "Install Recommended"
     match_names = [str(skill.get("name") or skill.get("path") or "").strip() for skill in matches]
     readiness_checks = [_skill_setup_readiness(skill) for skill in matches]
     readiness_issues = []
@@ -3757,6 +3789,12 @@ def _starter_pack_item_from_group(group: dict, enabled_skills: list[dict]) -> di
         detail = group.get("description", "").strip() + " Not installed yet."
         ready = False
 
+    if matches and install_available:
+        preferred_candidate = next((candidate for candidate in install_candidates if candidate.get("recommended")), None)
+        preferred_label = str((preferred_candidate or install_candidates[0]).get("label") or "").strip()
+        if preferred_label:
+            detail = detail.rstrip(".") + f". The recommended {preferred_label} starter-pack install is still available."
+
     return {
         "id": group.get("id"),
         "label": group.get("label"),
@@ -3767,6 +3805,9 @@ def _starter_pack_item_from_group(group: dict, enabled_skills: list[dict]) -> di
         "matches": match_names,
         "query": str(group.get("query") or "").strip(),
         "install_candidates": install_candidates,
+        "installed_candidates": installed_candidates,
+        "install_available": install_available,
+        "install_action_label": install_action_label,
         "setup_notes": [str(note).strip() for note in (group.get("setup_notes") or []) if str(note).strip()],
         "supports_install": bool(install_candidates),
         "issues": readiness_issues,
@@ -3816,6 +3857,7 @@ def _chat_runtime_status(raw: dict | None = None, *, skills: list[dict] | None =
 
     active_features = []
     reasons = []
+    blocking_features = []
     if memory.get("enabled") and memory.get("cli_tool_enabled"):
         active_features.append("memory")
         reasons.append("Hermes memory is enabled for chat sessions.")
@@ -3830,12 +3872,13 @@ def _chat_runtime_status(raw: dict | None = None, *, skills: list[dict] | None =
     if hook_keys:
         active_features.append("hooks")
         reasons.append(f"Hooks are configured: {_joined_labels(hook_keys)}.")
+        blocking_features.append("hooks")
 
-    requires_cli = bool(active_features)
+    requires_cli = bool(blocking_features)
     if requires_cli:
-        cli_reason = "Hermes CLI is required because " + _joined_labels(active_features) + " " + (
+        cli_reason = "Hermes CLI is required because " + _joined_labels(blocking_features) + " " + (
             "is active."
-            if len(active_features) == 1
+            if len(blocking_features) == 1
             else "are active."
         )
     else:
@@ -3887,6 +3930,7 @@ def _chat_runtime_status(raw: dict | None = None, *, skills: list[dict] | None =
         "cli_reason": cli_reason,
         "reasons": reasons,
         "active_features": active_features,
+        "blocking_features": blocking_features,
         "memory": memory,
         "skills": {
             "detected_count": len(skills),
