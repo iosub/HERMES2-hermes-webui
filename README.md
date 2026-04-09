@@ -94,6 +94,8 @@ If direct update is not supported, the UI shows the exact manual command to run 
 - [Usage Guide](docs/USAGE.md)
 - [Configuration Reference](docs/CONFIG.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security Policy](SECURITY.md)
 - [Deployment Notes](DEPLOYMENT_READY.md)
 - [Changelog](CHANGELOG.md)
 
