@@ -11,6 +11,7 @@ import re
 import copy
 import json
 import hashlib
+import shlex
 import shutil
 import mimetypes
 import subprocess
@@ -18,6 +19,7 @@ import signal
 import time
 import logging
 import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from functools import wraps
@@ -111,26 +113,30 @@ def _runtime_env_source(key: str, allow_repo_env: bool = True) -> str:
     return ""
 
 HERMES_HOME = Path.home() / ".hermes"
+HERMES_REPO_DIR = HERMES_HOME / "hermes-agent"
 CONFIG_PATH = HERMES_HOME / "config.yaml"
 ENV_PATH = HERMES_HOME / ".env"
 SKILLS_DIR = HERMES_HOME / "skills"
 
 # Hermes executable - try current install locations with fallback
 def _find_hermes_bin():
-    # Prefer HERMES_HOME/.venv (the explicitly managed venv) over PATH,
-    # to avoid picking up an older pipx-installed hermes
+    # Align with the current Hermes installer layout:
+    # ~/.hermes/hermes-agent/venv/bin/hermes (plus ~/.local/bin/hermes on PATH).
+    # Keep the legacy ~/.hermes/.venv layout as a last-resort fallback.
     import shutil as _shutil
     candidates = [
-        HERMES_HOME / ".venv" / "bin" / "hermes",   # v0.6+ (explicitly managed)
-        Path.home() / ".local" / "bin" / "hermes",  # pipx user install
-        _shutil.which("hermes") or Path.home() / ".local" / "bin" / "hermes",
-        HERMES_HOME / "hermes-agent" / "venv" / "bin" / "hermes",  # legacy
+        os.environ.get("HERMES_WEBUI_HERMES_BIN"),
+        os.environ.get("HERMES_BIN"),
+        HERMES_REPO_DIR / "venv" / "bin" / "hermes",
+        Path.home() / ".local" / "bin" / "hermes",
+        _shutil.which("hermes"),
+        HERMES_HOME / ".venv" / "bin" / "hermes",
     ]
     for path in candidates:
         candidate = Path(path).expanduser() if path else None
         if candidate and candidate.exists():
             return candidate
-    return candidates[0]
+    return HERMES_REPO_DIR / "venv" / "bin" / "hermes"
 
 HERMES_BIN = _find_hermes_bin()
 SESSIONS_DIR = HERMES_HOME / "sessions"
@@ -170,9 +176,32 @@ CHAT_FOLDER_SOURCE_DIR = CHAT_DATA_DIR / "sources"
 CHAT_FOLDER_SOURCE_DIR.mkdir(exist_ok=True)
 CRON_JOBS_PATH = APP_ROOT / "run" / "cron_jobs.json"
 CRON_JOB_MARKER = "hermes-web-ui-job"
+HERMES_UPDATE_CACHE_SECONDS = max(
+    60,
+    int(_runtime_env_value("HERMES_WEBUI_UPDATE_CACHE_SECONDS", "600")),
+)
+HERMES_UPDATE_LOG_LINE_LIMIT = max(
+    80,
+    int(_runtime_env_value("HERMES_WEBUI_UPDATE_LOG_LINES", "400")),
+)
 
 chat_sessions: dict = {}  # runtime cache: sid -> session dict
 chat_folders: dict = {}  # runtime cache: folder_id -> folder dict
+hermes_update_cache: dict = {}  # cache_key -> {"ts": float, "payload": dict}
+hermes_update_cache_lock = threading.Lock()
+hermes_update_runtime_lock = threading.Lock()
+hermes_update_runtime = {
+    "status": "",
+    "started_at": "",
+    "finished_at": "",
+    "returncode": None,
+    "error": "",
+    "summary": "",
+    "logs": [],
+    "install_key": "",
+    "installed_version_before": "",
+    "installed_version_after": "",
+}
 
 CHAT_TRANSPORT_CLI = "cli"
 CHAT_TRANSPORT_API = "api"
@@ -3490,16 +3519,143 @@ def _apply_skill_capability(data: dict | None, preview_token: str) -> tuple[dict
     }, 200
 
 
-def _run_hermes(*args, timeout: int = 30) -> subprocess.CompletedProcess:
-    """Run a hermes CLI command and return the CompletedProcess."""
+OFFICIAL_HERMES_REPO_URLS = {
+    "https://github.com/NousResearch/hermes-agent.git",
+    "https://github.com/NousResearch/hermes-agent",
+    "git@github.com:NousResearch/hermes-agent.git",
+    "git@github.com:NousResearch/hermes-agent",
+}
+OFFICIAL_HERMES_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
+HERMES_REINSTALL_COMMAND = (
+    "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
+)
+
+
+def _utc_now_z() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _read_gateway_pid_record() -> dict:
+    pid_file = HERMES_HOME / "gateway.pid"
+    if not pid_file.exists():
+        return {}
+    try:
+        raw = pid_file.read_text(encoding="utf-8").strip()
+    except Exception:
+        return {}
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        return payload
+    if raw.isdigit():
+        return {"pid": int(raw)}
+    return {"raw": raw}
+
+
+def _gateway_pid_record_is_live(record: dict) -> bool:
+    pid = record.get("pid")
+    return isinstance(pid, int) and _is_process_alive(pid)
+
+
+def _candidate_hermes_bins() -> list[dict]:
+    candidates = []
+    seen = set()
+
+    def _add(raw_path, source: str):
+        if not raw_path:
+            return
+        try:
+            path = Path(raw_path).expanduser()
+        except Exception:
+            return
+        if not path.exists():
+            return
+        try:
+            resolved = path.resolve(strict=False)
+        except Exception:
+            resolved = path
+        key = str(resolved)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append({
+            "path": path,
+            "resolved_path": resolved,
+            "source": source,
+        })
+
+    gateway_record = _read_gateway_pid_record()
+    argv = gateway_record.get("argv") if _gateway_pid_record_is_live(gateway_record) else None
+
+    _add(os.environ.get("HERMES_WEBUI_HERMES_BIN"), "env_override")
+    _add(os.environ.get("HERMES_BIN"), "env_hint")
+    _add(HERMES_REPO_DIR / "venv" / "bin" / "hermes", "managed_repo")
+    _add(Path.home() / ".local" / "bin" / "hermes", "user_local_bin")
+    _add(shutil.which("hermes"), "path_lookup")
+    _add(HERMES_BIN, "webui_default")
+    if isinstance(argv, list) and argv:
+        _add(argv[0], "active_gateway")
+    _add(HERMES_HOME / ".venv" / "bin" / "hermes", "legacy_home_venv")
+    return candidates
+
+
+def _selected_hermes_candidate() -> dict:
+    candidates = _candidate_hermes_bins()
+    if candidates:
+        return candidates[0]
+    fallback = Path(HERMES_BIN).expanduser()
+    try:
+        resolved = fallback.resolve(strict=False)
+    except Exception:
+        resolved = fallback
+    return {
+        "path": fallback,
+        "resolved_path": resolved,
+        "source": "fallback",
+    }
+
+
+def _selected_hermes_bin() -> Path:
+    return _selected_hermes_candidate()["path"]
+
+
+def _selection_reason_for_candidate(source: str) -> str:
+    if source == "active_gateway":
+        return f"Using the live gateway binary recorded in {HERMES_HOME / 'gateway.pid'}."
+    if source == "env_override":
+        return "Using the Hermes binary path from HERMES_WEBUI_HERMES_BIN."
+    if source == "env_hint":
+        return "Using the Hermes binary path from HERMES_BIN."
+    if source == "managed_repo":
+        return f"Using the repo-managed Hermes install under {HERMES_REPO_DIR}."
+    if source == "legacy_home_venv":
+        return f"Using the Hermes venv rooted at {HERMES_HOME}."
+    if source == "user_local_bin":
+        return "Using the Hermes launcher from ~/.local/bin."
+    if source == "path_lookup":
+        return "Using the Hermes binary found on PATH."
+    return "Using the default Hermes binary configured for Hermes Web UI."
+
+
+def _run_hermes_with_bin(bin_path: Path, *args, timeout: int = 30, cwd: Path | None = None) -> subprocess.CompletedProcess:
     env = {**os.environ, "NO_COLOR": "1"}
     return subprocess.run(
-        [str(HERMES_BIN)] + list(args),
+        [str(bin_path)] + list(args),
         capture_output=True,
         text=True,
         timeout=timeout,
         env=env,
+        cwd=str(cwd) if cwd else None,
     )
+
+
+def _run_hermes(*args, timeout: int = 30) -> subprocess.CompletedProcess:
+    """Run a hermes CLI command with the currently managed Hermes binary."""
+    return _run_hermes_with_bin(_selected_hermes_bin(), *args, timeout=timeout)
 
 
 def _combined_process_output(result: subprocess.CompletedProcess) -> str:
@@ -3508,6 +3664,601 @@ def _combined_process_output(result: subprocess.CompletedProcess) -> str:
         for part in (result.stdout, result.stderr)
         if part and part.strip()
     ).strip()
+
+
+def _first_output_line(*parts) -> str:
+    for part in parts:
+        text = str(part or "").strip()
+        if not text:
+            continue
+        return text.splitlines()[0].strip()
+    return ""
+
+
+def _build_version_display(version: str = "", release_date: str = "") -> str:
+    version = str(version or "").strip()
+    release_date = str(release_date or "").strip()
+    if version and release_date:
+        return f"Hermes Agent v{version} ({release_date})"
+    if version:
+        return f"Hermes Agent v{version}"
+    return "Unknown"
+
+
+def _parse_hermes_version_output(raw_output: str) -> dict:
+    lines = [line.strip() for line in str(raw_output or "").splitlines() if line.strip()]
+    first_line = lines[0] if lines else ""
+    match = re.search(r"Hermes Agent v?([^\s]+)(?: \(([^)]+)\))?", first_line)
+    project_root = ""
+    python_version = ""
+    openai_sdk = ""
+    update_hint = ""
+    for line in lines[1:]:
+        if line.startswith("Project:"):
+            project_root = line.split(":", 1)[1].strip()
+        elif line.startswith("Python:"):
+            python_version = line.split(":", 1)[1].strip()
+        elif line.startswith("OpenAI SDK:"):
+            openai_sdk = line.split(":", 1)[1].strip()
+        elif line.lower() == "up to date" or line.lower().startswith("update available:"):
+            update_hint = line
+    version = match.group(1).strip() if match else ""
+    release_date = match.group(2).strip() if match and match.group(2) else ""
+    return {
+        "raw": str(raw_output or "").strip(),
+        "display": _build_version_display(version, release_date) if match else first_line or "Unknown",
+        "version": version,
+        "release_date": release_date,
+        "project_root": project_root,
+        "python_version": python_version,
+        "openai_sdk": openai_sdk,
+        "update_hint": update_hint,
+        "first_line": first_line,
+    }
+
+
+def _extract_version_from_git_init(raw_text: str) -> dict:
+    version_match = re.search(r'__version__\s*=\s*"([^"]+)"', str(raw_text or ""))
+    release_match = re.search(r'__release_date__\s*=\s*"([^"]+)"', str(raw_text or ""))
+    version = version_match.group(1).strip() if version_match else ""
+    release_date = release_match.group(1).strip() if release_match else ""
+    return {
+        "version": version,
+        "release_date": release_date,
+        "display": _build_version_display(version, release_date),
+    }
+
+
+def _classify_update_scope(availability_status: str, installed: dict, repo_state: dict) -> str:
+    if availability_status == "up_to_date":
+        return "current"
+    if availability_status != "update_available":
+        return "unknown"
+
+    behind_commits = (repo_state or {}).get("behind_commits")
+    if not isinstance(behind_commits, int) or behind_commits <= 0:
+        return "unknown"
+
+    latest = (repo_state or {}).get("latest_version") or {}
+    installed_version = str((installed or {}).get("version") or "").strip()
+    installed_release_date = str((installed or {}).get("release_date") or "").strip()
+    latest_version = str(latest.get("version") or "").strip()
+    latest_release_date = str(latest.get("release_date") or "").strip()
+
+    same_version = bool(installed_version and latest_version and installed_version == latest_version)
+    same_release_date = bool(
+        installed_release_date and latest_release_date and installed_release_date == latest_release_date
+    )
+    if same_version and (not latest_release_date or not installed_release_date or same_release_date):
+        return "revision"
+    if same_release_date and not latest_version:
+        return "revision"
+    if (
+        (latest_version and installed_version and latest_version != installed_version)
+        or (latest_release_date and installed_release_date and latest_release_date != installed_release_date)
+    ):
+        return "release"
+    if latest_version or latest_release_date:
+        return "release"
+    return "revision"
+
+
+def _normalized_git_url(url: str) -> str:
+    normalized = str(url or "").strip().rstrip("/")
+    if normalized.endswith(".git"):
+        normalized = normalized[:-4]
+    return normalized
+
+
+def _is_official_hermes_remote(url: str) -> bool:
+    normalized = _normalized_git_url(url)
+    return normalized in {_normalized_git_url(value) for value in OFFICIAL_HERMES_REPO_URLS}
+
+
+def _detect_managed_install() -> tuple[str, str]:
+    raw = str(os.environ.get("HERMES_MANAGED") or "").strip()
+    marker = HERMES_HOME / ".managed"
+    value = raw.lower()
+    if value in {"homebrew", "brew"}:
+        return "Homebrew", "brew upgrade hermes-agent"
+    if value in {"true", "1", "yes", "nixos", "nix"} or marker.exists():
+        return "NixOS", "sudo nixos-rebuild switch"
+    if raw:
+        return raw, ""
+    return "", ""
+
+
+def _guess_repo_root(bin_path: Path, project_root: str = "") -> Path | None:
+    guesses = []
+    if project_root:
+        guesses.append(Path(project_root).expanduser())
+    try:
+        resolved = Path(bin_path).expanduser().resolve(strict=False)
+        guesses.append(resolved.parent.parent.parent)
+    except Exception:
+        pass
+    try:
+        guesses.append(Path(bin_path).expanduser().parent.parent.parent)
+    except Exception:
+        pass
+    guesses.extend([HERMES_HOME / "hermes-agent", HERMES_HOME])
+    seen = set()
+    for guess in guesses:
+        guess_str = str(guess)
+        if guess_str in seen:
+            continue
+        seen.add(guess_str)
+        if (guess / ".git").exists():
+            return guess
+    return None
+
+
+def _run_git(repo_dir: Path, *args, timeout: int = 15) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git"] + list(args),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        cwd=str(repo_dir),
+    )
+
+
+def _summarize_git_worktree(repo_dir: Path) -> dict:
+    tracked = 0
+    untracked = 0
+    sample = []
+    try:
+        result = _run_git(repo_dir, "status", "--porcelain", timeout=10)
+    except Exception as exc:
+        return {
+            "tracked": 0,
+            "untracked": 0,
+            "total": 0,
+            "sample": [],
+            "error": str(exc),
+        }
+    if result.returncode != 0:
+        return {
+            "tracked": 0,
+            "untracked": 0,
+            "total": 0,
+            "sample": [],
+            "error": _first_output_line(result.stderr, result.stdout),
+        }
+    for line in result.stdout.splitlines():
+        line = line.rstrip()
+        if not line:
+            continue
+        if line.startswith("??"):
+            untracked += 1
+        else:
+            tracked += 1
+        if len(sample) < 10:
+            sample.append(line)
+    return {
+        "tracked": tracked,
+        "untracked": untracked,
+        "total": tracked + untracked,
+        "sample": sample,
+        "error": "",
+    }
+
+
+def _select_update_remote(repo_dir: Path) -> dict:
+    remotes = []
+    for name in ("origin", "upstream"):
+        try:
+            result = _run_git(repo_dir, "remote", "get-url", name, timeout=5)
+        except Exception:
+            continue
+        if result.returncode != 0:
+            continue
+        url = str(result.stdout or "").strip()
+        if not url:
+            continue
+        remotes.append({
+            "remote": name,
+            "url": url,
+            "official": _is_official_hermes_remote(url),
+        })
+    for remote in remotes:
+        if remote["official"] and remote["remote"] == "origin":
+            return remote
+    for remote in remotes:
+        if remote["official"]:
+            return remote
+    if remotes:
+        return remotes[0]
+    return {"remote": "", "url": "", "official": False}
+
+
+def _cache_key_for_repo(repo_dir: Path) -> str:
+    return str(repo_dir.resolve())
+
+
+def _invalidate_hermes_update_cache(repo_dir: Path | None = None) -> None:
+    with hermes_update_cache_lock:
+        if repo_dir is None:
+            hermes_update_cache.clear()
+            return
+        hermes_update_cache.pop(_cache_key_for_repo(repo_dir), None)
+
+
+def _probe_repo_update_state(repo_dir: Path) -> dict:
+    remote = _select_update_remote(repo_dir)
+    remote_name = remote.get("remote") or ""
+    remote_url = remote.get("url") or ""
+    remote_branch = "main"
+    remote_ref = f"{remote_name}/{remote_branch}" if remote_name else ""
+    fetch_error = ""
+    fetched = False
+
+    if remote_name:
+        try:
+            fetch_result = _run_git(repo_dir, "fetch", remote_name, "--quiet", timeout=20)
+            fetched = fetch_result.returncode == 0
+            if not fetched:
+                fetch_error = _first_output_line(fetch_result.stderr, fetch_result.stdout)
+        except Exception as exc:
+            fetch_error = str(exc)
+
+    local_commit = ""
+    latest_commit = ""
+    behind_commits = None
+    ahead_commits = None
+    latest_version = {"version": "", "release_date": "", "display": "Unknown"}
+
+    try:
+        local_result = _run_git(repo_dir, "rev-parse", "--short", "HEAD", timeout=5)
+        if local_result.returncode == 0:
+            local_commit = str(local_result.stdout or "").strip()
+    except Exception:
+        pass
+
+    ref_exists = False
+    if remote_ref:
+        try:
+            ref_check = _run_git(repo_dir, "rev-parse", "--verify", remote_ref, timeout=5)
+            ref_exists = ref_check.returncode == 0
+            if ref_exists:
+                latest_commit = str(ref_check.stdout or "").strip()[:8]
+        except Exception:
+            ref_exists = False
+
+    if ref_exists:
+        try:
+            behind_result = _run_git(repo_dir, "rev-list", "--count", f"HEAD..{remote_ref}", timeout=10)
+            if behind_result.returncode == 0:
+                behind_commits = int(str(behind_result.stdout or "0").strip() or "0")
+        except Exception:
+            behind_commits = None
+        try:
+            ahead_result = _run_git(repo_dir, "rev-list", "--count", f"{remote_ref}..HEAD", timeout=10)
+            if ahead_result.returncode == 0:
+                ahead_commits = int(str(ahead_result.stdout or "0").strip() or "0")
+        except Exception:
+            ahead_commits = None
+        try:
+            init_result = _run_git(repo_dir, "show", f"{remote_ref}:hermes_cli/__init__.py", timeout=10)
+            if init_result.returncode == 0:
+                latest_version = _extract_version_from_git_init(init_result.stdout)
+        except Exception:
+            pass
+
+    availability_status = "unknown_latest"
+    if behind_commits is not None:
+        availability_status = "update_available" if behind_commits > 0 else "up_to_date"
+
+    return {
+        "availability_status": availability_status,
+        "checked_at": _utc_now_z(),
+        "source": {
+            "remote": remote_name,
+            "branch": remote_branch,
+            "ref": remote_ref,
+            "url": remote_url,
+            "official": bool(remote.get("official")),
+            "label": (
+                f"GitHub {remote_name}/{remote_branch}"
+                if remote_name and remote.get("official")
+                else (f"{remote_name}/{remote_branch}" if remote_name else "Unavailable")
+            ),
+        },
+        "fetched": fetched,
+        "fetch_error": fetch_error,
+        "behind_commits": behind_commits,
+        "ahead_commits": ahead_commits,
+        "local_commit": local_commit,
+        "latest_commit": latest_commit,
+        "latest_version": latest_version,
+        "worktree": _summarize_git_worktree(repo_dir),
+    }
+
+
+def _get_repo_update_state(repo_dir: Path, *, force_refresh: bool = False) -> dict:
+    cache_key = _cache_key_for_repo(repo_dir)
+    now = time.time()
+    with hermes_update_cache_lock:
+        cached = hermes_update_cache.get(cache_key)
+        if (
+            cached
+            and not force_refresh
+            and (now - float(cached.get("ts") or 0)) < HERMES_UPDATE_CACHE_SECONDS
+        ):
+            return copy.deepcopy(cached["payload"])
+    payload = _probe_repo_update_state(repo_dir)
+    with hermes_update_cache_lock:
+        hermes_update_cache[cache_key] = {
+            "ts": now,
+            "payload": copy.deepcopy(payload),
+        }
+    return payload
+
+
+def _manual_update_command(bin_path: Path, repo_dir: Path | None, managed_system: str, managed_command: str) -> str:
+    if managed_command:
+        return managed_command
+    if repo_dir and (repo_dir / ".git").exists():
+        return f"cd {shlex.quote(str(repo_dir))} && {shlex.quote(str(bin_path))} update"
+    return HERMES_REINSTALL_COMMAND
+
+
+def _manual_update_reason(repo_dir: Path | None, managed_system: str, managed_command: str) -> str:
+    if managed_command:
+        label = managed_system or "your package manager"
+        return f"This Hermes install is managed by {label}. Run the manual upgrade command instead."
+    if repo_dir and (repo_dir / ".git").exists():
+        return ""
+    return "This Hermes install is not a git checkout that Hermes can safely update in place."
+
+
+def _base_update_message(availability_status: str, update_scope: str, installed: dict, repo_state: dict) -> str:
+    source_label = (((repo_state or {}).get("source") or {}).get("label") or "the configured update source").strip()
+    installed_display = installed.get("display") or "Installed Hermes"
+    latest = (repo_state or {}).get("latest_version") or {}
+    latest_display = latest.get("display") or ""
+    behind_commits = (repo_state or {}).get("behind_commits")
+
+    if availability_status == "up_to_date":
+        return f"{installed_display} is current with {source_label}."
+    if availability_status == "update_available":
+        if update_scope == "revision":
+            if behind_commits:
+                word = "commit" if behind_commits == 1 else "commits"
+                return (
+                    f"{installed_display} matches the latest released Hermes version, "
+                    f"but {source_label} is {behind_commits} {word} ahead."
+                )
+            return f"{installed_display} matches the latest released Hermes version, but newer commits are available on {source_label}."
+        if latest_display and latest.get("version"):
+            return f"{latest_display} is available on {source_label}."
+        if behind_commits:
+            word = "commit" if behind_commits == 1 else "commits"
+            return f"A newer Hermes revision is available on {source_label} ({behind_commits} {word} ahead)."
+        return f"A newer Hermes revision is available on {source_label}."
+    return f"Couldn't determine the latest Hermes version from {source_label}."
+
+
+def _runtime_snapshot() -> dict:
+    with hermes_update_runtime_lock:
+        snapshot = copy.deepcopy(hermes_update_runtime)
+    snapshot["log_text"] = "\n".join(snapshot.get("logs") or [])
+    return snapshot
+
+
+def _set_update_runtime(**updates) -> None:
+    with hermes_update_runtime_lock:
+        hermes_update_runtime.update(updates)
+
+
+def _append_update_log(line: str) -> None:
+    text = str(line or "").rstrip()
+    if not text:
+        return
+    with hermes_update_runtime_lock:
+        logs = list(hermes_update_runtime.get("logs") or [])
+        logs.append(text)
+        if len(logs) > HERMES_UPDATE_LOG_LINE_LIMIT:
+            logs = logs[-HERMES_UPDATE_LOG_LINE_LIMIT:]
+        hermes_update_runtime["logs"] = logs
+        hermes_update_runtime["summary"] = text
+
+
+def _build_hermes_update_payload(*, force_refresh: bool = False) -> dict:
+    selected = _selected_hermes_candidate()
+    bin_path = selected["path"]
+    resolved_path = selected["resolved_path"]
+    version_info = {
+        "raw": "",
+        "display": "Unknown",
+        "version": "",
+        "release_date": "",
+        "project_root": "",
+        "python_version": "",
+        "openai_sdk": "",
+        "update_hint": "",
+        "first_line": "",
+    }
+    version_error = ""
+    try:
+        version_result = _run_hermes_with_bin(bin_path, "--version", timeout=20)
+        raw_output = (version_result.stdout or "") + ("\n" + version_result.stderr if version_result.stderr else "")
+        version_info = _parse_hermes_version_output(raw_output)
+    except Exception as exc:
+        version_error = str(exc)
+
+    repo_dir = _guess_repo_root(resolved_path, version_info.get("project_root") or "")
+    managed_system, managed_command = _detect_managed_install()
+    repo_state = {
+        "availability_status": "unknown_latest",
+        "checked_at": "",
+        "source": {"remote": "", "branch": "", "ref": "", "url": "", "official": False, "label": "Unavailable"},
+        "fetched": False,
+        "fetch_error": "",
+        "behind_commits": None,
+        "ahead_commits": None,
+        "local_commit": "",
+        "latest_commit": "",
+        "latest_version": {"version": "", "release_date": "", "display": "Unknown"},
+        "worktree": {"tracked": 0, "untracked": 0, "total": 0, "sample": [], "error": ""},
+    }
+    if repo_dir:
+        repo_state = _get_repo_update_state(repo_dir, force_refresh=force_refresh)
+
+    availability_status = repo_state.get("availability_status") or "unknown_latest"
+    update_scope = _classify_update_scope(availability_status, version_info, repo_state)
+    can_update = bool(bin_path.exists() and repo_dir and (repo_dir / ".git").exists() and not managed_command)
+    install_method = "binary_only"
+    if managed_command:
+        install_method = "managed"
+    elif repo_dir and repo_dir == HERMES_HOME and ".venv" in str(resolved_path):
+        install_method = "git_home_venv"
+    elif repo_dir and repo_dir.name == "hermes-agent":
+        install_method = "git_repo_venv"
+    elif repo_dir:
+        install_method = "git_checkout"
+
+    runtime = _runtime_snapshot()
+    status = availability_status
+    message = _base_update_message(availability_status, update_scope, version_info, repo_state)
+    if runtime.get("status") == "update_in_progress":
+        status = "update_in_progress"
+        message = runtime.get("summary") or f"Updating Hermes from {version_info.get('display') or 'the installed version'}..."
+    elif runtime.get("status") == "update_failed":
+        status = "update_failed"
+        message = runtime.get("error") or runtime.get("summary") or "Hermes update failed."
+
+    other_candidates = [
+        str(candidate["path"])
+        for candidate in _candidate_hermes_bins()[1:]
+    ]
+
+    return {
+        "status": status,
+        "availability_status": availability_status,
+        "update_scope": update_scope,
+        "message": message,
+        "checked_at": repo_state.get("checked_at") or "",
+        "bin_path": str(bin_path),
+        "resolved_bin_path": str(resolved_path),
+        "project_root": str(repo_dir) if repo_dir else (version_info.get("project_root") or ""),
+        "install_method": install_method,
+        "selection_reason": _selection_reason_for_candidate(selected.get("source") or ""),
+        "other_detected_bins": other_candidates,
+        "installed_version": version_info,
+        "latest_version": repo_state.get("latest_version") or {"version": "", "release_date": "", "display": "Unknown"},
+        "official_source": repo_state.get("source") or {},
+        "behind_commits": repo_state.get("behind_commits"),
+        "ahead_commits": repo_state.get("ahead_commits"),
+        "local_commit": repo_state.get("local_commit") or "",
+        "latest_commit": repo_state.get("latest_commit") or "",
+        "fetch_error": repo_state.get("fetch_error") or "",
+        "fetched": bool(repo_state.get("fetched")),
+        "version_error": version_error,
+        "can_update": can_update,
+        "managed_system": managed_system,
+        "manual_command": _manual_update_command(bin_path, repo_dir, managed_system, managed_command),
+        "manual_reason": _manual_update_reason(repo_dir, managed_system, managed_command),
+        "worktree": repo_state.get("worktree") or {"tracked": 0, "untracked": 0, "total": 0, "sample": [], "error": ""},
+        "update_action": runtime,
+        "install_key": str(repo_dir or resolved_path or bin_path),
+    }
+
+
+def _run_hermes_update_worker(install_snapshot: dict) -> None:
+    bin_path = Path(install_snapshot.get("bin_path") or "")
+    repo_dir = Path(install_snapshot.get("project_root") or "").expanduser() if install_snapshot.get("project_root") else None
+    install_key = str(install_snapshot.get("install_key") or "")
+
+    try:
+        _invalidate_hermes_update_cache(repo_dir)
+        proc = subprocess.Popen(
+            [str(bin_path), "update"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env={**os.environ, "NO_COLOR": "1"},
+            cwd=str(repo_dir) if repo_dir else None,
+            bufsize=1,
+        )
+        _append_update_log(f"$ {bin_path} update")
+        if proc.stdout is not None:
+            for line in proc.stdout:
+                _append_update_log(line)
+        returncode = proc.wait()
+        runtime = _runtime_snapshot()
+        combined_log = runtime.get("log_text") or ""
+        lowered = combined_log.lower()
+        restore_conflict = (
+            "restoring local changes hit conflicts" in lowered
+            or "working tree reset to clean state" in lowered
+        )
+        _invalidate_hermes_update_cache(repo_dir)
+        post_update = _build_hermes_update_payload(force_refresh=True)
+
+        error_message = ""
+        if returncode != 0:
+            error_message = _first_output_line(combined_log, "Hermes update failed.")
+        elif restore_conflict:
+            error_message = (
+                "Hermes updated, but restoring local changes hit conflicts. Review the update log and reapply the saved git stash if needed."
+            )
+        elif post_update.get("availability_status") == "update_available":
+            behind = post_update.get("behind_commits")
+            if isinstance(behind, int) and behind > 0:
+                word = "commit" if behind == 1 else "commits"
+                error_message = f"Update finished, but Hermes is still {behind} {word} behind the selected update source."
+
+        if error_message:
+            _set_update_runtime(
+                status="update_failed",
+                finished_at=_utc_now_z(),
+                returncode=returncode,
+                error=error_message,
+                summary=error_message,
+                install_key=install_key,
+                installed_version_after=(post_update.get("installed_version") or {}).get("display") or "",
+            )
+            return
+
+        _set_update_runtime(
+            status="",
+            finished_at=_utc_now_z(),
+            returncode=returncode,
+            error="",
+            summary="Hermes update completed successfully.",
+            install_key=install_key,
+            installed_version_after=(post_update.get("installed_version") or {}).get("display") or "",
+        )
+    except Exception as exc:
+        _set_update_runtime(
+            status="update_failed",
+            finished_at=_utc_now_z(),
+            returncode=-1,
+            error=str(exc),
+            summary=str(exc),
+            install_key=install_key,
+        )
 
 
 def _hermes_skill_install_failed(result: subprocess.CompletedProcess, combined_output: str) -> bool:
@@ -3947,6 +4698,7 @@ def api_health():
             "gateway_running": gs["running"],
             "version": version,
             "hermes_home": str(HERMES_HOME),
+            "hermes_bin": str(_selected_hermes_bin()),
         })
     except Exception as exc:
         return _http_error(str(exc))
@@ -3974,6 +4726,79 @@ def api_system():
             "disk_free": disk.free,
             "uptime": uptime,
         })
+    except Exception as exc:
+        return _http_error(str(exc))
+
+
+@app.route("/api/hermes/update-status")
+@require_token
+def api_hermes_update_status():
+    try:
+        refresh = str(request.args.get("refresh") or "").strip().lower() in {"1", "true", "yes", "on"}
+        return jsonify(_build_hermes_update_payload(force_refresh=refresh))
+    except Exception as exc:
+        return _http_error(str(exc))
+
+
+@app.route("/api/hermes/update-check", methods=["POST"])
+@require_token
+def api_hermes_update_check():
+    try:
+        return jsonify(_build_hermes_update_payload(force_refresh=True))
+    except Exception as exc:
+        return _http_error(str(exc))
+
+
+@app.route("/api/hermes/update", methods=["POST"])
+@require_token
+def api_hermes_update():
+    try:
+        data = request.get_json(silent=True) or {}
+        if not data.get("confirm"):
+            return jsonify({"ok": False, "error": "Update confirmation required."}), 400
+
+        current = _build_hermes_update_payload(force_refresh=True)
+        if not current.get("can_update"):
+            return jsonify({
+                "ok": False,
+                "error": current.get("manual_reason") or "In-app Hermes updating is not supported for this install.",
+                "manual_command": current.get("manual_command") or "",
+                "status": current,
+            }), 409
+
+        runtime = _runtime_snapshot()
+        if runtime.get("status") == "update_in_progress":
+            return jsonify({
+                "ok": True,
+                "message": runtime.get("summary") or "Hermes update already in progress.",
+                "status": _build_hermes_update_payload(force_refresh=False),
+            }), 202
+
+        _invalidate_hermes_update_cache(Path(current["project_root"]) if current.get("project_root") else None)
+        _set_update_runtime(
+            status="update_in_progress",
+            started_at=_utc_now_z(),
+            finished_at="",
+            returncode=None,
+            error="",
+            summary=f"Starting Hermes update for {current.get('installed_version', {}).get('display') or 'the installed version'}...",
+            logs=[],
+            install_key=current.get("install_key") or "",
+            installed_version_before=(current.get("installed_version") or {}).get("display") or "",
+            installed_version_after="",
+        )
+        worker = threading.Thread(
+            target=_run_hermes_update_worker,
+            args=(current,),
+            daemon=True,
+            name="hermes-update-worker",
+        )
+        worker.start()
+        return jsonify({
+            "ok": True,
+            "message": "Hermes update started.",
+            "status": _build_hermes_update_payload(force_refresh=False),
+        }), 202
     except Exception as exc:
         return _http_error(str(exc))
 
@@ -5256,6 +6081,7 @@ def api_service_action(action):
         # because `gateway start` requires systemd which may not be set up in WSL
         if action == "start":
             import subprocess
+            bin_path = _selected_hermes_bin()
             env = {**os.environ, "HERMES_HOME": str(HERMES_HOME)}
             pid_file = HERMES_HOME / "gateway.pid"
             log_path = HERMES_HOME / "logs" / "gateway.log"
@@ -5265,7 +6091,7 @@ def api_service_action(action):
             time.sleep(1)
             with open(log_path, "a") as lf:
                 proc = subprocess.Popen(
-                    [str(HERMES_BIN), "gateway", "run"],
+                    [str(bin_path), "gateway", "run"],
                     env=env, stdout=lf, stderr=subprocess.STDOUT,
                     start_new_session=True,
                 )
@@ -5289,13 +6115,14 @@ def api_service_action(action):
         if action == "restart":
             # After stop, start in background
             import subprocess
+            bin_path = _selected_hermes_bin()
             env = {**os.environ, "HERMES_HOME": str(HERMES_HOME)}
             log_path = HERMES_HOME / "logs" / "gateway.log"
             log_path.parent.mkdir(exist_ok=True)
             time.sleep(1)
             with open(log_path, "a") as lf:
                 subprocess.Popen(
-                    [str(HERMES_BIN), "gateway", "run"],
+                    [str(bin_path), "gateway", "run"],
                     env=env, stdout=lf, stderr=subprocess.STDOUT,
                     start_new_session=True,
                 )
@@ -6906,7 +7733,7 @@ def _call_hermes_prompt(
         if state and state.get("cancel_requested_at"):
             _update_chat_request(request_id, status="cancelled")
             raise ChatRequestCancelled("Request cancelled before Hermes started")
-    cmd = [str(HERMES_BIN), "chat", "-Q"]
+    cmd = [str(_selected_hermes_bin()), "chat", "-Q"]
     if session.get("hermes_session_id"):
         cmd.extend(["--resume", session["hermes_session_id"]])
     cmd.extend(["-q", prompt])

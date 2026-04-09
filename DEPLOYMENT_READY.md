@@ -17,7 +17,8 @@ Recent runtime improvements in this repo:
 ### 1. Install Dependencies
 ```bash
 cd ~/hermes-web-ui
-~/.hermes/.venv/bin/pip install -r requirements.txt
+python3 -m venv .venv
+./.venv/bin/pip install -r requirements.txt
 ```
 
 ### 2. Set Authentication Token
@@ -40,7 +41,8 @@ EOF
 DEV=1 ./start.sh 5000
 
 # Or run gunicorn directly from the repo root
-~/.hermes/.venv/bin/gunicorn --chdir "$(pwd)" --bind 127.0.0.1:5000 --workers 2 --worker-tmp-dir /dev/shm app:app
+HERMES_WEBUI_HERMES_BIN="$HOME/.hermes/hermes-agent/venv/bin/hermes" \
+  ./.venv/bin/gunicorn --chdir "$(pwd)" --bind 127.0.0.1:5000 --workers 2 --worker-tmp-dir /dev/shm app:app
 ```
 
 ### 4. Access the UI
@@ -176,7 +178,8 @@ Type=simple
 User=pickle
 WorkingDirectory=/home/pickle/hermes-web-ui
 Environment="HERMES_WEBUI_TOKEN=your-secure-token"
-Environment="PATH=/home/pickle/.hermes/.venv/bin:/usr/bin:/bin"
+Environment="HERMES_WEBUI_HERMES_BIN=/home/pickle/.hermes/hermes-agent/venv/bin/hermes"
+Environment="PATH=/home/pickle/hermes-web-ui/.venv/bin:/usr/bin:/bin"
 ExecStart=/home/pickle/hermes-web-ui/start.sh 5000
 Restart=on-failure
 
@@ -230,7 +233,7 @@ If issues occur:
 3. Verify token: `echo $HERMES_WEBUI_TOKEN`
 4. Test backend auth: `curl -H "Authorization: Bearer $HERMES_WEBUI_TOKEN" http://127.0.0.1:5000/api/health`
 5. Check browser localStorage has token: Open dev tools → Application → Local Storage
-6. Run repo smoke tests: `~/.hermes/.venv/bin/python -m unittest discover -s tests -q`
+6. Run repo smoke tests: `./.venv/bin/python -m unittest discover -s tests -q`
 
 ---
 

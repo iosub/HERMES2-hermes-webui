@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("HERMES_WEBUI_TOKEN", "test-token")
 
@@ -281,11 +281,29 @@ class HermesWebUISmokeTests(unittest.TestCase):
         hermes_path.write_text("#!/bin/sh\n", encoding="utf-8")
 
         with patch.object(mod, "HERMES_HOME", tmp_home / ".hermes"), \
+             patch.object(mod, "HERMES_REPO_DIR", tmp_home / ".hermes" / "hermes-agent"), \
              patch.object(mod.Path, "home", return_value=tmp_home), \
              patch("shutil.which", return_value=str(hermes_path)):
             found = mod._find_hermes_bin()
 
         self.assertEqual(found, hermes_path)
+
+    def test_find_hermes_bin_prefers_repo_managed_install(self):
+        tmp_home = Path(self.tmpdir.name) / "home"
+        managed_bin = tmp_home / ".hermes" / "hermes-agent" / "venv" / "bin" / "hermes"
+        legacy_bin = tmp_home / ".hermes" / ".venv" / "bin" / "hermes"
+        path_bin = tmp_home / ".local" / "bin" / "hermes"
+        for path in (managed_bin, legacy_bin, path_bin):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("#!/bin/sh\n", encoding="utf-8")
+
+        with patch.object(mod, "HERMES_HOME", tmp_home / ".hermes"), \
+             patch.object(mod, "HERMES_REPO_DIR", tmp_home / ".hermes" / "hermes-agent"), \
+             patch.object(mod.Path, "home", return_value=tmp_home), \
+             patch("shutil.which", return_value=str(path_bin)):
+            found = mod._find_hermes_bin()
+
+        self.assertEqual(found, managed_bin)
 
     def test_chat_status_exposes_readiness_details(self):
         with patch.object(mod, "_check_api_server", return_value=False), \
@@ -1525,7 +1543,9 @@ Sidecar output:
         runtime = runtime_status_stub(starter_items=[])
 
         with patch.object(mod, "_run_hermes", return_value=SimpleNamespace(returncode=0, stdout="installed ok", stderr="")) as run_mock, \
-             patch.object(mod, "_chat_runtime_status", return_value=runtime):
+             patch.object(mod, "_chat_runtime_status", return_value=runtime), \
+             patch.object(mod, "_discover_skill_entries", side_effect=[[], []]), \
+             patch.object(mod, "_record_skill_install_source", return_value=[]):
             resp = self.client.post("/api/starter-pack/weather/install", json={}, headers=self.headers)
 
         self.assertEqual(resp.status_code, 200, resp.data)
@@ -2327,6 +2347,8 @@ description: Reviews code carefully.
                 "agent:\n  personalities:\n    UI Test Preset:\n      system_prompt: Updated on disk\n",
                 encoding="utf-8",
             )
+            time.sleep(0.01)
+            os.utime(config_path, None)
             data = manager.get_raw()
 
         self.assertIn("agent", data)
@@ -2633,6 +2655,208 @@ description: Reviews code carefully.
             self.assertEqual(listed.status_code, 200, listed.data)
             jobs = listed.get_json()["jobs"]
             self.assertTrue(any(job["id"] == job_id and job["name"] == "Daily" for job in jobs))
+
+    def test_build_hermes_update_payload_reports_selected_install(self):
+        active_bin = Path(self.tmpdir.name) / "active-hermes"
+        extra_bin = Path(self.tmpdir.name) / "other-hermes"
+        repo_dir = Path(self.tmpdir.name) / "repo"
+        active_bin.write_text("", encoding="utf-8")
+        extra_bin.write_text("", encoding="utf-8")
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+
+        payload = {
+            "availability_status": "update_available",
+            "checked_at": "2026-04-09T12:00:00Z",
+            "source": {
+                "remote": "origin",
+                "branch": "main",
+                "ref": "origin/main",
+                "url": "https://github.com/NousResearch/hermes-agent.git",
+                "official": True,
+                "label": "GitHub origin/main",
+            },
+            "fetched": True,
+            "fetch_error": "",
+            "behind_commits": 12,
+            "ahead_commits": 0,
+            "local_commit": "abc12345",
+            "latest_commit": "def67890",
+            "latest_version": {
+                "version": "0.8.0",
+                "release_date": "2026.4.8",
+                "display": "Hermes Agent v0.8.0 (2026.4.8)",
+            },
+            "worktree": {"tracked": 2, "untracked": 3, "total": 5, "sample": [" M foo.py"], "error": ""},
+        }
+        version_output = (
+            "Hermes Agent v0.6.0 (2026.3.30)\n"
+            f"Project: {repo_dir}\n"
+            "Python: 3.12.3\n"
+            "OpenAI SDK: 2.30.0\n"
+        )
+
+        with patch.object(mod, "_selected_hermes_candidate", return_value={
+            "path": active_bin,
+            "resolved_path": active_bin,
+            "source": "active_gateway",
+        }), \
+             patch.object(mod, "_candidate_hermes_bins", return_value=[
+                 {"path": active_bin, "resolved_path": active_bin, "source": "active_gateway"},
+                 {"path": extra_bin, "resolved_path": extra_bin, "source": "user_local_bin"},
+             ]), \
+             patch.object(mod, "_run_hermes_with_bin", return_value=SimpleNamespace(stdout=version_output, stderr="", returncode=0)), \
+             patch.object(mod, "_guess_repo_root", return_value=repo_dir), \
+             patch.object(mod, "_get_repo_update_state", return_value=payload), \
+             patch.object(mod, "_detect_managed_install", return_value=("", "")), \
+             patch.object(mod, "_runtime_snapshot", return_value={
+                 "status": "",
+                 "started_at": "",
+                 "finished_at": "",
+                 "returncode": None,
+                 "error": "",
+                 "summary": "",
+                 "logs": [],
+                 "log_text": "",
+                 "install_key": "",
+                 "installed_version_before": "",
+                 "installed_version_after": "",
+             }):
+            result = mod._build_hermes_update_payload(force_refresh=True)
+
+        self.assertEqual(result["status"], "update_available")
+        self.assertEqual(result["availability_status"], "update_available")
+        self.assertEqual(result["update_scope"], "release")
+        self.assertEqual(result["bin_path"], str(active_bin))
+        self.assertEqual(result["project_root"], str(repo_dir))
+        self.assertEqual(result["latest_version"]["version"], "0.8.0")
+        self.assertEqual(result["behind_commits"], 12)
+        self.assertEqual(result["other_detected_bins"], [str(extra_bin)])
+        self.assertTrue(result["can_update"])
+        self.assertIn("gateway binary", result["selection_reason"].lower())
+
+    def test_build_hermes_update_payload_marks_same_version_commit_drift_as_revision(self):
+        managed_bin = Path(self.tmpdir.name) / "managed-hermes"
+        repo_dir = Path(self.tmpdir.name) / "repo"
+        managed_bin.write_text("", encoding="utf-8")
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+
+        payload = {
+            "availability_status": "update_available",
+            "checked_at": "2026-04-09T12:00:00Z",
+            "source": {
+                "remote": "origin",
+                "branch": "main",
+                "ref": "origin/main",
+                "url": "https://github.com/NousResearch/hermes-agent.git",
+                "official": True,
+                "label": "GitHub origin/main",
+            },
+            "fetched": True,
+            "fetch_error": "",
+            "behind_commits": 29,
+            "ahead_commits": 0,
+            "local_commit": "abc12345",
+            "latest_commit": "def67890",
+            "latest_version": {
+                "version": "0.8.0",
+                "release_date": "2026.4.8",
+                "display": "Hermes Agent v0.8.0 (2026.4.8)",
+            },
+            "worktree": {"tracked": 0, "untracked": 0, "total": 0, "sample": [], "error": ""},
+        }
+        version_output = (
+            "Hermes Agent v0.8.0 (2026.4.8)\n"
+            f"Project: {repo_dir}\n"
+            "Python: 3.11.15\n"
+            "OpenAI SDK: 2.30.0\n"
+        )
+
+        with patch.object(mod, "_selected_hermes_candidate", return_value={
+            "path": managed_bin,
+            "resolved_path": managed_bin,
+            "source": "managed_repo",
+        }), \
+             patch.object(mod, "_candidate_hermes_bins", return_value=[
+                 {"path": managed_bin, "resolved_path": managed_bin, "source": "managed_repo"},
+             ]), \
+             patch.object(mod, "_run_hermes_with_bin", return_value=SimpleNamespace(stdout=version_output, stderr="", returncode=0)), \
+             patch.object(mod, "_guess_repo_root", return_value=repo_dir), \
+             patch.object(mod, "_get_repo_update_state", return_value=payload), \
+             patch.object(mod, "_detect_managed_install", return_value=("", "")), \
+             patch.object(mod, "_runtime_snapshot", return_value={
+                 "status": "",
+                 "started_at": "",
+                 "finished_at": "",
+                 "returncode": None,
+                 "error": "",
+                 "summary": "",
+                 "logs": [],
+                 "log_text": "",
+                 "install_key": "",
+                 "installed_version_before": "",
+                 "installed_version_after": "",
+             }):
+            result = mod._build_hermes_update_payload(force_refresh=True)
+
+        self.assertEqual(result["status"], "update_available")
+        self.assertEqual(result["availability_status"], "update_available")
+        self.assertEqual(result["update_scope"], "revision")
+        self.assertIn("matches the latest released Hermes version", result["message"])
+        self.assertEqual(result["latest_version"]["version"], "0.8.0")
+        self.assertEqual(result["behind_commits"], 29)
+
+    def test_api_hermes_update_requires_confirmation(self):
+        resp = self.client.post("/api/hermes/update", json={}, headers=self.headers)
+        self.assertEqual(resp.status_code, 400, resp.data)
+        self.assertIn("confirmation", resp.get_json()["error"].lower())
+
+    def test_api_hermes_update_returns_manual_command_when_direct_update_is_unsupported(self):
+        with patch.object(mod, "_build_hermes_update_payload", return_value={
+            "can_update": False,
+            "manual_reason": "Managed install",
+            "manual_command": "brew upgrade hermes-agent",
+        }):
+            resp = self.client.post("/api/hermes/update", json={"confirm": True}, headers=self.headers)
+
+        self.assertEqual(resp.status_code, 409, resp.data)
+        body = resp.get_json()
+        self.assertEqual(body["manual_command"], "brew upgrade hermes-agent")
+        self.assertIn("Managed install", body["error"])
+
+    def test_api_hermes_update_starts_background_worker(self):
+        thread_mock = MagicMock()
+        payload = {
+            "can_update": True,
+            "manual_reason": "",
+            "manual_command": "cd /tmp/repo && /tmp/hermes update",
+            "install_key": "install-1",
+            "installed_version": {"display": "Hermes Agent v0.6.0 (2026.3.30)"},
+            "project_root": self.tmpdir.name,
+        }
+
+        with patch.object(mod, "_build_hermes_update_payload", return_value=payload), \
+             patch.object(mod, "_invalidate_hermes_update_cache"), \
+             patch.object(mod, "_set_update_runtime"), \
+             patch.object(mod, "threading") as threading_mock:
+            threading_mock.Thread.return_value = thread_mock
+            resp = self.client.post("/api/hermes/update", json={"confirm": True}, headers=self.headers)
+
+        self.assertEqual(resp.status_code, 202, resp.data)
+        threading_mock.Thread.assert_called_once()
+        thread_mock.start.assert_called_once()
+
+    def test_update_ui_js_and_template_expose_banner_and_actions(self):
+        template = (mod.APP_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+        script = (mod.APP_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("global-status-banner", template)
+        self.assertIn("const HermesUpdate =", script)
+        self.assertIn("/api/hermes/update-status", script)
+        self.assertIn("openHermesUpdateConfirm", script)
+        self.assertIn("renderHermesUpdateCard", script)
+        self.assertIn("Update Hermes", script)
 
     def test_release_version_marker_matches_first_stable_release(self):
         template = (mod.APP_ROOT / "templates" / "index.html").read_text(encoding="utf-8")

@@ -316,6 +316,348 @@ async function checkHealth() {
     _healthCache = true; _healthTs = now;
 }
 
+function copyText(text, successMsg = 'Copied') {
+    const value = String(text || '');
+    if (!value) {
+        toast('Nothing to copy', 'warning');
+        return Promise.resolve(false);
+    }
+    return navigator.clipboard.writeText(value)
+        .then(() => {
+            toast(successMsg, 'success', 1800);
+            return true;
+        })
+        .catch(() => {
+            toast('Copy failed', 'error');
+            return false;
+        });
+}
+
+function hermesUpdateStatusMeta(status, state = null) {
+    if (status === 'update_available' && state?.update_scope === 'revision') {
+        return { label: 'Updates Available', badge: 'badge-warning', title: 'Hermes updates available on main' };
+    }
+    return {
+        up_to_date: { label: 'Up to Date', badge: 'badge-success', title: 'Hermes is current' },
+        checking: { label: 'Checking', badge: 'badge-info', title: 'Checking for updates' },
+        update_available: { label: 'Update Available', badge: 'badge-warning', title: 'New Hermes version available' },
+        update_in_progress: { label: 'Update In Progress', badge: 'badge-info', title: 'Updating Hermes' },
+        update_failed: { label: 'Update Failed', badge: 'badge-danger', title: 'Hermes update failed' },
+        unknown_latest: { label: 'Latest Unknown', badge: 'badge-danger', title: 'Unable to determine latest version' },
+    }[status] || { label: 'Unknown', badge: 'badge-secondary', title: 'Hermes update status' };
+}
+
+function hermesUpdateVersionLabel(info, fallback = 'Unknown') {
+    return info?.display || fallback;
+}
+
+function hermesUpdateSourceLabel(state) {
+    return state?.official_source?.label || 'Unavailable';
+}
+
+function hermesUpdateWorktreeLabel(state) {
+    const worktree = state?.worktree || {};
+    const tracked = Number(worktree.tracked || 0);
+    const untracked = Number(worktree.untracked || 0);
+    if (!tracked && !untracked) return 'Clean worktree';
+    const parts = [];
+    if (tracked) parts.push(`${tracked} tracked`);
+    if (untracked) parts.push(`${untracked} untracked`);
+    return parts.join(' + ');
+}
+
+function hermesUpdateShouldOfferAction(state) {
+    if (!state) return false;
+    if (state.status === 'update_in_progress') return false;
+    return !!state.can_update && state.status !== 'up_to_date';
+}
+
+function renderHermesUpdateLogPanel(state) {
+    const action = state?.update_action || {};
+    const logText = action.log_text || '';
+    if (!logText) return '';
+    const title = state?.status === 'update_in_progress'
+        ? 'Live Update Log'
+        : (state?.status === 'update_failed' ? 'Update Failure Log' : 'Recent Update Log');
+    return `
+        <div class="update-log-panel">
+            <span class="update-card-item-label">${escH(title)}</span>
+            <pre class="font-mono text-xs">${escH(logText)}</pre>
+        </div>
+    `;
+}
+
+function renderHermesUpdateCard(state) {
+    if (!state) {
+        return '<div class="card"><div class="card-header"><span>Hermes Updates</span><span class="badge badge-info">Checking</span></div><div class="card-body"><div class="loading"><div class="spinner"></div></div></div></div>';
+    }
+    const meta = hermesUpdateStatusMeta(state.status, state);
+    const installed = hermesUpdateVersionLabel(state.installed_version);
+    const latest = hermesUpdateVersionLabel(state.latest_version, 'Unknown');
+    const canUpdate = hermesUpdateShouldOfferAction(state);
+    const actionLabel = state.status === 'update_failed' ? 'Retry Update' : 'Update Hermes';
+    const command = state.manual_command || '';
+    const sourceLabel = hermesUpdateSourceLabel(state);
+    const checkedAt = state.checked_at ? new Date(state.checked_at).toLocaleString() : 'Not checked yet';
+    const behind = typeof state.behind_commits === 'number' ? state.behind_commits : null;
+    const ahead = typeof state.ahead_commits === 'number' ? state.ahead_commits : null;
+    const commitSummary = [
+        behind !== null ? `${behind} behind` : '',
+        ahead !== null && ahead > 0 ? `${ahead} ahead` : '',
+    ].filter(Boolean).join(' · ') || 'Unknown';
+    const scopeLabel = state.update_scope === 'revision'
+        ? 'Same released version, newer commits on main'
+        : (state.update_scope === 'release' ? 'Newer released version available' : 'Unknown');
+
+    return `
+        <div class="card" id="hermes-update-card">
+            <div class="card-header">
+                <span>Hermes Updates</span>
+                <span class="badge ${meta.badge}">${escH(meta.label)}</span>
+            </div>
+            <div class="card-body">
+                <p class="text-sm text-secondary mb-16">${escH(state.message || meta.title)}</p>
+                <div class="update-card-grid">
+                    <div class="update-card-item">
+                        <span class="update-card-item-label">Installed Version</span>
+                        <div class="update-card-item-value font-mono text-sm">${escH(installed)}</div>
+                    </div>
+                    <div class="update-card-item">
+                        <span class="update-card-item-label">Latest Known Version</span>
+                        <div class="update-card-item-value font-mono text-sm">${escH(latest)}</div>
+                    </div>
+                    <div class="update-card-item">
+                        <span class="update-card-item-label">Update Type</span>
+                        <div class="update-card-item-value text-sm">${escH(scopeLabel)}</div>
+                    </div>
+                    <div class="update-card-item">
+                        <span class="update-card-item-label">Update Source</span>
+                        <div class="update-card-item-value text-sm">${escH(sourceLabel)}</div>
+                    </div>
+                    <div class="update-card-item">
+                        <span class="update-card-item-label">Git Status</span>
+                        <div class="update-card-item-value text-sm">${escH(commitSummary)}</div>
+                    </div>
+                    <div class="update-card-item">
+                        <span class="update-card-item-label">Managed Install</span>
+                        <div class="update-card-item-value text-sm">${escH(state.managed_system || 'No')}</div>
+                    </div>
+                    <div class="update-card-item">
+                        <span class="update-card-item-label">Local Changes</span>
+                        <div class="update-card-item-value text-sm">${escH(hermesUpdateWorktreeLabel(state))}</div>
+                    </div>
+                    <div class="update-card-item">
+                        <span class="update-card-item-label">Hermes Binary</span>
+                        <div class="update-card-item-value font-mono text-sm">${escH(state.bin_path || 'Unknown')}</div>
+                    </div>
+                    <div class="update-card-item">
+                        <span class="update-card-item-label">Project Root</span>
+                        <div class="update-card-item-value font-mono text-sm">${escH(state.project_root || 'Unknown')}</div>
+                    </div>
+                    <div class="update-card-item">
+                        <span class="update-card-item-label">Last Checked</span>
+                        <div class="update-card-item-value text-sm">${escH(checkedAt)}</div>
+                    </div>
+                </div>
+                <div class="update-card-actions">
+                    <button class="btn" onclick="hermesUpdateCheckNow(this)">Check Now</button>
+                    ${canUpdate ? `<button class="btn btn-primary" onclick="openHermesUpdateConfirm()">${escH(actionLabel)}</button>` : ''}
+                    ${command ? `<button class="btn" onclick="copyHermesUpdateCommand()">${state.can_update ? 'Copy Manual Command' : 'Copy Update Command'}</button>` : ''}
+                </div>
+                ${state.selection_reason ? `<p class="text-sm text-secondary mt-16">${escH(state.selection_reason)}</p>` : ''}
+                ${state.manual_reason ? `<p class="text-sm text-secondary mt-16">${escH(state.manual_reason)}</p>` : ''}
+                ${command ? `<div class="update-card-command"><span class="update-card-item-label">Manual Command</span><code>${escH(command)}</code></div>` : ''}
+                ${renderHermesUpdateLogPanel(state)}
+            </div>
+        </div>
+    `;
+}
+
+function renderGlobalStatusBanner() {
+    const container = document.getElementById('global-status-banner');
+    if (!container) return;
+    const state = HermesUpdate.state;
+    const hideForRevisionOnly = state?.status === 'update_available' && state?.update_scope === 'revision';
+    if (!state || state.status === 'up_to_date' || hideForRevisionOnly) {
+        container.innerHTML = '';
+        container.classList.add('hidden');
+        return;
+    }
+    const meta = hermesUpdateStatusMeta(state.status, state);
+    const canUpdate = hermesUpdateShouldOfferAction(state);
+    const message = state.message || meta.title;
+    container.classList.remove('hidden');
+    container.innerHTML = `
+        <div class="update-banner status-${escA(state.status || '')}">
+            <div class="update-banner-copy">
+                <div class="mb-8"><span class="badge ${meta.badge}">${escH(meta.label)}</span></div>
+                <h3>${escH(meta.title)}</h3>
+                <p class="text-sm">${escH(message)}</p>
+            </div>
+            <div class="update-banner-actions">
+                <button class="btn btn-sm" onclick="navigate('service')">Open Service</button>
+                <button class="btn btn-sm" onclick="hermesUpdateCheckNow(this)">Check Now</button>
+                ${canUpdate ? '<button class="btn btn-primary btn-sm" onclick="openHermesUpdateConfirm()">Update Hermes</button>' : ''}
+                ${state.manual_command ? '<button class="btn btn-sm" onclick="copyHermesUpdateCommand()">Copy Command</button>' : ''}
+            </div>
+        </div>
+    `;
+}
+
+const HermesUpdate = {
+    state: null,
+    loadingPromise: null,
+    pollTimer: null,
+
+    async ensureLoaded(force = false) {
+        if (force || !this.state) {
+            await this.refresh(force);
+        }
+        return this.state;
+    },
+
+    applyState(nextState) {
+        const prevStatus = this.state?.status || '';
+        this.state = nextState || null;
+        renderGlobalStatusBanner();
+        this.syncPolling();
+        if (prevStatus === 'update_in_progress' && this.state && this.state.status !== 'update_in_progress') {
+            if (this.state.status === 'update_failed') {
+                toast(this.state.message || 'Hermes update failed', 'error', 6000);
+            } else {
+                toast('Hermes update finished', 'success', 2500);
+            }
+            _healthCache = null;
+            checkHealth();
+            if (screenIsActive('dashboard') || screenIsActive('service')) {
+                refreshCurrentScreen();
+            }
+        }
+    },
+
+    syncPolling() {
+        if (this.pollTimer) {
+            clearInterval(this.pollTimer);
+            this.pollTimer = null;
+        }
+        if (this.state?.status === 'update_in_progress') {
+            this.pollTimer = setInterval(() => {
+                this.refresh(true, { silent: true }).catch(() => {});
+            }, 3000);
+        }
+    },
+
+    async refresh(force = false, { checking = false, silent = false } = {}) {
+        if (checking) {
+            this.applyState({
+                ...(this.state || {}),
+                status: 'checking',
+                availability_status: this.state?.availability_status || 'checking',
+                update_scope: this.state?.update_scope || 'unknown',
+                message: 'Checking the installed Hermes version and official update source...',
+                can_update: this.state?.can_update || false,
+                manual_command: this.state?.manual_command || '',
+                update_action: this.state?.update_action || {},
+            });
+        }
+        if (this.loadingPromise && !force) {
+            return this.loadingPromise;
+        }
+        const path = '/api/hermes/update-status' + (force ? '?refresh=1' : '');
+        this.loadingPromise = api('GET', path)
+            .then((data) => {
+                this.applyState(data);
+                return data;
+            })
+            .catch((e) => {
+                if (!silent) {
+                    toast('Hermes update status failed: ' + e.message, 'error');
+                }
+                this.applyState({
+                    ...(this.state || {}),
+                    status: 'unknown_latest',
+                    availability_status: 'unknown_latest',
+                    update_scope: 'unknown',
+                    message: e.message || 'Unable to determine the latest Hermes version.',
+                    can_update: this.state?.can_update || false,
+                    manual_command: this.state?.manual_command || '',
+                    update_action: this.state?.update_action || {},
+                });
+                throw e;
+            })
+            .finally(() => {
+                this.loadingPromise = null;
+            });
+        return this.loadingPromise;
+    },
+};
+
+window.hermesUpdateCheckNow = async function (btn) {
+    try {
+        setBtnLoading(btn, true);
+        await HermesUpdate.refresh(true, { checking: true });
+        if (screenIsActive('dashboard') || screenIsActive('service')) refreshCurrentScreen();
+    } catch {}
+    finally {
+        setBtnLoading(btn, false);
+    }
+};
+
+window.copyHermesUpdateCommand = function () {
+    return copyText(HermesUpdate.state?.manual_command || '', 'Update command copied');
+};
+
+window.openHermesUpdateConfirm = function () {
+    const state = HermesUpdate.state;
+    if (!state) {
+        toast('Hermes update status is still loading', 'warning');
+        return;
+    }
+    if (!state.can_update) {
+        showModal(
+            'Manual Hermes Update',
+            '<p class="mb-12">' + escH(state.manual_reason || 'This Hermes install cannot be updated directly from the web UI.') + '</p>' +
+            (state.manual_command
+                ? '<div class="update-card-command"><span class="update-card-item-label">Run this command</span><code>' + escH(state.manual_command) + '</code></div>'
+                : ''),
+            '<button class="btn" onclick="closeModal()">Close</button>' +
+            (state.manual_command ? '<button class="btn btn-primary" onclick="copyHermesUpdateCommand()">Copy Command</button>' : '')
+        );
+        return;
+    }
+    const worktree = state.worktree || {};
+    const detail = [];
+    if (worktree.total) detail.push(`Local changes detected: ${hermesUpdateWorktreeLabel(state)}.`);
+    detail.push('Hermes will run its built-in update command for the install currently managed by this Web UI.');
+    detail.push('If local changes cannot be restored cleanly, Hermes will log the recovery steps and keep the saved stash reference.');
+    showModal(
+        'Update Hermes',
+        '<p class="mb-12">This will update <strong>' + escH(hermesUpdateVersionLabel(state.installed_version)) + '</strong>' +
+            (state.latest_version?.version ? ' toward <strong>' + escH(hermesUpdateVersionLabel(state.latest_version)) + '</strong>.' : '.') +
+        '</p>' +
+        '<p class="text-sm text-secondary mb-12">' + escH(detail.join(' ')) + '</p>' +
+        (state.manual_command
+            ? '<div class="update-card-command"><span class="update-card-item-label">Command Hermes Web UI will run</span><code>' + escH(state.manual_command) + '</code></div>'
+            : ''),
+        '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="confirm-hermes-update-btn" onclick="runHermesUpdate(this)">Update Hermes</button>'
+    );
+};
+
+window.runHermesUpdate = async function (btn) {
+    try {
+        setBtnLoading(btn, true);
+        const resp = await api('POST', '/api/hermes/update', { confirm: true });
+        closeModal();
+        if (resp.status) HermesUpdate.applyState(resp.status);
+        toast(resp.message || 'Hermes update started', 'info', 2500);
+        if (screenIsActive('dashboard') || screenIsActive('service')) refreshCurrentScreen();
+    } catch (e) {
+        toast('Hermes update could not start: ' + e.message, 'error', 5000);
+    } finally {
+        setBtnLoading(btn, false);
+    }
+};
+
 /* ═══════════════════════════════════════════════════════════════
    SCREENS
    ═══════════════════════════════════════════════════════════════ */
@@ -326,11 +668,14 @@ const Screens = {};
 Screens.dashboard = async function () {
     const content = document.getElementById('content');
     try {
-        const [health, sys, tools] = await Promise.all([
+        const [health, sys, tools, updateState] = await Promise.all([
             api('GET', '/api/health').catch(() => ({ gateway_running: false, version: '?' })),
             api('GET', '/api/system').catch(() => ({ python_version: '?', os_info: '?', disk_free: '?' })),
-            api('GET', '/api/tools').catch(() => ({ tools: [], total_enabled: 0, total_disabled: 0 }))
+            api('GET', '/api/tools').catch(() => ({ tools: [], total_enabled: 0, total_disabled: 0 })),
+            HermesUpdate.ensureLoaded().catch(() => null),
         ]);
+        const updateMeta = hermesUpdateStatusMeta(updateState?.status || 'unknown_latest');
+        const installedVersion = hermesUpdateVersionLabel(updateState?.installed_version, (health.version || '?').split('\n')[0]);
         content.innerHTML = `
         <div class="stats-grid">
             <div class="stat-card ${health.gateway_running ? 'green' : 'red'}">
@@ -338,18 +683,19 @@ Screens.dashboard = async function () {
                 <div class="stat-label">Gateway Status</div>
             </div>
             <div class="stat-card blue">
-                <div class="stat-value">${escH((health.version || '?').split('\n')[0])}</div>
+                <div class="stat-value">${escH(installedVersion)}</div>
                 <div class="stat-label">Hermes Version</div>
             </div>
-            <div class="stat-card green">
-                <div class="stat-value">${tools.total_enabled || 0} / ${(tools.total_enabled || 0) + (tools.total_disabled || 0)}</div>
-                <div class="stat-label">CLI Tool Status</div>
+            <div class="stat-card ${updateState?.status === 'update_available' ? 'amber' : (updateState?.status === 'update_failed' || updateState?.status === 'unknown_latest' ? 'red' : 'green')}">
+                <div class="stat-value">${escH(updateMeta.label)}</div>
+                <div class="stat-label">Hermes Update Status</div>
             </div>
             <div class="stat-card blue">
                 <div class="stat-value">${escH(sys.python_version || '?')}</div>
                 <div class="stat-label">Python</div>
             </div>
         </div>
+        ${renderHermesUpdateCard(updateState)}
         <div class="card">
             <div class="card-header"><span>Quick Actions</span></div>
             <div class="card-body" style="display:flex;gap:8px;flex-wrap:wrap">
@@ -358,6 +704,7 @@ Screens.dashboard = async function () {
                 <button class="btn btn-primary" onclick="serviceAction('restart')">\u21bb Restart Gateway</button>
 <button class="btn" onclick="serviceAction('doctor')">Run Diagnostics</button>
                 <button class="btn" onclick="reloadConfig()">\u21bb Reload Config</button>
+                <button class="btn" onclick="navigate('service')">Open Service</button>
             </div>
         </div>
         <div class="card">
@@ -765,8 +1112,13 @@ window.confirmDeleteEnvVar = async function (key) {
 Screens.service = async function () {
     const content = document.getElementById('content');
     try {
-        const [health, sys] = await Promise.all([api('GET', '/api/health').catch(() => ({ gateway_running: false, gateway_pid: null, version: '?' })), api('GET', '/api/system').catch(() => ({ python_version: '?', os_info: '?', disk_free: '?', uptime: '?' }))]);
+        const [health, sys, updateState] = await Promise.all([
+            api('GET', '/api/health').catch(() => ({ gateway_running: false, gateway_pid: null, version: '?' })),
+            api('GET', '/api/system').catch(() => ({ python_version: '?', os_info: '?', disk_free: '?', uptime: '?' })),
+            HermesUpdate.ensureLoaded().catch(() => null),
+        ]);
         content.innerHTML = `
+        ${renderHermesUpdateCard(updateState)}
         <div class="card">
             <div class="card-header"><span>Gateway Service</span><span class="badge ${health.gateway_running ? 'badge-success' : 'badge-danger'}">${health.gateway_running ? 'Running' : 'Stopped'}</span></div>
             <div class="card-body">
@@ -6353,6 +6705,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     checkHealth();
+    HermesUpdate.ensureLoaded().catch(() => {});
     // Support ?chat or #chat for direct navigation
     const params = new URLSearchParams(window.location.search);
     const hash = window.location.hash.replace('#', '');
@@ -6367,3 +6720,4 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 setInterval(checkHealth, 10000);
+setInterval(() => { HermesUpdate.refresh(false, { silent: true }).catch(() => {}); }, 300000);

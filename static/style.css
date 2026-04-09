@@ -977,6 +977,129 @@ pre code {
   padding: 0;
 }
 
+.global-status-banner {
+  padding: 12px 20px 0;
+}
+
+.update-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--bg-secondary), var(--bg-tertiary));
+  box-shadow: var(--shadow);
+}
+
+.update-banner.status-update_available {
+  border-color: rgba(245, 158, 11, 0.32);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.14), var(--bg-secondary));
+}
+
+.update-banner.status-update_in_progress {
+  border-color: rgba(6, 182, 212, 0.32);
+  background: linear-gradient(135deg, rgba(6, 182, 212, 0.14), var(--bg-secondary));
+}
+
+.update-banner.status-update_failed,
+.update-banner.status-unknown_latest {
+  border-color: rgba(239, 68, 68, 0.28);
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.12), var(--bg-secondary));
+}
+
+.update-banner-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.update-banner-copy h3 {
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.update-banner-copy p {
+  margin-bottom: 0;
+}
+
+.update-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.update-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.update-card-item {
+  min-width: 0;
+}
+
+.update-card-item code,
+.update-card-command code {
+  word-break: break-word;
+}
+
+.update-card-item-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.update-card-item-value {
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.update-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.update-card-command {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-primary);
+}
+
+.update-log-panel {
+  margin-top: 16px;
+}
+
+.update-log-panel pre {
+  max-height: 260px;
+  margin-top: 8px;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 900px) {
+  .update-banner {
+    flex-direction: column;
+  }
+
+  .update-banner-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .update-card-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ============================================================
    12. STATS GRID (.stats-grid, .stat-card, .stat-value, .stat-label)
    ============================================================ */

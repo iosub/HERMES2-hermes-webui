@@ -7,10 +7,30 @@
 PORT="${1:-${PORT:-5000}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="${APP_DIR:-$SCRIPT_DIR}"
-WEBUI_VENV="${WEBUI_VENV:-$HOME/.hermes/.venv}"
+
+detect_webui_venv() {
+    local candidate
+    if [ -n "${WEBUI_VENV:-}" ]; then
+        echo "$WEBUI_VENV"
+        return
+    fi
+    for candidate in "$APP_DIR/.venv" "$HOME/.hermes/.venv"; do
+        if [ -x "$candidate/bin/python" ]; then
+            echo "$candidate"
+            return
+        fi
+    done
+    echo "$APP_DIR/.venv"
+}
+
+WEBUI_VENV="$(detect_webui_venv)"
 PYTHON_BIN="$WEBUI_VENV/bin/python"
 FLASK_BIN="$WEBUI_VENV/bin/flask"
 GUNICORN_BIN="$WEBUI_VENV/bin/gunicorn"
+
+if [ -z "${HERMES_WEBUI_HERMES_BIN:-}" ] && [ -x "$HOME/.hermes/hermes-agent/venv/bin/hermes" ]; then
+    export HERMES_WEBUI_HERMES_BIN="$HOME/.hermes/hermes-agent/venv/bin/hermes"
+fi
 
 echo "=========================================="
 echo "  Hermes Agent Web UI"
@@ -25,6 +45,10 @@ if [ ! -x "$PYTHON_BIN" ]; then
     echo "  Set WEBUI_VENV to the Hermes/web UI virtualenv and try again."
     echo "=========================================="
     exit 1
+fi
+
+if [ -n "${HERMES_WEBUI_HERMES_BIN:-}" ]; then
+    echo "  Hermes CLI: $HERMES_WEBUI_HERMES_BIN"
 fi
 
 # Check if already running on this port

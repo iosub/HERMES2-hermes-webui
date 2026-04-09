@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCREENSHOT_DIR="${1:-/tmp/hermes-pw-smoke}"
+SCREENSHOT_DIR="${1:-/tmp/hermes-pw-update}"
 URL="${2:-http://127.0.0.1:5057/}"
 shift $(( $# > 0 ? 1 : 0 ))
 shift $(( $# > 0 ? 1 : 0 ))
@@ -57,7 +57,7 @@ then
 fi
 
 exec "$PLAYWRIGHT_PYTHON" \
-  "$ROOT_DIR/tools/playwright_smoke.py" \
+  "$ROOT_DIR/tools/playwright_update_validation.py" \
   --url "$URL" \
   --token "$HERMES_WEBUI_TOKEN" \
   --screenshot-dir "$SCREENSHOT_DIR" \
