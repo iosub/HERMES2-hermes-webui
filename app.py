@@ -2858,7 +2858,7 @@ def _apply_integration_capability(data: dict | None, preview_token: str) -> tupl
             if not value:
                 continue
             ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-            set_key(str(ENV_PATH), entry.get("key") or "", value)
+            _set_env_value(ENV_PATH, entry.get("key") or "", value)
         cfg.set(str(draft.get("kind") or ""), copy.deepcopy(draft.get("config") or {}))
     except Exception:
         _restore_text_file(ENV_PATH, env_before)
@@ -4899,7 +4899,7 @@ def api_env_set():
         if not key:
             return jsonify({"ok": False, "error": "key is required"}), 400
         ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-        set_key(str(ENV_PATH), key, value or "")
+        _set_env_value(ENV_PATH, key, value or "")
         return jsonify({"ok": True})
     except Exception as exc:
         return _http_error(str(exc))
@@ -4919,7 +4919,7 @@ def api_env_update(key):
             and value == _mask_value(key, current)
         ):
             return jsonify({"ok": True})
-        set_key(str(ENV_PATH), key, value)
+        _set_env_value(ENV_PATH, key, value)
         return jsonify({"ok": True})
     except Exception as exc:
         return _http_error(str(exc))
@@ -7931,6 +7931,11 @@ def _api_server_headers(api_key: str | None = None, provider: str | None = None)
     if resolved_api_key:
         headers["Authorization"] = f"Bearer {resolved_api_key}"
     return headers
+
+
+def _set_env_value(path: Path, key: str, value: str) -> None:
+    """Write dotenv entries without forcing single-quoted values."""
+    set_key(str(path), key, value, quote_mode="never")
 
 
 def _resolve_api_target(prefer_vision: bool = False) -> dict:

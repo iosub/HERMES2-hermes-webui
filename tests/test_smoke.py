@@ -358,6 +358,33 @@ class HermesWebUISmokeTests(unittest.TestCase):
         self.assertIn("Provider", data["group_help"])
         self.assertTrue(any(item["key"] == "OPENAI_API_KEY" for item in data["presets"]["Provider"]))
 
+    def test_env_api_post_writes_plain_unquoted_value(self):
+        env_file = Path(self.tmpdir.name) / ".env"
+
+        with patch.object(mod, "ENV_PATH", env_file):
+            resp = self.client.post(
+                "/api/env",
+                json={"key": "OPENAI_API_KEY", "value": "sk-test-value"},
+                headers=self.headers,
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(env_file.read_text(encoding="utf-8"), "OPENAI_API_KEY=sk-test-value\n")
+
+    def test_env_api_put_updates_without_single_quotes(self):
+        env_file = Path(self.tmpdir.name) / ".env"
+        env_file.write_text("OPENAI_API_KEY=sk-old\n", encoding="utf-8")
+
+        with patch.object(mod, "ENV_PATH", env_file):
+            resp = self.client.put(
+                "/api/env/OPENAI_API_KEY",
+                json={"value": "sk-new-value"},
+                headers=self.headers,
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(env_file.read_text(encoding="utf-8"), "OPENAI_API_KEY=sk-new-value\n")
+
     def test_skill_setup_readiness_detects_missing_requirements(self):
         skill_root = Path(self.tmpdir.name) / "skills"
         skill_dir = skill_root / "productivity" / "google-workspace"
@@ -1993,7 +2020,7 @@ metadata:
         self.assertEqual(resp.status_code, 200, resp.data)
         saved = mod.yaml.safe_load(config_path.read_text(encoding="utf-8"))
         self.assertEqual(saved["discord"]["require_mention"], True)
-        self.assertIn("DISCORD_TOKEN", env_path.read_text(encoding="utf-8"))
+        self.assertEqual(env_path.read_text(encoding="utf-8"), "DISCORD_TOKEN=discord-secret\n")
 
     def test_capabilities_apply_restores_env_when_integration_config_write_fails(self):
         tmp = Path(self.tmpdir.name)
