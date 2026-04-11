@@ -770,13 +770,58 @@ async function reloadConfig() {
     catch (e) { toast('Reload failed: ' + e.message, 'error'); }
 }
 
+async function loadRuntimeProfiles() {
+    return api('GET', '/api/runtime/profiles');
+}
+
+function renderRuntimeProfileCard(profileData, status) {
+    const selected = profileData?.selected || 'default';
+    const profiles = Array.isArray(profileData?.profiles) ? profileData.profiles : [];
+    const options = profiles.map(profile => ({
+        value: profile.name,
+        label: profile.name + (profile.is_root_active ? ' - backend active' : ''),
+    }));
+    const currentApiUrl = status?.api_url || profileData?.paths?.env || '(unknown)';
+    return '' +
+        '<div class="card mb-16"><div class="card-header"><span>Hermes Profile</span></div><div class="card-body">' +
+            '<p class="text-sm text-secondary mb-16">Choose which Hermes profile this portal should read for config, env vars, CLI chats, and gateway actions. This does not modify the backend\'s own active profile file.</p>' +
+            '<div class="form-row">' +
+                '<div class="form-group"><label class="form-label">Profile</label>' + selectH('runtime-profile-select', options, selected) + '</div>' +
+                '<div class="form-group"><label class="form-label">Hermes Home</label><div class="font-mono text-sm">' + escH(profileData?.paths?.home || '') + '</div></div>' +
+                '<div class="form-group"><label class="form-label">API Server</label><div class="font-mono text-sm">' + escH(currentApiUrl) + '</div></div>' +
+            '</div>' +
+            '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+                '<button class="btn btn-primary" onclick="saveRuntimeProfile(this)">Use Profile</button>' +
+                '<button class="btn" onclick="Screens.settings()">Refresh</button>' +
+            '</div>' +
+        '</div></div>';
+}
+
+window.saveRuntimeProfile = async function (btn) {
+    const select = document.getElementById('runtime-profile-select');
+    if (!select) return;
+    try {
+        setBtnLoading(btn, true);
+        await api('PUT', '/api/runtime/profiles', { profile: select.value || 'default' });
+        window.modelRolesCache = null;
+        window.providerEnvCache = null;
+        toast('Hermes profile updated', 'success');
+        await Screens.settings();
+    } catch (e) {
+        toast('Profile update failed: ' + e.message, 'error');
+    } finally {
+        setBtnLoading(btn, false);
+    }
+};
+
 // ── SETTINGS ───────────────────────────────────────────────
 Screens.settings = async function () {
     const content = document.getElementById('content');
     try {
-        const [cfg, status] = await Promise.all([
+        const [cfg, status, profileData] = await Promise.all([
             api('GET', '/api/config'),
             api('GET', '/api/chat/status').catch(() => ({})),
+            loadRuntimeProfiles(),
         ]);
         const personalities = Object.keys(cfg.personalities || {});
         const runtime = status.runtime || {};
@@ -793,7 +838,7 @@ Screens.settings = async function () {
             { id: 'misc', label: 'Misc', sections: ['human_delay', 'approvals', 'code_execution', 'skills', 'streaming', 'delegation'] }
         ];
 
-            let tabsHtml = '<div class="tabs">' + tabs.map((t, i) => '<button class="tab' + (i === 0 ? ' active' : '') + '" data-tab="' + t.id + '">' + t.label + '</button>').join('') + '</div>';
+            let tabsHtml = renderRuntimeProfileCard(profileData, status) + '<div class="tabs">' + tabs.map((t, i) => '<button class="tab' + (i === 0 ? ' active' : '') + '" data-tab="' + t.id + '">' + t.label + '</button>').join('') + '</div>';
         let panelsHtml = tabs.map((t, i) => {
             let formHtml = '';
             t.sections.forEach(sec => {

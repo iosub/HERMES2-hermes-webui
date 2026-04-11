@@ -385,6 +385,74 @@ class HermesWebUISmokeTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.data)
         self.assertEqual(env_file.read_text(encoding="utf-8"), "OPENAI_API_KEY=sk-new-value\n")
 
+    def test_runtime_profile_switch_changes_config_source(self):
+        hermes_root = Path(self.tmpdir.name) / ".hermes"
+        profiles_dir = hermes_root / "profiles"
+        leire_home = profiles_dir / "leire"
+        hermes_root.mkdir()
+        profiles_dir.mkdir()
+        leire_home.mkdir(parents=True)
+        (hermes_root / "config.yaml").write_text("agent:\n  personality: default\n", encoding="utf-8")
+        (leire_home / "config.yaml").write_text("agent:\n  personality: leire\n", encoding="utf-8")
+        state_path = Path(self.tmpdir.name) / "webui_profile"
+
+        with patch.object(mod, "HERMES_HOME", hermes_root), \
+             patch.object(mod, "CONFIG_PATH", hermes_root / "config.yaml"), \
+             patch.object(mod, "ENV_PATH", hermes_root / ".env"), \
+             patch.object(mod, "SKILLS_DIR", hermes_root / "skills"), \
+             patch.object(mod, "SESSIONS_DIR", hermes_root / "sessions"), \
+             patch.object(mod, "BACKUP_DIR", hermes_root / "backups"), \
+             patch.object(mod, "HERMES_PROFILES_DIR", profiles_dir), \
+             patch.object(mod, "WEBUI_PROFILE_STATE_PATH", state_path):
+            mod.cfg.load()
+
+            before = self.client.get("/api/config", headers=self.headers)
+            self.assertEqual(before.status_code, 200, before.data)
+            self.assertEqual(before.get_json()["agent"]["personality"], "default")
+
+            switched = self.client.put("/api/runtime/profiles", json={"profile": "leire"}, headers=self.headers)
+            self.assertEqual(switched.status_code, 200, switched.data)
+            self.assertEqual(switched.get_json()["selected"], "leire")
+
+            after = self.client.get("/api/config", headers=self.headers)
+            self.assertEqual(after.status_code, 200, after.data)
+            self.assertEqual(after.get_json()["agent"]["personality"], "leire")
+
+    def test_runtime_profile_switch_changes_chat_status_api_url(self):
+        hermes_root = Path(self.tmpdir.name) / ".hermes"
+        profiles_dir = hermes_root / "profiles"
+        leire_home = profiles_dir / "leire"
+        hermes_root.mkdir()
+        profiles_dir.mkdir()
+        leire_home.mkdir(parents=True)
+        (leire_home / ".env").write_text("HERMES_API_URL=http://127.0.0.1:9876\n", encoding="utf-8")
+        state_path = Path(self.tmpdir.name) / "webui_profile"
+
+        with patch.dict(mod.os.environ, {"HERMES_WEBUI_TOKEN": "test-token"}, clear=True), \
+             patch.object(mod, "HERMES_HOME", hermes_root), \
+             patch.object(mod, "CONFIG_PATH", hermes_root / "config.yaml"), \
+             patch.object(mod, "ENV_PATH", hermes_root / ".env"), \
+             patch.object(mod, "SKILLS_DIR", hermes_root / "skills"), \
+             patch.object(mod, "SESSIONS_DIR", hermes_root / "sessions"), \
+             patch.object(mod, "BACKUP_DIR", hermes_root / "backups"), \
+             patch.object(mod, "HERMES_PROFILES_DIR", profiles_dir), \
+             patch.object(mod, "WEBUI_PROFILE_STATE_PATH", state_path), \
+             patch.object(mod, "_check_api_server", return_value=False), \
+             patch.object(mod, "_api_server_probe", return_value=(False, "disabled", None)), \
+             patch.object(mod, "_image_attachment_support_status", return_value=(False, "disabled")), \
+             patch.object(mod, "_vision_configured", return_value=(False, "not configured")), \
+             patch.object(mod, "_resolve_api_target", return_value={"base_url": "", "model": "", "api_key": ""}), \
+             patch.object(mod, "_chat_runtime_status", return_value=runtime_status_stub()):
+            switched = self.client.put("/api/runtime/profiles", json={"profile": "leire"}, headers=self.headers)
+            self.assertEqual(switched.status_code, 200, switched.data)
+
+            resp = self.client.get("/api/chat/status", headers=self.headers)
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        data = resp.get_json()
+        self.assertEqual(data["profile"], "leire")
+        self.assertEqual(data["api_url"], "http://127.0.0.1:9876")
+
     def test_skill_setup_readiness_detects_missing_requirements(self):
         skill_root = Path(self.tmpdir.name) / "skills"
         skill_dir = skill_root / "productivity" / "google-workspace"

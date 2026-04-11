@@ -73,9 +73,10 @@ def _repo_env_values() -> dict:
 
 
 def _hermes_env_values() -> dict:
-    if ENV_PATH.exists():
+    env_path = _selected_env_path() if "_selected_env_path" in globals() else ENV_PATH
+    if env_path.exists():
         return {
-            key: value for key, value in dotenv_values(str(ENV_PATH)).items()
+            key: value for key, value in dotenv_values(str(env_path)).items()
             if value is not None
         }
     return {}
@@ -112,11 +113,162 @@ def _runtime_env_source(key: str, allow_repo_env: bool = True) -> str:
             return "hermes_env"
     return ""
 
+
+def _effective_hermes_api_url(default: str = "http://127.0.0.1:8642") -> str:
+    explicit = _runtime_env_value("HERMES_API_URL", "").strip()
+    if explicit:
+        return explicit
+
+    host = _runtime_env_value("API_SERVER_HOST", "").strip() or "127.0.0.1"
+    port = _runtime_env_value("API_SERVER_PORT", "").strip()
+    if not port:
+        return default
+    if host in ("0.0.0.0", "::", "[::]"):
+        host = "127.0.0.1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{port}"
+
 HERMES_HOME = Path.home() / ".hermes"
 HERMES_REPO_DIR = HERMES_HOME / "hermes-agent"
 CONFIG_PATH = HERMES_HOME / "config.yaml"
 ENV_PATH = HERMES_HOME / ".env"
 SKILLS_DIR = HERMES_HOME / "skills"
+HERMES_PROFILES_DIR = HERMES_HOME / "profiles"
+WEBUI_PROFILE_STATE_PATH = APP_ROOT / "run" / "webui_profile"
+
+
+def _normalize_hermes_profile_name(name: str | None) -> str:
+    normalized = str(name or "").strip()
+    return normalized or "default"
+
+
+def _root_active_profile_name() -> str:
+    active_profile_path = HERMES_HOME / "active_profile"
+    try:
+        return _normalize_hermes_profile_name(active_profile_path.read_text(encoding="utf-8").strip())
+    except Exception:
+        return "default"
+
+
+def _available_hermes_profile_names() -> list[str]:
+    names = ["default"]
+    try:
+        if HERMES_PROFILES_DIR.exists():
+            names.extend(
+                sorted(
+                    entry.name
+                    for entry in HERMES_PROFILES_DIR.iterdir()
+                    if entry.is_dir() and entry.name.strip()
+                )
+            )
+    except Exception:
+        pass
+    deduped = []
+    for name in names:
+        normalized = _normalize_hermes_profile_name(name)
+        if normalized not in deduped:
+            deduped.append(normalized)
+    return deduped
+
+
+def _profile_home(profile_name: str | None = None) -> Path:
+    normalized = _normalize_hermes_profile_name(profile_name)
+    if normalized == "default":
+        return HERMES_HOME
+    return HERMES_PROFILES_DIR / normalized
+
+
+def _selected_hermes_profile_name() -> str:
+    try:
+        if WEBUI_PROFILE_STATE_PATH.exists():
+            stored = _normalize_hermes_profile_name(WEBUI_PROFILE_STATE_PATH.read_text(encoding="utf-8").strip())
+            if stored in _available_hermes_profile_names():
+                return stored
+    except Exception:
+        pass
+    fallback = _root_active_profile_name()
+    if fallback in _available_hermes_profile_names():
+        return fallback
+    return "default"
+
+
+def _set_selected_hermes_profile_name(profile_name: str) -> str:
+    normalized = _normalize_hermes_profile_name(profile_name)
+    available = _available_hermes_profile_names()
+    if normalized not in available:
+        raise ValueError(f"Unknown Hermes profile: {normalized}")
+    WEBUI_PROFILE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    WEBUI_PROFILE_STATE_PATH.write_text(normalized, encoding="utf-8")
+    return normalized
+
+
+def _selected_hermes_home() -> Path:
+    if _selected_hermes_profile_name() == "default":
+        return HERMES_HOME
+    return _profile_home(_selected_hermes_profile_name())
+
+
+def _selected_config_path() -> Path:
+    if _selected_hermes_profile_name() == "default":
+        return CONFIG_PATH
+    return _selected_hermes_home() / "config.yaml"
+
+
+def _selected_env_path() -> Path:
+    if _selected_hermes_profile_name() == "default":
+        return ENV_PATH
+    return _selected_hermes_home() / ".env"
+
+
+def _selected_skills_dir() -> Path:
+    if _selected_hermes_profile_name() == "default":
+        return SKILLS_DIR
+    return _selected_hermes_home() / "skills"
+
+
+def _selected_sessions_dir() -> Path:
+    if _selected_hermes_profile_name() == "default":
+        return SESSIONS_DIR
+    return _selected_hermes_home() / "sessions"
+
+
+def _selected_backup_dir() -> Path:
+    if _selected_hermes_profile_name() == "default":
+        return BACKUP_DIR
+    return _selected_hermes_home() / "backups"
+
+
+def _selected_gateway_pid_path() -> Path:
+    return _selected_hermes_home() / "gateway.pid"
+
+
+def _selected_gateway_log_path() -> Path:
+    return _selected_hermes_home() / "logs" / "gateway.log"
+
+
+def _selected_hermes_profile_payload() -> dict:
+    selected = _selected_hermes_profile_name()
+    root_active = _root_active_profile_name()
+    return {
+        "selected": selected,
+        "profiles": [
+            {
+                "name": name,
+                "home": str(_profile_home(name)),
+                "is_default": name == "default",
+                "is_root_active": name == root_active,
+            }
+            for name in _available_hermes_profile_names()
+        ],
+        "paths": {
+            "home": str(_selected_hermes_home()),
+            "config": str(_selected_config_path()),
+            "env": str(_selected_env_path()),
+            "skills": str(_selected_skills_dir()),
+            "sessions": str(_selected_sessions_dir()),
+        },
+    }
 
 # Hermes executable - try current install locations with fallback
 def _find_hermes_bin():
@@ -151,7 +303,8 @@ MAX_REQUEST_BODY_SIZE = max(
 )
 REQUEST_LOG_SLOW_MS = max(250, int(_runtime_env_value("HERMES_WEBUI_SLOW_REQUEST_MS", "1500")))
 UPLOAD_STREAM_CHUNK_SIZE = 1024 * 1024
-HERMES_API_URL = _runtime_env_value("HERMES_API_URL", "http://127.0.0.1:8642")
+DEFAULT_HERMES_API_URL = "http://127.0.0.1:8642"
+HERMES_API_URL = _effective_hermes_api_url(DEFAULT_HERMES_API_URL)
 BACKUP_DIR = HERMES_HOME / "backups"
 
 # Chat session storage (persisted to disk)
@@ -1762,8 +1915,9 @@ class ConfigManager:
             object.__setattr__(self, "_config_mtime_ns", self._config_file_mtime_ns())
 
     def _config_file_mtime_ns(self):
+        config_path = _selected_config_path()
         try:
-            return CONFIG_PATH.stat().st_mtime_ns
+            return config_path.stat().st_mtime_ns
         except FileNotFoundError:
             return None
         except OSError:
@@ -1789,9 +1943,10 @@ class ConfigManager:
     # -- loading ----------------------------------------------------------
     def load(self):
         """Read config.yaml from disk (or return empty dict)."""
-        if CONFIG_PATH.exists():
+        config_path = _selected_config_path()
+        if config_path.exists():
             try:
-                with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
+                with open(config_path, "r", encoding="utf-8") as fh:
                     self._replace_config_from_disk(yaml.safe_load(fh) or {})
             except Exception as exc:
                 self._replace_config_from_disk({})
@@ -1802,13 +1957,15 @@ class ConfigManager:
     # -- saving -----------------------------------------------------------
     def save(self):
         """Write config to disk, creating a timestamped backup first."""
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        config_path = _selected_config_path()
+        backup_dir = _selected_backup_dir()
+        backup_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup = BACKUP_DIR / f"config_{ts}.yaml"
-        if CONFIG_PATH.exists():
-            shutil.copy2(CONFIG_PATH, backup)
-        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+        backup = backup_dir / f"config_{ts}.yaml"
+        if config_path.exists():
+            shutil.copy2(config_path, backup)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_path, "w", encoding="utf-8") as fh:
             yaml.dump(
                 self._config,
                 fh,
@@ -2190,7 +2347,7 @@ def _resolve_role_target(role: str) -> dict:
         base_url=model_cfg.get("base_url", ""),
     )
     default_target = {
-        "base_url": (model_cfg.get("base_url") or _provider_default_base_url(default_provider) or _runtime_env_value("HERMES_API_URL", "") or HERMES_API_URL or "").strip(),
+        "base_url": (model_cfg.get("base_url") or _provider_default_base_url(default_provider) or _effective_hermes_api_url("") or DEFAULT_HERMES_API_URL).strip(),
         "api_key": str(model_cfg.get("api_key") or "").strip(),
         "model": str(model_cfg.get("default_model") or "").strip(),
         "provider": default_provider,
@@ -3536,7 +3693,7 @@ def _utc_now_z() -> str:
 
 
 def _read_gateway_pid_record() -> dict:
-    pid_file = HERMES_HOME / "gateway.pid"
+    pid_file = _selected_gateway_pid_path()
     if not pid_file.exists():
         return {}
     try:
@@ -3625,7 +3782,7 @@ def _selected_hermes_bin() -> Path:
 
 def _selection_reason_for_candidate(source: str) -> str:
     if source == "active_gateway":
-        return f"Using the live gateway binary recorded in {HERMES_HOME / 'gateway.pid'}."
+        return f"Using the live gateway binary recorded in {_selected_gateway_pid_path()}."
     if source == "env_override":
         return "Using the Hermes binary path from HERMES_WEBUI_HERMES_BIN."
     if source == "env_hint":
@@ -3633,7 +3790,7 @@ def _selection_reason_for_candidate(source: str) -> str:
     if source == "managed_repo":
         return f"Using the repo-managed Hermes install under {HERMES_REPO_DIR}."
     if source == "legacy_home_venv":
-        return f"Using the Hermes venv rooted at {HERMES_HOME}."
+        return f"Using the Hermes venv rooted at {_selected_hermes_home()}."
     if source == "user_local_bin":
         return "Using the Hermes launcher from ~/.local/bin."
     if source == "path_lookup":
@@ -3642,7 +3799,7 @@ def _selection_reason_for_candidate(source: str) -> str:
 
 
 def _run_hermes_with_bin(bin_path: Path, *args, timeout: int = 30, cwd: Path | None = None) -> subprocess.CompletedProcess:
-    env = {**os.environ, "NO_COLOR": "1"}
+    env = {**os.environ, "NO_COLOR": "1", "HERMES_HOME": str(_selected_hermes_home())}
     return subprocess.run(
         [str(bin_path)] + list(args),
         capture_output=True,
@@ -4584,12 +4741,19 @@ def _gateway_status() -> dict:
         status_line = lines[0] if lines else ""
         raw = r.stdout + r.stderr
 
-        running = "✓ Gateway is running" in status_line
+        normalized_status = raw.casefold()
+        running = (
+            "gateway is running" in normalized_status
+            or "gateway service is running" in normalized_status
+            or "user gateway service is running" in normalized_status
+        ) and "not running" not in normalized_status
         pid: int | None = None
         if running:
-            # Extract PID from "✓ Gateway is running (PID: NNNNN)"
+            # Extract PID from either Hermes CLI or systemd output.
             import re
-            m = re.search(r"PID:\s*(\d+)", status_line)
+            m = re.search(r"PID:\s*(\d+)", raw)
+            if not m:
+                m = re.search(r"Main PID:\s*(\d+)", raw)
             if m:
                 pid = int(m.group(1))
 
@@ -4697,8 +4861,9 @@ def api_health():
             "gateway_pid": pid,
             "gateway_running": gs["running"],
             "version": version,
-            "hermes_home": str(HERMES_HOME),
+            "hermes_home": str(_selected_hermes_home()),
             "hermes_bin": str(_selected_hermes_bin()),
+            "profile": _selected_hermes_profile_name(),
         })
     except Exception as exc:
         return _http_error(str(exc))
@@ -4848,6 +5013,30 @@ def api_config_reload():
         return _http_error(str(exc))
 
 
+@app.route("/api/runtime/profiles", methods=["GET"])
+@require_token
+def api_runtime_profiles_get():
+    try:
+        cfg.load()
+        return jsonify(_selected_hermes_profile_payload())
+    except Exception as exc:
+        return _http_error(str(exc))
+
+
+@app.route("/api/runtime/profiles", methods=["PUT"])
+@require_token
+def api_runtime_profiles_put():
+    try:
+        data = request.get_json(force=True) or {}
+        selected = _set_selected_hermes_profile_name(data.get("profile") or "default")
+        cfg.load()
+        return jsonify({"ok": True, **_selected_hermes_profile_payload(), "selected": selected})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return _http_error(str(exc))
+
+
 # ===================================================================
 # 7–9. Environment variables
 # ===================================================================
@@ -4856,7 +5045,8 @@ def api_config_reload():
 @require_token
 def api_env_get():
     try:
-        raw = dotenv_values(str(ENV_PATH)) if ENV_PATH.exists() else {}
+        env_path = _selected_env_path()
+        raw = dotenv_values(str(env_path)) if env_path.exists() else {}
         masked = {k: _mask_value(k, v) for k, v in raw.items() if v is not None}
         skills = _discover_skill_entries()
         dynamic_presets = _skill_env_var_presets(skills)
@@ -4898,8 +5088,9 @@ def api_env_set():
         key, value = data.get("key"), data.get("value")
         if not key:
             return jsonify({"ok": False, "error": "key is required"}), 400
-        ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _set_env_value(ENV_PATH, key, value or "")
+        env_path = _selected_env_path()
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        _set_env_value(env_path, key, value or "")
         return jsonify({"ok": True})
     except Exception as exc:
         return _http_error(str(exc))
@@ -4911,7 +5102,8 @@ def api_env_update(key):
     try:
         data = request.get_json(force=True)
         value = data.get("value", "")
-        current = dotenv_values(str(ENV_PATH)).get(key) if ENV_PATH.exists() else None
+        env_path = _selected_env_path()
+        current = dotenv_values(str(env_path)).get(key) if env_path.exists() else None
         if (
             isinstance(value, str)
             and isinstance(current, str)
@@ -4919,7 +5111,7 @@ def api_env_update(key):
             and value == _mask_value(key, current)
         ):
             return jsonify({"ok": True})
-        _set_env_value(ENV_PATH, key, value)
+        _set_env_value(env_path, key, value)
         return jsonify({"ok": True})
     except Exception as exc:
         return _http_error(str(exc))
@@ -4929,7 +5121,7 @@ def api_env_update(key):
 @require_token
 def api_env_delete(key):
     try:
-        unset_key(str(ENV_PATH), key)
+        unset_key(str(_selected_env_path()), key)
         return jsonify({"ok": True})
     except Exception as exc:
         return _http_error(str(exc))
@@ -5921,11 +6113,11 @@ def api_logs_get():
         # Fallback: read from common log locations
         if not log_text:
             log_candidates = [
-                HERMES_HOME / "logs" / "hermes.log",
-                HERMES_HOME / "logs" / "gateway.log",
-                HERMES_HOME / "logs" / "errors.log",
-                HERMES_HOME / "hermes.log",
-                HERMES_HOME / "gateway.log",
+                _selected_hermes_home() / "logs" / "hermes.log",
+                _selected_hermes_home() / "logs" / "gateway.log",
+                _selected_hermes_home() / "logs" / "errors.log",
+                _selected_hermes_home() / "hermes.log",
+                _selected_hermes_home() / "gateway.log",
             ]
             for lc in log_candidates:
                 content = _read_log_file(lc, lines)
@@ -6082,9 +6274,8 @@ def api_service_action(action):
         if action == "start":
             import subprocess
             bin_path = _selected_hermes_bin()
-            env = {**os.environ, "HERMES_HOME": str(HERMES_HOME)}
-            pid_file = HERMES_HOME / "gateway.pid"
-            log_path = HERMES_HOME / "logs" / "gateway.log"
+            env = {**os.environ, "HERMES_HOME": str(_selected_hermes_home())}
+            log_path = _selected_gateway_log_path()
             log_path.parent.mkdir(exist_ok=True)
             # Kill any existing gateway process first
             _run_hermes("gateway", "stop", timeout=10)
@@ -6116,8 +6307,8 @@ def api_service_action(action):
             # After stop, start in background
             import subprocess
             bin_path = _selected_hermes_bin()
-            env = {**os.environ, "HERMES_HOME": str(HERMES_HOME)}
-            log_path = HERMES_HOME / "logs" / "gateway.log"
+            env = {**os.environ, "HERMES_HOME": str(_selected_hermes_home())}
+            log_path = _selected_gateway_log_path()
             log_path.parent.mkdir(exist_ok=True)
             time.sleep(1)
             with open(log_path, "a") as lf:
@@ -7741,7 +7932,7 @@ def _call_hermes_prompt(
         proc = subprocess.Popen(
             cmd,
             cwd=str(Path.home()),
-            env={**os.environ, "NO_COLOR": "1"},
+            env={**os.environ, "NO_COLOR": "1", "HERMES_HOME": str(_selected_hermes_home())},
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -8188,7 +8379,7 @@ def _image_attachment_support_status() -> tuple[bool, str]:
         if image_model_ok is False:
             return False, image_model_reason
         return True, ""
-    api_url = target.get("base_url") or HERMES_API_URL
+    api_url = target.get("base_url") or _effective_hermes_api_url(DEFAULT_HERMES_API_URL)
     return False, f"OpenAI-compatible vision sidecar API is not reachable at {api_url} ({api_reason})"
 
 
@@ -8859,7 +9050,8 @@ def api_chat_status():
     api_selectable = api_server and not runtime.get("requires_cli")
     return jsonify({
         "api_server": api_server,
-        "api_url": _runtime_env_value("HERMES_API_URL", HERMES_API_URL),
+        "api_url": _effective_hermes_api_url(DEFAULT_HERMES_API_URL),
+        "profile": _selected_hermes_profile_name(),
         "api_probe": {
             "reachable": default_api_ok,
             "reason": default_api_reason,
@@ -8901,7 +9093,7 @@ def api_chat_status():
             "vision_sidecar_ready": image_support,
             "vision_configured": vision_ready,
             "vision_reason": vision_reason,
-            "vision_api_url": vision_target.get("base_url") or _runtime_env_value("HERMES_API_URL", HERMES_API_URL),
+            "vision_api_url": vision_target.get("base_url") or _effective_hermes_api_url(DEFAULT_HERMES_API_URL),
             "vision_model": vision_target.get("model") if vision_ready else "",
             "api_reachable": default_api_ok,
             "api_reason": default_api_reason,
