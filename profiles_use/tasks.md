@@ -36,6 +36,8 @@ Make the active Hermes profile visible in the important runtime areas of the por
 - [x] Show the active profile in the Service screen next to gateway controls and runtime state.
 - [ ] Show the active profile in Providers / Models where runtime target data is shown.
 - [x] Show the active profile in Chat in a lightweight but visible way.
+- [x] Distinguish the active portal profile from each chat session profile in chat history.
+- [x] Keep the chat session banner aligned with the selected profile when creating a new chat after switching profiles.
 - [ ] Validate profile switching visually for `default` and `leire`.
 - [ ] Keep this tracking folder out of the final upstream PR.
 
@@ -55,20 +57,24 @@ Make the active Hermes profile visible in the important runtime areas of the por
 - [x] Show the active profile in Dashboard.
 - [x] Show the active profile in Service.
 - [x] Show the active profile in Chat and chat history.
+- [x] Separate `Portal` and `Session` profile labels in chat history.
+- [x] Fix the new-chat banner to use the currently selected profile after a profile switch.
+- [x] Add a temporary `?token=...` bootstrap helper for testing in simple embedded browsers.
 
 
 ## Validation Checklist
 
-- [ ] Switching the profile updates the persistent profile indicator.
-- [ ] Dashboard shows the active profile and matching runtime paths.
-- [ ] Service shows which profile's gateway is being controlled.
+- [x] Switching the profile updates the persistent profile indicator.
+- [x] Dashboard shows the active profile and matching runtime paths.
+- [x] Service shows which profile's gateway is being controlled.
 - [ ] Providers / Models show which profile the displayed runtime configuration belongs to.
-- [ ] Chat shows the active profile without adding visual noise.
-- [ ] The UI remains consistent after switching back and forth between `default` and `leire`.
+- [x] Chat shows the active profile without adding visual noise.
+- [x] The UI remains consistent after switching back and forth between `default` and `leire` for the global indicator, chat banner, and chat history labels.
 
 
 ## Notes
 
 - The portal already supports runtime profile selection.
 - This work is about visibility and clarity, not reworking the full profile system.
+- A temporary `?token=...` URL bootstrap was added only to make testing easier in simple embedded browsers that do not handle the token prompt correctly.
 - Before the final upstream PR, remove or exclude this folder from the published diff.

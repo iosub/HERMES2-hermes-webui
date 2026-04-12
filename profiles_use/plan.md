@@ -194,6 +194,41 @@ Reason for this order:
 - minimal code spread early
 
 
+# Current Implementation Progress
+
+The branch now includes the following implemented surfaces:
+
+- persistent active profile indicators in the top bar and sidebar footer
+- active profile shown in Dashboard runtime information
+- active profile shown in Service runtime information
+- active profile shown in the chat session banner
+- active profile shown in the chat thinking state
+- chat history now distinguishes between the active portal profile and the profile used by each saved chat session
+
+Important clarification already implemented in Chat:
+
+- `Portal: <profile>` means the profile currently selected for the web UI runtime
+- `Session: <profile>` means the profile that specific chat session used when it was created or last persisted
+
+This distinction is necessary because a user can switch the active portal profile after creating older chats, and those older chats should still show their own session profile instead of silently changing labels.
+
+
+# Current Validation Status
+
+The branch has already been validated for these scenarios:
+
+- switching the active profile updates the global profile indicator
+- Dashboard and Service show the selected runtime profile
+- new chats show the active profile in the chat banner
+- chat history keeps the session profile visible even after switching the active portal profile
+
+Additional branch-only testing helper currently present:
+
+- the web UI can bootstrap the token from `?token=...` in the URL for easier testing in simple embedded browsers
+
+This helper is meant to reduce friction during testing. A proper login screen is still planned later and is outside the current profile-visibility scope.
+
+
 ## Phase 4: Keep scope tight
 
 Do not redesign the full UI.
