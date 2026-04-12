@@ -837,10 +837,14 @@ def _normalize_chat_session(session: dict) -> dict:
     folder_id = session.get("folder_id")
     if not isinstance(folder_id, str):
         folder_id = ""
+    profile_name = _normalize_hermes_profile_name(session.get("profile"))
+    if not profile_name:
+        profile_name = _selected_hermes_profile_name()
     session["transport_mode"] = transport_mode
     session["transport_preference"] = transport_preference
     session["continuity_mode"] = continuity_mode
     session.setdefault("transport_notice", "")
+    session["profile"] = profile_name
     session["messages"] = _normalize_chat_messages(session.get("messages"))
     session["vision_assets"] = _normalize_vision_assets(session.get("vision_assets"))
     session["folder_id"] = folder_id.strip()
@@ -6616,6 +6620,7 @@ def _chat_session_meta(session: dict) -> dict:
     normalized = _normalize_chat_session(copy.deepcopy(session))
     context = _effective_session_context(normalized)
     return {
+        "profile": normalized.get("profile") or _selected_hermes_profile_name(),
         "transport_mode": normalized.get("transport_mode"),
         "transport_preference": normalized.get("transport_preference") or CHAT_TRANSPORT_AUTO,
         "transport_preference_label": _transport_preference_label(normalized.get("transport_preference")),
@@ -8396,6 +8401,7 @@ def _get_or_create_chat_session(session_id=None):
         "created": now,
         "title": "New Chat",
         "updated": now,
+        "profile": _selected_hermes_profile_name(),
         "hermes_session_id": None,
         "transport_mode": None,
         "transport_preference": None,
@@ -8452,6 +8458,7 @@ def api_chat():
     if not message and not files:
         return jsonify({"error": "Message or attachment is required"}), 400
     sess = _get_or_create_chat_session(session_id)
+    sess["profile"] = _selected_hermes_profile_name()
     if data.get("transport_preference") is not None:
         validated_preference, preference_notice = _validated_transport_preference(requested_transport_preference)
         sess["transport_preference"] = validated_preference
@@ -8922,6 +8929,7 @@ def api_chat_sessions_create():
         _delete_session_from_disk(session["id"])
         return jsonify({"error": "Invalid chat context", "details": errors}), 400
     session.update(context_update)
+    session["profile"] = _selected_hermes_profile_name()
     session["transport_preference"] = transport_preference
     if transport_notice:
         session["transport_notice"] = transport_notice

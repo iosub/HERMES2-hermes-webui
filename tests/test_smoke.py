@@ -453,6 +453,44 @@ class HermesWebUISmokeTests(unittest.TestCase):
         self.assertEqual(data["profile"], "leire")
         self.assertEqual(data["api_url"], "http://127.0.0.1:9876")
 
+    def test_chat_session_history_preserves_profile_used(self):
+        hermes_root = Path(self.tmpdir.name) / ".hermes"
+        profiles_dir = hermes_root / "profiles"
+        profiles_dir.mkdir(parents=True)
+        (profiles_dir / "leire").mkdir()
+        state_path = Path(self.tmpdir.name) / "webui_profile"
+
+        with patch.object(mod, "HERMES_HOME", hermes_root), \
+             patch.object(mod, "CONFIG_PATH", hermes_root / "config.yaml"), \
+             patch.object(mod, "ENV_PATH", hermes_root / ".env"), \
+             patch.object(mod, "SKILLS_DIR", hermes_root / "skills"), \
+             patch.object(mod, "SESSIONS_DIR", hermes_root / "sessions"), \
+             patch.object(mod, "BACKUP_DIR", hermes_root / "backups"), \
+             patch.object(mod, "HERMES_PROFILES_DIR", profiles_dir), \
+             patch.object(mod, "WEBUI_PROFILE_STATE_PATH", state_path), \
+             patch.object(mod, "_check_api_server", return_value=False), \
+             patch.object(mod, "_image_attachment_support_status", return_value=(False, "disabled")), \
+             patch.object(mod, "_call_hermes_direct", return_value=("ok", "hermes-session-1")):
+            switched = self.client.put("/api/runtime/profiles", json={"profile": "leire"}, headers=self.headers)
+            self.assertEqual(switched.status_code, 200, switched.data)
+
+            sent = self.client.post("/api/chat", json={"message": "hello"}, headers=self.headers)
+            self.assertEqual(sent.status_code, 200, sent.data)
+            session_id = sent.get_json()["session_id"]
+
+            switched_back = self.client.put("/api/runtime/profiles", json={"profile": "default"}, headers=self.headers)
+            self.assertEqual(switched_back.status_code, 200, switched_back.data)
+
+            listing = self.client.get("/api/chat/sessions", headers=self.headers)
+            self.assertEqual(listing.status_code, 200, listing.data)
+            sessions = listing.get_json()["sessions"]
+            matching = next(item for item in sessions if item["id"] == session_id)
+            self.assertEqual(matching["session"]["profile"], "leire")
+
+            messages = self.client.get(f"/api/chat/sessions/{session_id}/messages", headers=self.headers)
+            self.assertEqual(messages.status_code, 200, messages.data)
+            self.assertEqual(messages.get_json()["session"]["profile"], "leire")
+
     def test_skill_setup_readiness_detects_missing_requirements(self):
         skill_root = Path(self.tmpdir.name) / "skills"
         skill_dir = skill_root / "productivity" / "google-workspace"

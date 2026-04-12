@@ -4500,6 +4500,8 @@ window.copyLogs = function () {
 
 const chatState = {
     currentSessionId: null,
+    activeProfile: '',
+    currentSessionProfile: '',
     currentRequestId: null,
     currentRequestCancelSupported: false,
     isThinking: false,
@@ -4674,6 +4676,7 @@ function chatResetComposerAfterRequest() {
 
 function chatApplySessionMetadata(meta = null) {
     const session = meta || {};
+    chatState.currentSessionProfile = session.profile || chatState.activeProfile || '';
     chatState.transportPreference = session.transport_preference || chatState.transportPreference || 'auto';
     chatState.currentTransport = session.transport_mode || null;
     chatState.currentContinuity = session.continuity_mode || null;
@@ -4697,6 +4700,10 @@ function chatApplySessionMetadata(meta = null) {
     chatRenderSessionBanner();
     chatRenderContextPanel();
     chatRenderTransportControls();
+}
+
+function chatVisibleProfile() {
+    return chatState.currentSessionProfile || chatState.activeProfile || 'default';
 }
 
 function chatGoHome() {
@@ -4993,6 +5000,7 @@ async function chatRefreshCapabilities() {
         const reasons = data.capability_reasons || {};
         const policy = data.transport_policy || {};
         chatState.apiServerEnabled = !!data.api_server;
+        chatState.activeProfile = data.profile || chatState.activeProfile || '';
         chatState.apiTransportSelectable = !!policy.api_selectable;
         chatState.transportPolicy = {
             requiresCli: !!policy.requires_cli,
@@ -5541,10 +5549,14 @@ async function chatLoadHistory() {
         const renderSessionItem = (s) => {
             const isActive = s.id === chatState.currentSessionId;
             const preview = s.last_message ? escH(s.last_message) : 'Empty';
+            const profile = ((s.session || {}).profile || '').trim();
+            const profileBadge = profile
+                ? ' <span class="badge badge-accent" title="Profile used by this chat">' + escH(profile) + '</span>'
+                : '';
             return '<div class="chat-history-item' + (isActive ? ' active' : '') + '" data-sid="' + escA(s.id) + '" draggable="true" ondragstart="chatDragSession(event,\'' + escA(s.id) + '\')" onclick="chatLoadSession(\'' + escA(s.id) + '\')">' +
                 '<div class="chat-history-item-title">' + escH(s.title || 'Untitled') + '</div>' +
                 '<div class="chat-history-item-preview">' + preview + '</div>' +
-                '<div class="chat-history-item-meta">' + escH((s.message_count || 0) + ' msgs') + '</div>' +
+                '<div class="chat-history-item-meta">' + escH((s.message_count || 0) + ' msgs') + profileBadge + '</div>' +
                 '<div class="chat-history-item-actions">' +
                 '<button class="btn-icon" title="Rename" onclick="event.stopPropagation();chatRenameSessionPrompt(\'' + escA(s.id) + '\', \'' + escA(s.title || 'Untitled') + '\')" style="width:22px;height:22px"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg></button>' +
                 '<button class="btn-icon" title="Delete" onclick="event.stopPropagation();chatDeleteSession(\'' + escA(s.id) + '\')" style="width:22px;height:22px"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>' +
@@ -6364,7 +6376,7 @@ window.chatSend = async function () {
     const dots = document.createElement('div');
     dots.id = 'chat-thinking-dots';
     dots.className = 'chat-thinking';
-    dots.innerHTML = '<div class="chat-thinking-bubble"><span class="chat-thinking-icon"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span><span class="chat-thinking-text">Hermes is thinking<span class="chat-thinking-ellipsis"></span></span>' + (chatState.currentRequestCancelSupported ? '<button class="chat-stop-btn" id="chat-stop-btn" onclick="chatAbort()" title="Stop"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>' : '') + '</div>';
+    dots.innerHTML = '<div class="chat-thinking-bubble"><span class="chat-thinking-icon"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span><span class="chat-thinking-text">Hermes (' + escH(chatVisibleProfile()) + ') is thinking<span class="chat-thinking-ellipsis"></span></span>' + (chatState.currentRequestCancelSupported ? '<button class="chat-stop-btn" id="chat-stop-btn" onclick="chatAbort()" title="Stop"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>' : '') + '</div>';
     if (msgs) msgs.appendChild(dots);
 
     // Swap send button to stop

@@ -35,14 +35,14 @@ Make the active Hermes profile visible in the important runtime areas of the por
 - [x] Show the active profile in Dashboard runtime information.
 - [x] Show the active profile in the Service screen next to gateway controls and runtime state.
 - [ ] Show the active profile in Providers / Models where runtime target data is shown.
-- [ ] Show the active profile in Chat in a lightweight but visible way.
+- [x] Show the active profile in Chat in a lightweight but visible way.
 - [ ] Validate profile switching visually for `default` and `leire`.
 - [ ] Keep this tracking folder out of the final upstream PR.
 
 
 ## In Progress
 
-- [ ] Implement active profile visibility in Providers / Models and Chat.
+- [ ] Implement active profile visibility in Providers / Models.
 
 
 ## Done
@@ -54,6 +54,7 @@ Make the active Hermes profile visible in the important runtime areas of the por
 - [x] Add a persistent active profile indicator to the global UI.
 - [x] Show the active profile in Dashboard.
 - [x] Show the active profile in Service.
+- [x] Show the active profile in Chat and chat history.
 
 
 ## Validation Checklist
