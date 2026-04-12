@@ -4,7 +4,7 @@
 - Touch only the minimum code required to implement the new functionality.
 - This folder and this document exist only for this branch.
 - Do not include this folder in the final PR to `main`.
-
+- allways activate el venv with uv
 
 # Goal
 
@@ -218,6 +218,89 @@ Suggested mental model:
 - each segment belongs to the profile active when that segment started
 
 This matches the intended workflow:
+
+
+## Phase 1 Status
+
+Phase 1 is now implemented for the active CLI chat path and validated in the branch.
+
+Implemented:
+
+- the chat UI can switch `Profile` for the next turns inside the same visible conversation
+- each in-chat profile switch creates a new runtime segment in the same chat
+- segment metadata is stored in the backend and exposed to the frontend
+- the transcript shows runtime segment boundaries with profile and transport labels
+- chat history and sidebar rows show the profile or profiles used by each chat
+- new chats can choose a local draft profile without mutating the global portal profile
+- switching profile inside a started chat is session-local and does not write the global web UI profile state
+- Hermes CLI continuity is stored per segment/profile so returning to a previously used profile can resume that profile's own Hermes session
+
+Validated behavior:
+
+- global portal profile switching still works independently
+- a chat-local profile switch affects the next turn in that chat
+- chat-local switching does not write `run/webui_profile`
+- returning to a previously used profile in the same chat resumes that profile's own Hermes CLI continuity
+- the history filter remains available in expanded history, but is hidden when history is collapsed
+
+
+## Remaining Gap Before Phase 2
+
+The current CLI implementation now provides safe profile isolation and profile-specific continuity.
+
+What still remains before Phase 2:
+
+- align `transport api` with the same segment boundary semantics
+- confirm the product rule for what API replay should include when a chat returns to an earlier profile segment
+- finish the remaining Providers / Models visibility work on this branch
+
+Current CLI rule:
+
+- Hermes continuity is isolated across profile boundaries
+- returning to a previously used profile resumes that profile's own prior Hermes session when available
+- one profile never inherits another profile's Hermes continuity
+
+Practical implication:
+
+- Phase 1 is complete for the CLI path now used in practice
+- API replay alignment remains a follow-up before Phase 2
+
+
+## Transport API Note
+
+`transport api` is not the active user path right now because the chat UI is effectively being used with `Auto` and `CLI`.
+
+Even so, the design rule should match the CLI rule:
+
+- an API-backed chat segment must not replay messages from a different profile segment into the current profile
+- if API replay is enabled later, it should be segment-aware and only replay the messages that belong to the active segment or another explicitly defined safe boundary
+
+Recommended scope decision:
+
+- do not jump to multi-profile compare mode yet
+- first finish API replay boundary semantics for segmented chats
+- after that, bring `transport api` to the same segment boundary semantics
+
+
+## Recommended Next Step
+
+Before Phase 2, close the remaining transport and visibility work:
+
+1. make API replay follow the same segment boundary rule when API transport becomes selectable
+2. define whether returning to an earlier profile in API mode should replay only that segment lineage or only the active segment from its boundary forward
+3. finish active profile visibility in Providers / Models
+
+After that is stable, Phase 2 can focus on intentional compare workflows instead of fixing continuity semantics.
+
+
+## Agreed Execution Order
+
+The next work on this branch should follow this order:
+
+1. align `transport api` with segmented profile boundaries
+2. after that, finish active profile visibility in Providers / Models
+
+This keeps the chat model coherent before adding more surface-level visibility work.
 
 - keep the same conversation
 - switch from one profile to another

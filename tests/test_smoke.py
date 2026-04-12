@@ -614,6 +614,180 @@ class HermesWebUISmokeTests(unittest.TestCase):
             self.assertEqual(session["segments"][0]["profile"], "leire")
             self.assertFalse(state_path.exists())
 
+    def test_chat_session_profile_switch_reuses_prior_profile_cli_continuity(self):
+        hermes_root = Path(self.tmpdir.name) / ".hermes"
+        profiles_dir = hermes_root / "profiles"
+        profiles_dir.mkdir(parents=True)
+        (profiles_dir / "leire").mkdir()
+        state_path = Path(self.tmpdir.name) / "webui_profile"
+        seen_calls = []
+
+        def fake_call(session, message, files=None, request_id=None, file_display_names=None):
+            selected_profile = mod._selected_hermes_profile_name()
+            seen_calls.append({
+                "profile": selected_profile,
+                "resume": session.get("hermes_session_id"),
+            })
+            if selected_profile == "default":
+                return ("ok:default", "hermes-default-1")
+            return ("ok:leire", "hermes-leire-1")
+
+        with patch.object(mod, "HERMES_HOME", hermes_root), \
+             patch.object(mod, "CONFIG_PATH", hermes_root / "config.yaml"), \
+             patch.object(mod, "ENV_PATH", hermes_root / ".env"), \
+             patch.object(mod, "SKILLS_DIR", hermes_root / "skills"), \
+             patch.object(mod, "SESSIONS_DIR", hermes_root / "sessions"), \
+             patch.object(mod, "BACKUP_DIR", hermes_root / "backups"), \
+             patch.object(mod, "HERMES_PROFILES_DIR", profiles_dir), \
+             patch.object(mod, "WEBUI_PROFILE_STATE_PATH", state_path), \
+             patch.object(mod, "_check_api_server", return_value=False), \
+             patch.object(mod, "_image_attachment_support_status", return_value=(False, "disabled")), \
+             patch.object(mod, "_call_hermes_direct", side_effect=fake_call):
+            created = self.client.post("/api/chat/sessions", json={}, headers=self.headers)
+            self.assertEqual(created.status_code, 200, created.data)
+            session_id = created.get_json()["session_id"]
+
+            first = self.client.post(
+                "/api/chat",
+                json={"message": "hello default", "session_id": session_id},
+                headers=self.headers,
+            )
+            self.assertEqual(first.status_code, 200, first.data)
+
+            switched_to_leire = self.client.put(
+                f"/api/chat/sessions/{session_id}/profile",
+                json={"profile": "leire"},
+                headers=self.headers,
+            )
+            self.assertEqual(switched_to_leire.status_code, 200, switched_to_leire.data)
+
+            second = self.client.post(
+                "/api/chat",
+                json={"message": "hello leire", "session_id": session_id},
+                headers=self.headers,
+            )
+            self.assertEqual(second.status_code, 200, second.data)
+
+            switched_to_default = self.client.put(
+                f"/api/chat/sessions/{session_id}/profile",
+                json={"profile": "default"},
+                headers=self.headers,
+            )
+            self.assertEqual(switched_to_default.status_code, 200, switched_to_default.data)
+            switched_session = switched_to_default.get_json()["session"]
+            self.assertEqual(switched_session["profile"], "default")
+            self.assertEqual(switched_session["active_segment_index"], 3)
+            self.assertEqual(switched_session["segments"][2]["hermes_session_id"], "hermes-default-1")
+
+            third = self.client.post(
+                "/api/chat",
+                json={"message": "back to default", "session_id": session_id},
+                headers=self.headers,
+            )
+            self.assertEqual(third.status_code, 200, third.data)
+            self.assertEqual(third.get_json()["session"]["profile"], "default")
+
+            self.assertEqual(seen_calls, [
+                {"profile": "default", "resume": None},
+                {"profile": "leire", "resume": None},
+                {"profile": "default", "resume": "hermes-default-1"},
+            ])
+
+            persisted = mod._load_session(session_id)
+            self.assertEqual(persisted["hermes_session_id"], "hermes-default-1")
+            self.assertEqual(persisted["segments"][0]["hermes_session_id"], "hermes-default-1")
+            self.assertEqual(persisted["segments"][1]["hermes_session_id"], "hermes-leire-1")
+            self.assertEqual(persisted["segments"][2]["hermes_session_id"], "hermes-default-1")
+
+    def test_chat_session_reload_uses_last_profile_with_messages(self):
+        hermes_root = Path(self.tmpdir.name) / ".hermes"
+        profiles_dir = hermes_root / "profiles"
+        profiles_dir.mkdir(parents=True)
+        (profiles_dir / "leire").mkdir()
+        state_path = Path(self.tmpdir.name) / "webui_profile"
+        seen_calls = []
+
+        def fake_call(session, message, files=None, request_id=None, file_display_names=None):
+            selected_profile = mod._selected_hermes_profile_name()
+            seen_calls.append({
+                "profile": selected_profile,
+                "resume": session.get("hermes_session_id"),
+            })
+            if selected_profile == "default":
+                return ("ok:default", "hermes-default-1")
+            return ("ok:leire", "hermes-leire-1")
+
+        with patch.object(mod, "HERMES_HOME", hermes_root), \
+             patch.object(mod, "CONFIG_PATH", hermes_root / "config.yaml"), \
+             patch.object(mod, "ENV_PATH", hermes_root / ".env"), \
+             patch.object(mod, "SKILLS_DIR", hermes_root / "skills"), \
+             patch.object(mod, "SESSIONS_DIR", hermes_root / "sessions"), \
+             patch.object(mod, "BACKUP_DIR", hermes_root / "backups"), \
+             patch.object(mod, "HERMES_PROFILES_DIR", profiles_dir), \
+             patch.object(mod, "WEBUI_PROFILE_STATE_PATH", state_path), \
+             patch.object(mod, "_check_api_server", return_value=False), \
+             patch.object(mod, "_image_attachment_support_status", return_value=(False, "disabled")), \
+             patch.object(mod, "_call_hermes_direct", side_effect=fake_call):
+            created = self.client.post("/api/chat/sessions", json={}, headers=self.headers)
+            self.assertEqual(created.status_code, 200, created.data)
+            session_id = created.get_json()["session_id"]
+
+            first = self.client.post(
+                "/api/chat",
+                json={"message": "hello default", "session_id": session_id},
+                headers=self.headers,
+            )
+            self.assertEqual(first.status_code, 200, first.data)
+
+            switched_to_leire = self.client.put(
+                f"/api/chat/sessions/{session_id}/profile",
+                json={"profile": "leire"},
+                headers=self.headers,
+            )
+            self.assertEqual(switched_to_leire.status_code, 200, switched_to_leire.data)
+
+            second = self.client.post(
+                "/api/chat",
+                json={"message": "hello leire", "session_id": session_id},
+                headers=self.headers,
+            )
+            self.assertEqual(second.status_code, 200, second.data)
+
+            switched_to_default = self.client.put(
+                f"/api/chat/sessions/{session_id}/profile",
+                json={"profile": "default"},
+                headers=self.headers,
+            )
+            self.assertEqual(switched_to_default.status_code, 200, switched_to_default.data)
+            self.assertEqual(switched_to_default.get_json()["session"]["profile"], "default")
+
+            reloaded = self.client.get(f"/api/chat/sessions/{session_id}/messages", headers=self.headers)
+            self.assertEqual(reloaded.status_code, 200, reloaded.data)
+            reloaded_session = reloaded.get_json()["session"]
+            self.assertEqual(reloaded_session["profile"], "leire")
+            self.assertEqual(reloaded_session["active_segment_id"], "segment-2")
+            self.assertEqual(len(reloaded_session["segments"]), 2)
+
+            third = self.client.post(
+                "/api/chat",
+                json={"message": "still leire", "session_id": session_id},
+                headers=self.headers,
+            )
+            self.assertEqual(third.status_code, 200, third.data)
+            self.assertEqual(third.get_json()["session"]["profile"], "leire")
+            self.assertEqual(third.get_json()["assistant_message"]["profile"], "leire")
+
+            self.assertEqual(seen_calls, [
+                {"profile": "default", "resume": None},
+                {"profile": "leire", "resume": None},
+                {"profile": "leire", "resume": "hermes-leire-1"},
+            ])
+
+            persisted = mod._load_session(session_id)
+            self.assertEqual(persisted["profile"], "leire")
+            self.assertEqual(persisted["active_segment_id"], "segment-2")
+            self.assertEqual(len(persisted["segments"]), 2)
+
     def test_skill_setup_readiness_detects_missing_requirements(self):
         skill_root = Path(self.tmpdir.name) / "skills"
         skill_dir = skill_root / "productivity" / "google-workspace"

@@ -4701,8 +4701,14 @@ function chatResetComposerAfterRequest() {
 
 function chatApplySessionMetadata(meta = null) {
     const session = meta || {};
-    if (session.profile) {
-        chatState.currentSessionProfile = session.profile;
+    const sessionSegments = Array.isArray(session.segments) ? session.segments.slice() : [];
+    const activeSegmentId = session.active_segment_id || '';
+    const activeSegment = sessionSegments.find(segment => segment.id === activeSegmentId)
+        || sessionSegments[sessionSegments.length - 1]
+        || null;
+    const resolvedSessionProfile = activeSegment?.profile || session.profile || '';
+    if (resolvedSessionProfile) {
+        chatState.currentSessionProfile = resolvedSessionProfile;
         chatState.draftProfile = '';
     } else if (chatState.currentSessionId) {
         chatState.currentSessionProfile = chatState.activeProfile || '';
@@ -4710,8 +4716,8 @@ function chatApplySessionMetadata(meta = null) {
     } else {
         chatState.currentSessionProfile = '';
     }
-    chatState.currentSegments = Array.isArray(session.segments) ? session.segments.slice() : [];
-    chatState.currentActiveSegmentId = session.active_segment_id || '';
+    chatState.currentSegments = sessionSegments;
+    chatState.currentActiveSegmentId = activeSegmentId;
     chatState.currentActiveSegmentIndex = Number(session.active_segment_index || 1) || 1;
     chatState.transportPreference = session.transport_preference || chatState.transportPreference || 'auto';
     chatState.currentTransport = session.transport_mode || null;
@@ -4764,18 +4770,43 @@ function chatTransportLabel(value) {
     return 'Auto';
 }
 
+function chatSegmentToneClass(profile) {
+    const normalized = String(profile || '').trim().toLowerCase();
+    if (!normalized || normalized === 'default') return 'chat-segment-tone-blue';
+    if (normalized === 'leire') return 'chat-segment-tone-green';
+    return 'chat-segment-tone-green';
+}
+
+function chatMessageToneClass(profile) {
+    const normalized = String(profile || '').trim().toLowerCase();
+    if (!normalized || normalized === 'default') return 'chat-msg-tone-blue';
+    if (normalized === 'leire') return 'chat-msg-tone-green';
+    return 'chat-msg-tone-green';
+}
+
+function chatProfileTextToneClass(profiles) {
+    const names = Array.isArray(profiles) ? profiles.map(value => String(value || '').trim().toLowerCase()).filter(Boolean) : [];
+    if (!names.length) return 'sidebar-chat-profile-badge-blue';
+    if (names.length === 1 && names[0] === 'default') return 'sidebar-chat-profile-badge-blue';
+    return 'sidebar-chat-profile-badge-green';
+}
+
 function chatBuildSegmentNode(message, segment) {
     const div = document.createElement('div');
-    div.className = 'chat-segment-marker';
     const profile = message?.profile || segment?.profile || chatVisibleProfile();
     const transport = message?.transport || segment?.transport || '';
+    const continuityReady = transport === 'cli' && !!segment?.hermes_session_id;
+    div.className = 'chat-segment-marker ' + chatSegmentToneClass(profile);
     const chips = [
         '<span class="badge badge-info">Profile: ' + escH(profile || 'default') + '</span>',
     ];
     if (transport) {
         chips.push('<span class="badge">Transport: ' + escH(chatTransportLabel(transport)) + '</span>');
     }
-    div.innerHTML = '<div class="chat-segment-marker-line"></div><div class="chat-segment-marker-body"><div class="chat-segment-marker-title">Profile changed</div><div class="chat-segment-marker-badges">' + chips.join('') + '</div></div><div class="chat-segment-marker-line"></div>';
+    if (continuityReady) {
+        chips.push('<span class="badge badge-success">CLI continuity ready</span>');
+    }
+    div.innerHTML = '<div class="chat-segment-marker-line"></div><div class="chat-segment-marker-body"><div class="chat-segment-marker-title">Profile changed</div><div class="chat-segment-marker-badges">' + chips.join('') + '</div>' + (transport === 'cli' ? '<div class="chat-segment-marker-detail">' + escH(continuityReady ? 'This profile can resume its own Hermes CLI session when you return to it.' : 'This profile is starting a fresh Hermes CLI continuity path.') + '</div>' : '') + '</div><div class="chat-segment-marker-line"></div>';
     return div;
 }
 
@@ -4806,6 +4837,25 @@ function chatSessionProfilesLabel(session) {
     if (!profiles.length) return '';
     if (profiles.length === 1) return 'Profile: ' + profiles[0];
     return 'Profiles: ' + profiles.join(', ');
+}
+
+function chatProfileNameToneClass(profile) {
+    const normalized = String(profile || '').trim().toLowerCase();
+    if (!normalized || normalized === 'default') return 'sidebar-chat-profile-name-blue';
+    if (normalized === 'leire') return 'sidebar-chat-profile-name-green';
+    return 'sidebar-chat-profile-name-green';
+}
+
+function chatSessionProfilesBadgeHtml(session) {
+    const profiles = chatSessionProfiles(session);
+    if (!profiles.length) return '';
+    const prefix = profiles.length === 1 ? 'Profile:' : 'Profiles:';
+    const namesHtml = profiles.map((profile, index) => {
+        const separator = index ? '<span class="sidebar-chat-profile-separator">, </span>' : '';
+        return separator + '<span class="sidebar-chat-profile-name ' + chatProfileNameToneClass(profile) + '">' + escH(profile) + '</span>';
+    }).join('');
+    const label = profiles.length === 1 ? 'Profile: ' + profiles[0] : 'Profiles: ' + profiles.join(', ');
+    return '<span class="sidebar-chat-profile-badge" title="' + escA(label) + '"><span class="sidebar-chat-profile-prefix">' + escH(prefix) + '</span> ' + namesHtml + '</span>';
 }
 
 function chatFilteredProfileOptions(sessions = []) {
@@ -6162,6 +6212,7 @@ function chatBuildMessageNode(message) {
     const content = message.content;
     const files = message.files || [];
     const time = message.timestamp ? new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    const profile = message?.profile || '';
     const avatarSvg = role === 'user'
         ? '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>'
         : '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>';
@@ -6178,7 +6229,7 @@ function chatBuildMessageNode(message) {
         bubbleHtml = '<div class="chat-bubble"><div class="chat-bubble-content">' + chatRenderMd(content) + '</div><button class="chat-msg-copy" onclick="chatCopyMsg(this)" data-text="' + escapedPlain + '" title="Copy message"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>';
     }
     const div = document.createElement('div');
-    div.className = 'chat-msg ' + role;
+    div.className = 'chat-msg ' + role + ' ' + chatMessageToneClass(profile);
     div.innerHTML = '<div class="chat-msg-inner"><div class="chat-msg-avatar">' + avatarSvg + '</div><div class="chat-msg-body">' + chatMessageBadges(message) + bubbleHtml + filesHtml + (time ? '<div class="chat-msg-time">' + time + '</div>' : '') + '</div></div>';
     return div;
 }
@@ -6243,11 +6294,7 @@ function renderFolderSessionChip(session) {
 
 function renderSidebarFolderSessionItem(session, extraClass = 'sidebar-folder-chat') {
     const active = chatState.currentSessionId === session.id ? ' active' : '';
-    const profiles = chatSessionProfiles(session);
-    const profileLabel = chatSessionProfilesLabel(session);
-    const profileHtml = profileLabel
-        ? '<span class="sidebar-chat-profile-badge ' + ((profiles.length === 1 && profiles[0] === (chatState.activeProfile || '')) ? 'active' : 'inactive') + '" title="' + escA(profileLabel) + '">' + escH(profileLabel) + '</span>'
-        : '';
+    const profileHtml = chatSessionProfilesBadgeHtml(session);
     return '<div class="sidebar-folder-chat-row">' +
         '<button class="' + extraClass + active + '" draggable="true" ondragstart="chatDragSession(event,\'' + escA(session.id) + '\')" onclick="sidebarOpenChat(\'' + escA(session.id) + '\')" title="' + escA(session.title || 'Untitled') + '"><span class="sidebar-chat-title">' + escH(session.title || 'Untitled') + '</span>' + profileHtml + '</button>' +
         '<button class="btn-icon sidebar-folder-chat-delete" title="Delete chat" onclick="event.stopPropagation(); chatDeleteSession(\'' + escA(session.id) + '\')" style="width:20px;height:20px"><svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>' +

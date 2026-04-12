@@ -869,6 +869,7 @@ def _normalize_chat_session(session: dict) -> dict:
     session["segments"] = _normalize_chat_segments(session, profile_name)
     active_segment = _active_chat_segment(session)
     session["profile"] = (active_segment or {}).get("profile") or profile_name
+    session["hermes_session_id"] = _segment_hermes_session_id(active_segment)
     session["folder_id"] = folder_id.strip()
     session["workspace_roots"] = _clean_string_list(session.get("workspace_roots"))
     session["source_docs"] = _clean_string_list(session.get("source_docs"))
@@ -894,11 +895,18 @@ def _normalize_chat_session(session: dict) -> dict:
     return session
 
 
+def _clean_hermes_session_id(value) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
 def _normalize_chat_segments(session: dict, fallback_profile: str | None = None) -> list[dict]:
     raw_segments = session.get("segments")
     normalized = []
     base_profile = _normalize_hermes_profile_name(fallback_profile or session.get("profile")) or _selected_hermes_profile_name()
     base_transport = str(session.get("transport_mode") or "").strip().lower()
+    legacy_hermes_session_id = _clean_hermes_session_id(session.get("hermes_session_id"))
+    raw_active_segment_id = str(session.get("active_segment_id") or "").strip()
     if base_transport not in (CHAT_TRANSPORT_CLI, CHAT_TRANSPORT_API):
         base_transport = ""
     if isinstance(raw_segments, list):
@@ -913,11 +921,15 @@ def _normalize_chat_segments(session: dict, fallback_profile: str | None = None)
             start_message_index = item.get("start_message_index")
             if not isinstance(start_message_index, int) or start_message_index < 0:
                 start_message_index = 0
+            hermes_session_id = _clean_hermes_session_id(item.get("hermes_session_id"))
+            if not hermes_session_id and segment_id == raw_active_segment_id:
+                hermes_session_id = legacy_hermes_session_id
             normalized.append({
                 "id": segment_id,
                 "index": len(normalized) + 1,
                 "profile": profile,
                 "transport": transport,
+                "hermes_session_id": hermes_session_id,
                 "started_at": str(item.get("started_at") or session.get("created") or "").strip(),
                 "start_message_index": start_message_index,
             })
@@ -927,6 +939,7 @@ def _normalize_chat_segments(session: dict, fallback_profile: str | None = None)
             "index": 1,
             "profile": base_profile,
             "transport": base_transport,
+            "hermes_session_id": legacy_hermes_session_id,
             "started_at": str(session.get("created") or "").strip(),
             "start_message_index": 0,
         }]
@@ -937,6 +950,30 @@ def _normalize_chat_segments(session: dict, fallback_profile: str | None = None)
     return normalized
 
 
+def _trim_trailing_empty_chat_segments(session: dict) -> bool:
+    segments = session.get("segments") or []
+    if len(segments) <= 1:
+        return False
+    message_count = len(session.get("messages") or [])
+    trimmed = False
+    while len(segments) > 1:
+        last_segment = segments[-1]
+        start_message_index = int(last_segment.get("start_message_index") or 0)
+        if start_message_index < message_count:
+            break
+        segments.pop()
+        trimmed = True
+    if not trimmed:
+        return False
+    for index, segment in enumerate(segments, start=1):
+        segment["index"] = index
+    session["segments"] = segments
+    session["active_segment_id"] = segments[-1].get("id") or ""
+    session["profile"] = segments[-1].get("profile") or session.get("profile")
+    session["hermes_session_id"] = _segment_hermes_session_id(segments[-1])
+    return True
+
+
 def _active_chat_segment(session: dict) -> dict | None:
     segments = session.get("segments") or []
     active_segment_id = str(session.get("active_segment_id") or "").strip()
@@ -944,6 +981,20 @@ def _active_chat_segment(session: dict) -> dict | None:
         if segment.get("id") == active_segment_id:
             return segment
     return segments[-1] if segments else None
+
+
+def _segment_hermes_session_id(segment: dict | None) -> str | None:
+    if not isinstance(segment, dict):
+        return None
+    return _clean_hermes_session_id(segment.get("hermes_session_id"))
+
+
+def _latest_chat_segment_for_profile(session: dict, profile_name: str) -> dict | None:
+    normalized_profile = _normalize_hermes_profile_name(profile_name) or _selected_hermes_profile_name()
+    for segment in reversed(session.get("segments") or []):
+        if _normalize_hermes_profile_name(segment.get("profile")) == normalized_profile:
+            return segment
+    return None
 
 
 def _append_chat_segment(session: dict, profile_name: str, *, transport: str = "") -> dict:
@@ -959,19 +1010,23 @@ def _append_chat_segment(session: dict, profile_name: str, *, transport: str = "
             active["transport"] = clean_transport
         session["active_segment_id"] = active.get("id")
         session["profile"] = normalized_profile
+        session["hermes_session_id"] = _segment_hermes_session_id(active)
         return active
+    previous = _latest_chat_segment_for_profile(session, normalized_profile)
     next_index = len(session.get("segments") or []) + 1
     segment = {
         "id": f"segment-{next_index}",
         "index": next_index,
         "profile": normalized_profile,
         "transport": clean_transport,
+        "hermes_session_id": _segment_hermes_session_id(previous),
         "started_at": datetime.now().isoformat(),
         "start_message_index": len(session.get("messages") or []),
     }
     session.setdefault("segments", []).append(segment)
     session["active_segment_id"] = segment["id"]
     session["profile"] = normalized_profile
+    session["hermes_session_id"] = _segment_hermes_session_id(segment)
     return segment
 
 
@@ -8534,6 +8589,7 @@ def _get_or_create_chat_session(session_id=None, profile_name=None):
             "index": 1,
             "profile": selected_profile,
             "transport": "",
+            "hermes_session_id": None,
             "started_at": now,
             "start_message_index": 0,
         }],
@@ -8608,6 +8664,7 @@ def api_chat():
     with _scoped_profile_override(sess.get("profile")):
         request_plan = _plan_chat_request(sess, files)
         active_segment = _append_chat_segment(sess, sess["profile"], transport=request_plan["transport"])
+        sess["hermes_session_id"] = _segment_hermes_session_id(active_segment)
         attachment_errors = _validate_attachment_selection(files, request_plan["image_support"])
     if attachment_errors:
         return jsonify({"error": "Unsupported attachment selection", "details": attachment_errors}), 400
@@ -8709,11 +8766,15 @@ def api_chat():
                         file_display_names=file_display_names,
                     )
                 sess["transport_mode"] = CHAT_TRANSPORT_CLI
-                if hermes_session_id:
-                    sess["hermes_session_id"] = hermes_session_id
+                effective_hermes_session_id = _clean_hermes_session_id(hermes_session_id) or _segment_hermes_session_id(active_segment)
+                if effective_hermes_session_id:
+                    active_segment["hermes_session_id"] = effective_hermes_session_id
+                    sess["hermes_session_id"] = effective_hermes_session_id
                     sess["continuity_mode"] = CHAT_CONTINUITY_HERMES
                     sess["transport_notice"] = ""
                 else:
+                    active_segment["hermes_session_id"] = None
+                    sess["hermes_session_id"] = None
                     sess["continuity_mode"] = CHAT_CONTINUITY_LIMITED
                     sess["transport_notice"] = (
                         "Hermes CLI did not return a resumable session id for this chat yet. "
@@ -9098,6 +9159,9 @@ def api_chat_messages(session_id):
     session = _load_session(session_id)
     if not session:
         return jsonify({"error": "Session not found"}), 404
+    if _trim_trailing_empty_chat_segments(session):
+        _write_session(session)
+        session = _load_session(session_id) or session
     return jsonify({"messages": session["messages"],
                      "title": session.get("title", ""),
                      "session": _chat_session_meta(session)})
@@ -9168,7 +9232,7 @@ def api_chat_session_profile_update(session_id):
     session["profile"] = selected
     session["transport_mode"] = None
     session["continuity_mode"] = None
-    session["hermes_session_id"] = None
+    session["hermes_session_id"] = _segment_hermes_session_id(segment)
     session["transport_notice"] = (
         f"Switched to Hermes profile {selected}. "
         "Next messages in this chat will use that profile."

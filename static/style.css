@@ -728,20 +728,25 @@ pre code {
   padding: 2px 6px;
   border-radius: 999px;
   font-size: 10px;
+  font-weight: 600;
   line-height: 1.2;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  background: transparent;
 }
 
-.sidebar-chat-profile-badge.active {
-  background: var(--accent-dim);
-  color: var(--accent);
+.sidebar-chat-profile-prefix,
+.sidebar-chat-profile-separator {
+  color: var(--text-muted);
 }
 
-.sidebar-chat-profile-badge.inactive {
-  background: var(--amber-dim);
-  color: var(--amber);
+.sidebar-chat-profile-name-blue {
+  color: #60a5fa;
+}
+
+.sidebar-chat-profile-name-green {
+  color: var(--green);
 }
 
 .sidebar-folder-chat.active {
@@ -2893,12 +2898,15 @@ pre code {
   width: calc(100% - 48px);
   margin: 18px auto 10px;
   color: var(--text-muted);
+  --chat-segment-line: var(--border);
+  --chat-segment-border: var(--border);
+  --chat-segment-bg: rgba(18, 22, 33, 0.72);
 }
 
 .chat-segment-marker-line {
   flex: 1 1 auto;
   height: 1px;
-  background: linear-gradient(90deg, transparent, var(--border), transparent);
+  background: linear-gradient(90deg, transparent, var(--chat-segment-line), transparent);
 }
 
 .chat-segment-marker-body {
@@ -2907,9 +2915,9 @@ pre code {
   align-items: center;
   gap: 6px;
   padding: 10px 14px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--chat-segment-border);
   border-radius: 14px;
-  background: rgba(18, 22, 33, 0.72);
+  background: var(--chat-segment-bg);
 }
 
 .chat-segment-marker-title {
@@ -2924,6 +2932,25 @@ pre code {
   flex-wrap: wrap;
   justify-content: center;
   gap: 8px;
+}
+
+.chat-segment-marker-detail {
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: center;
+  max-width: 460px;
+}
+
+.chat-segment-marker.chat-segment-tone-blue {
+  --chat-segment-line: rgba(96, 165, 250, 0.32);
+  --chat-segment-border: rgba(96, 165, 250, 0.24);
+  --chat-segment-bg: rgba(96, 165, 250, 0.09);
+}
+
+.chat-segment-marker.chat-segment-tone-green {
+  --chat-segment-line: rgba(16, 185, 129, 0.32);
+  --chat-segment-border: rgba(16, 185, 129, 0.24);
+  --chat-segment-bg: rgba(16, 185, 129, 0.1);
 }
 
 .chat-context-panel {
@@ -3275,6 +3302,26 @@ pre code {
   background: var(--accent-dim);
   border: 1px solid rgba(99, 102, 241, 0.15);
   border-bottom-right-radius: 4px;
+}
+
+.chat-msg.chat-msg-tone-blue.assistant .chat-bubble {
+  background: rgba(96, 165, 250, 0.1);
+  border-color: rgba(96, 165, 250, 0.22);
+}
+
+.chat-msg.chat-msg-tone-green.assistant .chat-bubble {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.22);
+}
+
+.chat-msg.chat-msg-tone-blue.user .chat-bubble {
+  background: rgba(96, 165, 250, 0.14);
+  border-color: rgba(96, 165, 250, 0.28);
+}
+
+.chat-msg.chat-msg-tone-green.user .chat-bubble {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.28);
 }
 
 /* Code blocks inside chat bubbles */

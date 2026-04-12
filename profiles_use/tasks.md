@@ -38,24 +38,37 @@ Make the active Hermes profile visible in the important runtime areas of the por
 - [x] Show the active profile in Chat in a lightweight but visible way.
 - [x] Distinguish the active portal profile from each chat session profile in chat history.
 - [x] Keep the chat session banner aligned with the selected profile when creating a new chat after switching profiles.
+- [x] Allow switching profile inside the same chat without mutating the global portal profile.
+- [x] Represent in-chat profile changes as visible runtime segments.
+- [x] Show all profiles used by a chat in history and sidebar rows.
+- [x] Keep the history profile filter available only in expanded history.
 - [ ] Validate profile switching visually for `default` and `leire`.
 - [ ] Keep this tracking folder out of the final upstream PR.
 
 
 ## In Progress
 
+- [ ] Define and implement the equivalent segment boundary rule for API replay if API transport becomes selectable.
 - [ ] Implement active profile visibility in Providers / Models.
+
+
+## Next Execution Order
+
+1. Align `transport api` with segmented profile boundaries.
+2. Finish active profile visibility in Providers / Models.
 
 
 ## Future Roadmap
 
 ### Phase 1: Segmented chat runtime
 
-- [ ] Allow switching profile inside the same chat for subsequent turns.
-- [ ] Represent each runtime phase as a visible chat segment (`1`, `2`, `3`, ...).
-- [ ] Label each segment with its profile and transport.
-- [ ] Keep the chat visually unified while making runtime boundaries explicit.
-- [ ] Define how Hermes CLI continuity behaves when crossing profile boundaries.
+- [x] Allow switching profile inside the same chat for subsequent turns.
+- [x] Represent each runtime phase as a visible chat segment (`1`, `2`, `3`, ...).
+- [x] Label each segment with its profile and transport.
+- [x] Keep the chat visually unified while making runtime boundaries explicit.
+- [x] Keep chat-local profile switching isolated from the global portal profile state.
+- [x] Define and implement how Hermes CLI continuity behaves when crossing profile boundaries and when returning to a previously used profile.
+- [ ] Define and implement the equivalent segment boundary rule for API replay if API transport becomes selectable.
 
 ### Phase 2: Multi-profile comparison mode
 
@@ -78,6 +91,11 @@ Make the active Hermes profile visible in the important runtime areas of the por
 - [x] Show the active profile in Chat and chat history.
 - [x] Separate `Portal` and `Session` profile labels in chat history.
 - [x] Fix the new-chat banner to use the currently selected profile after a profile switch.
+- [x] Add session-local in-chat profile switching.
+- [x] Add runtime segments to chat session metadata and transcript rendering.
+- [x] Prevent draft chat profile selection from changing the global portal profile.
+- [x] Hide the history profile filter when the chat history rail is collapsed.
+- [x] Restore per-profile Hermes CLI continuity when switching back to a previously used profile in the same chat.
 - [x] Add a temporary `?token=...` bootstrap helper for testing in simple embedded browsers.
 
 
@@ -89,11 +107,18 @@ Make the active Hermes profile visible in the important runtime areas of the por
 - [ ] Providers / Models show which profile the displayed runtime configuration belongs to.
 - [x] Chat shows the active profile without adding visual noise.
 - [x] The UI remains consistent after switching back and forth between `default` and `leire` for the global indicator, chat banner, and chat history labels.
+- [x] Switching profile inside a chat affects only that chat and does not mutate the global portal profile.
+- [x] New chats can choose a draft profile before the first turn without mutating the global portal profile.
+- [x] Returning to a previously used profile inside the same chat resumes that profile's own Hermes continuity.
+- [ ] API replay respects segment profile boundaries if API transport is enabled later.
 
 
 ## Notes
 
 - The portal already supports runtime profile selection.
 - This work is about visibility and clarity, not reworking the full profile system.
+- The current segmented-chat implementation is safe by default: profile switches do not leak Hermes continuity across profile boundaries.
+- The remaining gap before Phase 2 is API replay alignment with segment profile boundaries and the remaining Providers / Models visibility work.
+- `transport api` is not the active user path right now, but when it is enabled it must follow the same segment boundary rule as CLI.
 - A temporary `?token=...` URL bootstrap was added only to make testing easier in simple embedded browsers that do not handle the token prompt correctly.
 - Before the final upstream PR, remove or exclude this folder from the published diff.
