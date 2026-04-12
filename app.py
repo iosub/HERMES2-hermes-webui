@@ -6731,6 +6731,23 @@ def _session_has_image_history(session: dict) -> bool:
     return False
 
 
+def _messages_for_active_segment(session: dict) -> list[dict]:
+    messages = session.get("messages") or []
+    active_segment = _active_chat_segment(session) or {}
+    start_message_index = int(active_segment.get("start_message_index") or 0)
+    if start_message_index <= 0:
+        return messages
+    return messages[start_message_index:]
+
+
+def _active_segment_has_image_history(session: dict) -> bool:
+    for message in _messages_for_active_segment(session):
+        for file_name in message.get("files", []) or []:
+            if Path(file_name).suffix.lower() in IMAGE_EXTENSIONS:
+                return True
+    return False
+
+
 def _build_attachment_refs(files: list[Path], display_names: dict | None = None) -> list[dict]:
     refs = []
     for path in files or []:
@@ -8519,19 +8536,11 @@ def _api_server_probe(timeout: int = 3, prefer_vision: bool = False) -> tuple[bo
 
 
 def _check_api_server() -> bool:
-    """Check if Hermes API server is reachable and compression is enabled.
-
-    Currently returns False to force CLI mode — the CLI (hermes chat -q)
-    respects compression settings in ~/.hermes/config.yaml (threshold: 0.5).
-    The API server does not yet support session-level compression.
-    Set HERMES_USE_API=true in the environment to re-enable API server mode.
-    """
-    if _runtime_env_value("HERMES_USE_API", "").lower() in ("1", "true", "yes"):
-        try:
-            return _api_server_healthcheck()
-        except Exception:
-            return False
-    return False
+    """Check if the configured API target is reachable."""
+    try:
+        return _api_server_healthcheck()
+    except Exception:
+        return False
 
 
 def _api_server_healthcheck(timeout: int = 3) -> bool:
@@ -8719,7 +8728,7 @@ def api_chat():
                     sess["transport_notice"] = request_plan["transport_notice"]
                     sess["hermes_session_id"] = None
                 api_msgs = []
-                for m in sess["messages"]:
+                for m in _messages_for_active_segment(sess):
                     msg = {"role": m["role"], "content": m["content"]}
                     if m.get("files"):
                         msg["files"] = m["files"]
@@ -8729,7 +8738,7 @@ def api_chat():
                     api_msgs,
                     sid,
                     files,
-                    prefer_vision=_session_has_image_history(sess) or any(
+                    prefer_vision=_active_segment_has_image_history(sess) or any(
                         f.suffix.lower() in IMAGE_EXTENSIONS for f in files
                     ),
                     file_display_names=file_display_names,

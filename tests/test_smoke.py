@@ -342,6 +342,27 @@ class HermesWebUISmokeTests(unittest.TestCase):
         self.assertEqual(data["limits"]["max_upload_bytes"], mod.MAX_UPLOAD_SIZE)
         self.assertEqual(data["limits"]["max_request_body_bytes"], mod.MAX_REQUEST_BODY_SIZE)
 
+    def test_chat_status_enables_api_transport_when_probe_is_reachable(self):
+        with patch.object(mod, "_current_webui_token", return_value="test-token"), \
+             patch.object(mod, "_api_server_healthcheck", return_value=True), \
+             patch.object(mod, "_api_server_probe", return_value=(True, "", {"probe": "models", "status": 200, "url": "https://ollama.com/v1/models"})), \
+             patch.object(mod, "_image_attachment_support_status", return_value=(False, "Hermes vision is not configured")), \
+             patch.object(mod, "_vision_configured", return_value=(False, "Hermes vision is not configured")), \
+             patch.object(mod, "_resolve_api_target", return_value={"base_url": "https://ollama.com/v1", "model": "", "api_key": ""}), \
+             patch.object(mod, "_chat_runtime_status", return_value=runtime_status_stub(
+                 requires_cli=False,
+                 reasons=["1 integration is configured."],
+                 integrations={"configured_count": 1, "configured_names": ["Discord"]},
+             )):
+            resp = self.client.get("/api/chat/status", headers=self.headers)
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        data = resp.get_json()
+        self.assertTrue(data["api_server"])
+        self.assertTrue(data["api_probe"]["reachable"])
+        self.assertTrue(data["transport_policy"]["api_selectable"])
+        self.assertFalse(data["transport_policy"]["requires_cli"])
+
     def test_env_api_returns_metadata_and_presets(self):
         env_file = Path(self.tmpdir.name) / ".env"
         env_file.write_text("OPENAI_API_KEY=test-key\nOPENAI_BASE_URL=\n", encoding="utf-8")
@@ -1473,6 +1494,132 @@ Sidecar output:
         self.assertEqual(session_meta["transport_mode"], "api")
         self.assertEqual(session_meta["continuity_mode"], "local_replay")
         self.assertFalse(session_meta["hermes_session_backed"])
+
+    def test_api_replay_is_limited_to_active_profile_segment(self):
+        hermes_root = Path(self.tmpdir.name) / ".hermes"
+        profiles_dir = hermes_root / "profiles"
+        profiles_dir.mkdir(parents=True)
+        (profiles_dir / "leire").mkdir()
+        state_path = Path(self.tmpdir.name) / "webui_profile"
+        captured_requests = []
+
+        def fake_call_api_server(session, messages, sid, files=None, prefer_vision=False, file_display_names=None):
+            captured_requests.append({
+                "profile": mod._selected_hermes_profile_name(),
+                "messages": copy.deepcopy(messages),
+                "prefer_vision": prefer_vision,
+            })
+            return f"api:{mod._selected_hermes_profile_name()}"
+
+        with patch.object(mod, "HERMES_HOME", hermes_root), \
+             patch.object(mod, "CONFIG_PATH", hermes_root / "config.yaml"), \
+             patch.object(mod, "ENV_PATH", hermes_root / ".env"), \
+             patch.object(mod, "SKILLS_DIR", hermes_root / "skills"), \
+             patch.object(mod, "SESSIONS_DIR", hermes_root / "sessions"), \
+             patch.object(mod, "BACKUP_DIR", hermes_root / "backups"), \
+             patch.object(mod, "HERMES_PROFILES_DIR", profiles_dir), \
+             patch.object(mod, "WEBUI_PROFILE_STATE_PATH", state_path), \
+               patch.object(mod, "_current_webui_token", return_value="test-token"), \
+             patch.object(mod, "_check_api_server", return_value=True), \
+             patch.object(mod, "_chat_runtime_status", return_value=runtime_status_stub()), \
+             patch.object(mod, "_image_attachment_support_status", return_value=(False, "")), \
+             patch.object(mod, "_call_api_server", side_effect=fake_call_api_server), \
+             patch.object(mod, "_call_hermes_direct", side_effect=AssertionError("CLI should not be used")), \
+             patch.object(mod, "_call_hermes_prompt", side_effect=AssertionError("CLI prompt path should not be used")):
+            created = self.client.post("/api/chat/sessions", json={}, headers=self.headers)
+            self.assertEqual(created.status_code, 200, created.data)
+            session_id = created.get_json()["session_id"]
+
+            first = self.client.post(
+                "/api/chat",
+                json={"message": "hello default", "session_id": session_id, "transport_preference": "api"},
+                headers=self.headers,
+            )
+            self.assertEqual(first.status_code, 200, first.data)
+
+            switched = self.client.put(
+                f"/api/chat/sessions/{session_id}/profile",
+                json={"profile": "leire"},
+                headers=self.headers,
+            )
+            self.assertEqual(switched.status_code, 200, switched.data)
+
+            second = self.client.post(
+                "/api/chat",
+                json={"message": "hello leire", "session_id": session_id, "transport_preference": "api"},
+                headers=self.headers,
+            )
+            self.assertEqual(second.status_code, 200, second.data)
+
+            self.assertEqual(len(captured_requests), 2)
+            self.assertEqual([entry["content"] for entry in captured_requests[0]["messages"]], ["hello default"])
+            self.assertEqual([entry["content"] for entry in captured_requests[1]["messages"]], ["hello leire"])
+            self.assertEqual(captured_requests[1]["profile"], "leire")
+            self.assertEqual(second.get_json()["session"]["profile"], "leire")
+
+    def test_api_replay_does_not_inherit_image_history_across_segments(self):
+        hermes_root = Path(self.tmpdir.name) / ".hermes"
+        profiles_dir = hermes_root / "profiles"
+        profiles_dir.mkdir(parents=True)
+        (profiles_dir / "leire").mkdir()
+        state_path = Path(self.tmpdir.name) / "webui_profile"
+        image_path = mod.UPLOAD_FOLDER / "shot.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\nstub")
+        captured_requests = []
+
+        def fake_call_api_server(session, messages, sid, files=None, prefer_vision=False, file_display_names=None):
+            captured_requests.append({
+                "profile": mod._selected_hermes_profile_name(),
+                "messages": copy.deepcopy(messages),
+                "prefer_vision": prefer_vision,
+                "files": [path.name for path in (files or [])],
+            })
+            return f"api:{mod._selected_hermes_profile_name()}"
+
+        with patch.object(mod, "HERMES_HOME", hermes_root), \
+             patch.object(mod, "CONFIG_PATH", hermes_root / "config.yaml"), \
+             patch.object(mod, "ENV_PATH", hermes_root / ".env"), \
+             patch.object(mod, "SKILLS_DIR", hermes_root / "skills"), \
+             patch.object(mod, "SESSIONS_DIR", hermes_root / "sessions"), \
+             patch.object(mod, "BACKUP_DIR", hermes_root / "backups"), \
+             patch.object(mod, "HERMES_PROFILES_DIR", profiles_dir), \
+             patch.object(mod, "WEBUI_PROFILE_STATE_PATH", state_path), \
+               patch.object(mod, "_current_webui_token", return_value="test-token"), \
+             patch.object(mod, "_check_api_server", return_value=True), \
+             patch.object(mod, "_chat_runtime_status", return_value=runtime_status_stub()), \
+             patch.object(mod, "_image_attachment_support_status", return_value=(True, "")), \
+             patch.object(mod, "_call_api_server", side_effect=fake_call_api_server), \
+             patch.object(mod, "_call_hermes_direct", side_effect=AssertionError("CLI should not be used")), \
+             patch.object(mod, "_call_hermes_prompt", side_effect=AssertionError("CLI prompt path should not be used")):
+            created = self.client.post("/api/chat/sessions", json={}, headers=self.headers)
+            self.assertEqual(created.status_code, 200, created.data)
+            session_id = created.get_json()["session_id"]
+
+            first = self.client.post(
+                "/api/chat",
+                json={"message": "describe image", "session_id": session_id, "transport_preference": "api", "files": [image_path.name]},
+                headers=self.headers,
+            )
+            self.assertEqual(first.status_code, 200, first.data)
+
+            switched = self.client.put(
+                f"/api/chat/sessions/{session_id}/profile",
+                json={"profile": "leire"},
+                headers=self.headers,
+            )
+            self.assertEqual(switched.status_code, 200, switched.data)
+
+            second = self.client.post(
+                "/api/chat",
+                json={"message": "plain text leire", "session_id": session_id, "transport_preference": "api"},
+                headers=self.headers,
+            )
+            self.assertEqual(second.status_code, 200, second.data)
+
+            self.assertEqual(len(captured_requests), 2)
+            self.assertTrue(captured_requests[0]["prefer_vision"])
+            self.assertFalse(captured_requests[1]["prefer_vision"])
+            self.assertEqual([entry["content"] for entry in captured_requests[1]["messages"]], ["plain text leire"])
 
     def test_auto_transport_preference_is_not_sticky_to_last_transport(self):
         with patch.object(mod, "_check_api_server", return_value=True), \
