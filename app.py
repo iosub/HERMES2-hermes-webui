@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from functools import wraps
 from contextlib import contextmanager
+from urllib.parse import urlparse
 
 import yaml
 from dotenv import dotenv_values, load_dotenv, set_key, unset_key
@@ -241,6 +242,72 @@ def _selected_env_path() -> Path:
     return _selected_hermes_home() / ".env"
 
 
+def _env_path_for_profile(profile_name: str | None = None) -> Path:
+    normalized = _normalize_hermes_profile_name(profile_name)
+    if normalized == "default":
+        return ENV_PATH
+    return _profile_home(normalized) / ".env"
+
+
+def _api_url_port(api_url: str | None) -> str:
+    raw = str(api_url or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    try:
+        if parsed.port:
+            return str(parsed.port)
+    except ValueError:
+        return ""
+    if parsed.scheme == "https":
+        return "443"
+    if parsed.scheme == "http":
+        return "80"
+    return ""
+
+
+def _api_token_repo_keys_for_port(port: str | None) -> list[str]:
+    normalized = str(port or "").strip()
+    if not normalized:
+        return ["HERMES_API_TOKEN", "HERMES_API_KEY", "API_SERVER_TOKEN", "API_SERVER_KEY"]
+    return [
+        f"HERMES_API_TOKEN_PORT_{normalized}",
+        f"HERMES_API_KEY_PORT_{normalized}",
+        f"API_SERVER_TOKEN_PORT_{normalized}",
+        f"API_SERVER_KEY_PORT_{normalized}",
+        "HERMES_API_TOKEN",
+        "HERMES_API_KEY",
+        "API_SERVER_TOKEN",
+        "API_SERVER_KEY",
+    ]
+
+
+def _profile_api_gateway_url(profile_name: str | None = None) -> str:
+    with _scoped_profile_override(profile_name):
+        hermes_env = _hermes_env_values()
+        explicit = str(hermes_env.get("HERMES_API_URL") or "").strip()
+        if explicit:
+            return explicit
+        host = str(hermes_env.get("API_SERVER_HOST") or "").strip() or "127.0.0.1"
+        port = str(hermes_env.get("API_SERVER_PORT") or "").strip()
+        if port:
+            if host in ("0.0.0.0", "::", "[::]"):
+                host = "127.0.0.1"
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            return f"http://{host}:{port}"
+    return _effective_hermes_api_url(DEFAULT_HERMES_API_URL)
+
+
+def _profile_primary_api_url(profile_name: str | None = None) -> str:
+    with _scoped_profile_override(profile_name):
+        target = _resolve_api_target(prefer_vision=False) or {}
+        target_url = str(target.get("base_url") or "").strip()
+        if target_url:
+            return target_url
+    return _profile_api_gateway_url(profile_name)
+
+
 def _selected_skills_dir() -> Path:
     if _selected_hermes_profile_name() == "default":
         return SKILLS_DIR
@@ -288,6 +355,33 @@ def _selected_hermes_profile_payload() -> dict:
             "skills": str(_selected_skills_dir()),
             "sessions": str(_selected_sessions_dir()),
         },
+    }
+
+
+def _profile_api_token_metadata(profile_name: str | None = None) -> dict:
+    normalized = _normalize_hermes_profile_name(profile_name)
+    if normalized not in _available_hermes_profile_names():
+        raise ValueError(f"Unknown Hermes profile: {normalized}")
+    api_url = _profile_api_gateway_url(normalized)
+    port = _api_url_port(api_url)
+    env_path = REPO_ENV_PATH
+    raw = _repo_env_values()
+    token_key = ""
+    token_value = ""
+    for key in _api_token_repo_keys_for_port(port):
+        value = str(raw.get(key) or "").strip()
+        if value:
+            token_key = key
+            token_value = value
+            break
+    return {
+        "profile": normalized,
+        "api_url": api_url,
+        "api_port": port,
+        "env_path": str(env_path),
+        "token_key": token_key,
+        "has_token": bool(token_value),
+        "masked_token": _mask_value(token_key or "HERMES_API_TOKEN", token_value) if token_value else "",
     }
 
 # Hermes executable - try current install locations with fallback
@@ -5218,6 +5312,44 @@ def api_runtime_profiles_put():
         return _http_error(str(exc))
 
 
+@app.route("/api/runtime/profiles/<profile_name>/api-token", methods=["GET"])
+@require_token
+def api_runtime_profile_api_token_get(profile_name):
+    try:
+        return jsonify({"ok": True, **_profile_api_token_metadata(profile_name)})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return _http_error(str(exc))
+
+
+@app.route("/api/runtime/profiles/<profile_name>/api-token", methods=["PUT"])
+@require_token
+def api_runtime_profile_api_token_put(profile_name):
+    try:
+        normalized = _normalize_hermes_profile_name(profile_name)
+        if normalized not in _available_hermes_profile_names():
+            raise ValueError(f"Unknown Hermes profile: {normalized}")
+        data = request.get_json(force=True) or {}
+        token = str(data.get("token") or "").strip()
+        api_url = _profile_api_gateway_url(normalized)
+        port = _api_url_port(api_url)
+        env_path = REPO_ENV_PATH
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        raw = dotenv_values(str(env_path)) if env_path.exists() else {}
+        for key in _api_token_repo_keys_for_port(port):
+            if raw.get(key) is not None:
+                unset_key(str(env_path), key)
+        if token:
+            key_name = f"HERMES_API_TOKEN_PORT_{port}" if port else "HERMES_API_TOKEN"
+            _set_env_value(env_path, key_name, token)
+        return jsonify({"ok": True, **_profile_api_token_metadata(normalized)})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return _http_error(str(exc))
+
+
 # ===================================================================
 # 7–9. Environment variables
 # ===================================================================
@@ -7899,6 +8031,7 @@ def _chat_completion_request(target: dict, messages: list[dict]) -> str:
     import urllib.request
 
     payload = {"model": target["model"] or "hermes-agent", "messages": messages, "stream": False}
+    gateway_url = _effective_hermes_api_url(DEFAULT_HERMES_API_URL)
     provider_type = str(target.get("provider") or "").strip().lower()
     routing_provider = str(target.get("routing_provider") or "").strip()
     if provider_type == "openrouter" and routing_provider:
@@ -7906,10 +8039,10 @@ def _chat_completion_request(target: dict, messages: list[dict]) -> str:
             "order": [routing_provider],
             "allow_fallbacks": True,
         }
-    headers = _api_server_headers(target.get("api_key"), target.get("provider"))
+    headers = _api_server_headers(None, None, {"base_url": gateway_url})
     headers["Content-Type"] = "application/json"
     req = urllib.request.Request(
-        _build_openai_api_url(target["base_url"], "chat/completions"),
+        _build_openai_api_url(gateway_url, "chat/completions"),
         data=json.dumps(payload).encode(),
         headers=headers,
         method="POST",
@@ -8306,26 +8439,24 @@ def _resolved_target_api_key(target: dict | None) -> str:
     provider_api_key = _provider_env_api_key(target.get("provider"))
     if provider_api_key:
         return provider_api_key
+    target_port = _api_url_port(target.get("base_url") or _effective_hermes_api_url(DEFAULT_HERMES_API_URL))
+    repo_env = _repo_env_values()
     return (
-        _runtime_env_value("HERMES_API_KEY", "")
-        or _runtime_env_value("HERMES_API_TOKEN", "")
-        or _runtime_env_value("API_SERVER_KEY", "")
-        or _runtime_env_value("API_SERVER_TOKEN", "")
-    ).strip()
+        next((str(repo_env.get(key) or "").strip() for key in _api_token_repo_keys_for_port(target_port) if str(repo_env.get(key) or "").strip()), "")
+        or str(os.environ.get("HERMES_API_KEY") or "").strip()
+        or str(os.environ.get("HERMES_API_TOKEN") or "").strip()
+        or str(os.environ.get("API_SERVER_KEY") or "").strip()
+        or str(os.environ.get("API_SERVER_TOKEN") or "").strip()
+    )
 
 
-def _api_server_headers(api_key: str | None = None, provider: str | None = None) -> dict:
+def _api_server_headers(api_key: str | None = None, provider: str | None = None, target: dict | None = None) -> dict:
     headers = {}
     resolved_api_key = (api_key or "").strip() if api_key is not None else ""
     if not resolved_api_key and provider:
         resolved_api_key = _provider_env_api_key(provider)
     if not resolved_api_key:
-        resolved_api_key = (
-            _runtime_env_value("HERMES_API_KEY", "")
-            or _runtime_env_value("HERMES_API_TOKEN", "")
-            or _runtime_env_value("API_SERVER_KEY", "")
-            or _runtime_env_value("API_SERVER_TOKEN", "")
-        ).strip()
+        resolved_api_key = _resolved_target_api_key(target)
     if resolved_api_key:
         headers["Authorization"] = f"Bearer {resolved_api_key}"
     return headers

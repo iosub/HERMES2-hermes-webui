@@ -274,6 +274,120 @@ class HermesWebUISmokeTests(unittest.TestCase):
         self.assertEqual(result, "api ok")
         self.assertEqual(captured["headers"].get("Authorization"), "Bearer server-token")
 
+    def test_call_api_server_prefers_port_scoped_repo_token_over_generic_repo_env(self):
+        captured = {}
+        hermes_root = Path(self.tmpdir.name) / ".hermes"
+        profiles_dir = hermes_root / "profiles"
+        leire_home = profiles_dir / "leire"
+        profiles_dir.mkdir(parents=True)
+        leire_home.mkdir(parents=True)
+        (leire_home / ".env").write_text("API_SERVER_PORT=8643\n", encoding="utf-8")
+        repo_env = Path(self.tmpdir.name) / "repo.env"
+        repo_env.write_text("HERMES_API_TOKEN=repo-token\nHERMES_API_TOKEN_PORT_8643=port-token\n", encoding="utf-8")
+        state_path = Path(self.tmpdir.name) / "webui_profile"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text("leire\n", encoding="utf-8")
+
+        def fake_urlopen(req, timeout=300):
+            captured["headers"] = dict(req.header_items())
+            return FakeHTTPResponse({"choices": [{"message": {"content": "api ok"}}]})
+
+        with patch.object(mod, "HERMES_HOME", hermes_root), \
+             patch.object(mod, "CONFIG_PATH", hermes_root / "config.yaml"), \
+             patch.object(mod, "ENV_PATH", hermes_root / ".env"), \
+             patch.object(mod, "HERMES_PROFILES_DIR", profiles_dir), \
+             patch.object(mod, "WEBUI_PROFILE_STATE_PATH", state_path), \
+             patch.object(mod, "REPO_ENV_PATH", repo_env), \
+             patch.object(mod, "_normalized_model_config", return_value={
+                 "default_model": "default-model",
+                 "base_url": "https://api.example.test:8643/v1",
+             }), \
+             patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = mod._call_api_server({}, [{"role": "user", "content": "hello"}], "sid-1")
+
+        self.assertEqual(result, "api ok")
+        self.assertEqual(captured["headers"].get("Authorization"), "Bearer port-token")
+
+    def test_call_api_server_prefers_gateway_port_over_target_base_url_port(self):
+        captured = {}
+        hermes_root = Path(self.tmpdir.name) / ".hermes"
+        repo_env = Path(self.tmpdir.name) / "repo.env"
+        repo_env.write_text(
+            "HERMES_API_TOKEN_PORT_8642=gateway-token\nHERMES_API_TOKEN_PORT_443=target-token\n",
+            encoding="utf-8",
+        )
+
+        def fake_urlopen(req, timeout=300):
+            captured["headers"] = dict(req.header_items())
+            return FakeHTTPResponse({"choices": [{"message": {"content": "api ok"}}]})
+
+        with patch.object(mod, "HERMES_HOME", hermes_root), \
+             patch.object(mod, "ENV_PATH", hermes_root / ".env"), \
+             patch.object(mod, "REPO_ENV_PATH", repo_env), \
+             patch.object(mod, "_effective_hermes_api_url", return_value="http://127.0.0.1:8642"), \
+             patch.object(mod, "_normalized_model_config", return_value={
+                 "default_model": "default-model",
+                 "base_url": "https://ollama.com/v1",
+             }), \
+             patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = mod._call_api_server({}, [{"role": "user", "content": "hello"}], "sid-1")
+
+        self.assertEqual(result, "api ok")
+        self.assertEqual(captured["headers"].get("Authorization"), "Bearer gateway-token")
+
+    def test_runtime_profile_api_token_endpoint_reads_repo_env_token_for_gateway_port(self):
+        hermes_root = Path(self.tmpdir.name) / ".hermes"
+        profiles_dir = hermes_root / "profiles"
+        leire_home = profiles_dir / "leire"
+        profiles_dir.mkdir(parents=True)
+        leire_home.mkdir(parents=True)
+        (leire_home / ".env").write_text("API_SERVER_PORT=8643\n", encoding="utf-8")
+        repo_env = Path(self.tmpdir.name) / "repo.env"
+        repo_env.write_text("HERMES_API_TOKEN_PORT_8643=profile-token\n", encoding="utf-8")
+
+        with patch.object(mod, "_current_webui_token", return_value="test-token"), \
+             patch.object(mod, "HERMES_HOME", hermes_root), \
+             patch.object(mod, "ENV_PATH", hermes_root / ".env"), \
+             patch.object(mod, "HERMES_PROFILES_DIR", profiles_dir), \
+             patch.object(mod, "REPO_ENV_PATH", repo_env):
+            resp = self.client.get("/api/runtime/profiles/leire/api-token", headers=self.headers)
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        body = resp.get_json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["profile"], "leire")
+        self.assertEqual(body["env_path"], str(repo_env))
+        self.assertEqual(body["api_port"], "8643")
+        self.assertTrue(body["has_token"])
+        self.assertEqual(body["token_key"], "HERMES_API_TOKEN_PORT_8643")
+        self.assertTrue(body["masked_token"].endswith("oken"))
+
+    def test_runtime_profile_api_token_endpoint_writes_canonical_repo_token_for_gateway_port(self):
+        hermes_root = Path(self.tmpdir.name) / ".hermes"
+        profiles_dir = hermes_root / "profiles"
+        leire_home = profiles_dir / "leire"
+        profiles_dir.mkdir(parents=True)
+        leire_home.mkdir(parents=True)
+        (leire_home / ".env").write_text("API_SERVER_PORT=8643\n", encoding="utf-8")
+        repo_env = Path(self.tmpdir.name) / "repo.env"
+        repo_env.write_text("API_SERVER_KEY_PORT_8643=old-token\n", encoding="utf-8")
+
+        with patch.object(mod, "_current_webui_token", return_value="test-token"), \
+             patch.object(mod, "HERMES_HOME", hermes_root), \
+             patch.object(mod, "ENV_PATH", hermes_root / ".env"), \
+             patch.object(mod, "HERMES_PROFILES_DIR", profiles_dir), \
+             patch.object(mod, "REPO_ENV_PATH", repo_env):
+            resp = self.client.put(
+                "/api/runtime/profiles/leire/api-token",
+                json={"token": "new-profile-token"},
+                headers=self.headers,
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        saved = repo_env.read_text(encoding="utf-8")
+        self.assertIn("HERMES_API_TOKEN_PORT_8643=new-profile-token", saved)
+        self.assertNotIn("API_SERVER_KEY_PORT_8643=old-token", saved)
+
     def test_call_api_server_surfaces_top_level_error_payload(self):
         def fake_urlopen(req, timeout=300):
             return FakeHTTPResponse({"error": {"message": "image too small"}})

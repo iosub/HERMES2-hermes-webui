@@ -816,6 +816,15 @@ async function loadRuntimeProfiles() {
     return api('GET', '/api/runtime/profiles');
 }
 
+async function loadRuntimeProfileApiToken(profileName) {
+    return api('GET', '/api/runtime/profiles/' + encodeURIComponent(profileName) + '/api-token');
+}
+
+const runtimeProfileSettingsState = {
+    profileData: null,
+    tokenMeta: null,
+};
+
 function renderRuntimeProfileCard(profileData, status) {
     const selected = profileData?.selected || 'default';
     const profiles = Array.isArray(profileData?.profiles) ? profileData.profiles : [];
@@ -829,15 +838,98 @@ function renderRuntimeProfileCard(profileData, status) {
             '<p class="text-sm text-secondary mb-16">Choose which Hermes profile this portal should read for config, env vars, CLI chats, and gateway actions. This does not modify the backend\'s own active profile file.</p>' +
             '<div class="form-row">' +
                 '<div class="form-group"><label class="form-label">Profile</label>' + selectH('runtime-profile-select', options, selected) + '</div>' +
-                '<div class="form-group"><label class="form-label">Hermes Home</label><div class="font-mono text-sm">' + escH(profileData?.paths?.home || '') + '</div></div>' +
+                '<div class="form-group"><label class="form-label">Hermes Home</label><div id="runtime-profile-home" class="font-mono text-sm">' + escH(profileData?.paths?.home || '') + '</div></div>' +
                 '<div class="form-group"><label class="form-label">API Server</label><div class="font-mono text-sm">' + escH(currentApiUrl) + '</div></div>' +
             '</div>' +
+            '<div class="card" style="margin: 12px 0 16px; border-style: dashed;"><div class="card-body">' +
+                '<div class="form-row">' +
+                    '<div class="form-group" style="flex:2 1 320px"><label class="form-label">API Server Token</label>' + inputH('runtime-profile-api-token', '', 'password', 'Set or replace the token for this gateway port') + '<div id="runtime-profile-api-token-status" class="form-hint" style="margin-top:8px"></div></div>' +
+                    '<div class="form-group" style="flex:1 1 220px"><label class="form-label">Stored In</label><div id="runtime-profile-api-token-path" class="font-mono text-sm text-muted">Loading...</div></div>' +
+                '</div>' +
+                '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+                    '<button class="btn btn-primary" onclick="saveRuntimeProfileApiToken(this)">Save API Token</button>' +
+                    '<button class="btn" onclick="clearRuntimeProfileApiToken(this)">Clear Token</button>' +
+                '</div>' +
+            '</div></div>' +
             '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
                 '<button class="btn btn-primary" onclick="saveRuntimeProfile(this)">Use Profile</button>' +
                 '<button class="btn" onclick="Screens.settings()">Refresh</button>' +
             '</div>' +
         '</div></div>';
 }
+
+function runtimeProfileSelectionMeta(profileName) {
+    const profiles = Array.isArray(runtimeProfileSettingsState.profileData?.profiles) ? runtimeProfileSettingsState.profileData.profiles : [];
+    return profiles.find(profile => profile.name === profileName) || null;
+}
+
+async function refreshRuntimeProfileTokenCard(profileName) {
+    const normalized = profileName || document.getElementById('runtime-profile-select')?.value || 'default';
+    const homeEl = document.getElementById('runtime-profile-home');
+    const pathEl = document.getElementById('runtime-profile-api-token-path');
+    const statusEl = document.getElementById('runtime-profile-api-token-status');
+    const input = document.getElementById('runtime-profile-api-token');
+    const profileMeta = runtimeProfileSelectionMeta(normalized);
+    if (homeEl && profileMeta?.home) homeEl.textContent = profileMeta.home;
+    if (pathEl) pathEl.textContent = 'Loading...';
+    if (statusEl) statusEl.textContent = 'Loading token status...';
+    if (input) input.value = '';
+    try {
+        const tokenMeta = await loadRuntimeProfileApiToken(normalized);
+        runtimeProfileSettingsState.tokenMeta = tokenMeta;
+        if (pathEl) pathEl.textContent = tokenMeta.env_path || '(unknown)';
+        if (statusEl) {
+            statusEl.textContent = tokenMeta.has_token
+                ? ('Gateway port ' + (tokenMeta.api_port || '?') + ' saved as ' + (tokenMeta.token_key || 'HERMES_API_TOKEN') + ': ' + (tokenMeta.masked_token || 'hidden'))
+                : ('No API token saved for gateway port ' + (tokenMeta.api_port || '?') + '.');
+        }
+    } catch (e) {
+        runtimeProfileSettingsState.tokenMeta = null;
+        if (pathEl) pathEl.textContent = '(unavailable)';
+        if (statusEl) statusEl.textContent = 'Token status unavailable: ' + e.message;
+    }
+}
+
+window.saveRuntimeProfileApiToken = async function (btn) {
+    const select = document.getElementById('runtime-profile-select');
+    const input = document.getElementById('runtime-profile-api-token');
+    if (!select || !input) return;
+    const profileName = select.value || 'default';
+    const token = input.value || '';
+    if (!token.trim()) {
+        toast('Enter a token first, or use Clear Token.', 'warning');
+        return;
+    }
+    try {
+        setBtnLoading(btn, true);
+        await api('PUT', '/api/runtime/profiles/' + encodeURIComponent(profileName) + '/api-token', { token: token.trim() });
+        input.value = '';
+        toast('API token saved for profile ' + profileName, 'success');
+        await refreshRuntimeProfileTokenCard(profileName);
+    } catch (e) {
+        toast('API token save failed: ' + e.message, 'error');
+    } finally {
+        setBtnLoading(btn, false);
+    }
+};
+
+window.clearRuntimeProfileApiToken = async function (btn) {
+    const select = document.getElementById('runtime-profile-select');
+    const input = document.getElementById('runtime-profile-api-token');
+    if (!select) return;
+    const profileName = select.value || 'default';
+    try {
+        setBtnLoading(btn, true);
+        await api('PUT', '/api/runtime/profiles/' + encodeURIComponent(profileName) + '/api-token', { token: '' });
+        if (input) input.value = '';
+        toast('API token cleared for profile ' + profileName, 'success');
+        await refreshRuntimeProfileTokenCard(profileName);
+    } catch (e) {
+        toast('API token clear failed: ' + e.message, 'error');
+    } finally {
+        setBtnLoading(btn, false);
+    }
+};
 
 window.saveRuntimeProfile = async function (btn) {
     const select = document.getElementById('runtime-profile-select');
@@ -873,6 +965,8 @@ Screens.settings = async function () {
             api('GET', '/api/chat/status').catch(() => ({})),
             loadRuntimeProfiles(),
         ]);
+        runtimeProfileSettingsState.profileData = profileData;
+        runtimeProfileSettingsState.tokenMeta = null;
         const personalities = Object.keys(cfg.personalities || {});
         const runtime = status.runtime || {};
         const tabs = [
@@ -934,6 +1028,11 @@ Screens.settings = async function () {
                 content.querySelector('[data-tab="' + tab.dataset.tab + '"].tab-pane')?.classList.add('active');
             });
         });
+        const runtimeSelect = document.getElementById('runtime-profile-select');
+        if (runtimeSelect) {
+            runtimeSelect.addEventListener('change', () => refreshRuntimeProfileTokenCard(runtimeSelect.value || 'default'));
+            await refreshRuntimeProfileTokenCard(runtimeSelect.value || 'default');
+        }
     } catch (e) {
         content.innerHTML = '<div class="empty-state"><div class="empty-icon">\u26a0\ufe0f</div><h3>Error</h3><p>' + escH(e.message) + '</p></div>';
     }
