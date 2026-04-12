@@ -26,6 +26,17 @@ function clearToken() {
     localStorage.removeItem('hermes_webui_token');
 }
 
+function bootstrapTokenFromUrl() {
+    try {
+        const url = new URL(window.location.href);
+        const token = (url.searchParams.get('token') || '').trim();
+        if (!token) return;
+        setToken(token);
+        url.searchParams.delete('token');
+        window.history.replaceState({}, document.title, url.pathname + (url.search || '') + url.hash);
+    } catch {}
+}
+
 // AuthRequired sentinel — thrown only when user cancels the token prompt
 // (api() retries internally after prompt; this is for the cancel path only)
 class AuthRequired extends Error {
@@ -6752,6 +6763,7 @@ function chatStopVoiceUI() {
    ═══════════════════════════════════════════════════════════════ */
 
 document.addEventListener('DOMContentLoaded', () => {
+    bootstrapTokenFromUrl();
     ThemeManager.init();
 
     document.querySelectorAll('.nav-item').forEach(item => {
