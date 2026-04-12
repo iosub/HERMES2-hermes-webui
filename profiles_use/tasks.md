@@ -47,6 +47,25 @@ Make the active Hermes profile visible in the important runtime areas of the por
 - [ ] Implement active profile visibility in Providers / Models.
 
 
+## Future Roadmap
+
+### Phase 1: Segmented chat runtime
+
+- [ ] Allow switching profile inside the same chat for subsequent turns.
+- [ ] Represent each runtime phase as a visible chat segment (`1`, `2`, `3`, ...).
+- [ ] Label each segment with its profile and transport.
+- [ ] Keep the chat visually unified while making runtime boundaries explicit.
+- [ ] Define how Hermes CLI continuity behaves when crossing profile boundaries.
+
+### Phase 2: Multi-profile comparison mode
+
+- [ ] Add a dedicated compare mode separate from normal chat.
+- [ ] Allow sending the same prompt to multiple selected profiles.
+- [ ] Render one response column per selected profile.
+- [ ] Label each column with profile and effective runtime/model information.
+- [ ] Keep compare mode results separate from the normal segmented chat flow unless explicitly promoted.
+
+
 ## Done
 
 - [x] Create the `improve-profiles` branch.

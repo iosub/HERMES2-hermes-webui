@@ -142,6 +142,125 @@ Why:
 - this is especially important when comparing behavior across profiles
 
 
+## 7. Chat history structure
+
+Do not make `Profile` the primary root structure of the history tree.
+
+Recommended structure:
+
+- keep `Folders / Projects` as the main navigation structure
+- keep chats listed inside their current folder or ungrouped area
+- treat `Profile` as visible runtime metadata, not the main container hierarchy
+
+Recommended visibility rules:
+
+- show the active portal profile in the history header as a compact badge
+- show the session profile on each chat row as a compact badge
+- allow filtering the visible history by profile when needed
+- only consider profile sub-grouping inside a folder if that folder actually mixes multiple profiles and the grouping improves clarity
+
+Not recommended as the default design:
+
+- root grouping by `Profile -> Projects`
+- root grouping by `Projects -> Profile` for every folder by default
+
+Why this structure is preferred:
+
+- users usually search for chats by project, folder, or title first
+- profile is an execution/runtime dimension, not the primary subject of the conversation
+- grouping the whole history tree by profile would duplicate navigation paths and make the sidebar heavier
+- forcing every project to show profile sub-groups would add noise even when the project only uses one profile
+
+Practical UI rule:
+
+- `Project / Folder` answers: what this work belongs to
+- `Profile` answers: which Hermes runtime executed or backed this chat
+
+Recommended implementation order for history UX:
+
+1. show clear profile badges on each chat row
+2. show the active portal profile in the history header
+3. add a simple profile filter (`All`, `Current`, specific profiles)
+4. only add per-folder profile grouping later if real usage shows it helps
+
+
+## 8. Profile switching inside the same chat
+
+This should be supported, but not as a silent replacement of the chat's runtime.
+
+Recommended product direction:
+
+- keep one visible chat thread
+- allow the user to switch profile for the next turns
+- record that switch as a new runtime segment inside the same chat
+- keep each segment clearly labeled with the profile and transport used for that part of the conversation
+
+Why this matters:
+
+- switching profile may also change the effective model, API target, env vars, gateway context, and skills
+- a silent runtime switch would make the chat history misleading
+- Hermes CLI continuity may not be safely reusable across profile boundaries
+
+Recommended UX for phase 1:
+
+- add an explicit in-chat action such as `Switch profile for next turns`
+- when the user changes profile inside the chat, create a new numbered segment inside the same conversation
+- each segment should show at least:
+	- segment number
+	- profile
+	- transport
+- the chat remains visually one conversation, but the runtime segments are visible and selectable
+
+Suggested mental model:
+
+- `Chat` = one user conversation
+- `Segment 1 / 2 / 3` = different runtime phases inside that same conversation
+- each segment belongs to the profile active when that segment started
+
+This matches the intended workflow:
+
+- keep the same conversation
+- switch from one profile to another
+- continue in a second stage without pretending it is the exact same runtime context
+
+
+## 9. Future comparison mode between profiles
+
+After phase 1 is stable, a second phase can add side-by-side comparison between profiles.
+
+Recommended direction:
+
+- allow sending the same prompt to multiple selected profiles from the same comparison view
+- render results in parallel columns, one column per profile
+- keep the compared profiles clearly labeled at the top of each column
+
+Suggested use cases:
+
+- compare how `default` and `leire` answer the same question
+- compare different model and runtime behavior across profiles
+- evaluate which profile is better for a given task without leaving the portal
+
+Recommended constraints for phase 2:
+
+- treat comparison mode as a dedicated chat mode, not a hidden behavior of the normal chat
+- keep normal single-thread chat simple
+- do not merge comparison results back into a normal runtime segment automatically
+
+Recommended interaction model:
+
+1. user opens comparison mode
+2. user selects two or more profiles
+3. user sends one prompt
+4. each profile responds in its own column
+5. the user can inspect differences before continuing normal chat work
+
+Why this should be phase 2 instead of phase 1:
+
+- it is a larger UX and state-management feature
+- it introduces multi-target execution instead of single-target runtime continuity
+- it is valuable, but should come after the single-chat segmented runtime model is clear and stable
+
+
 # Minimal Implementation Plan
 
 ## Phase 1: Reuse existing runtime profile API
