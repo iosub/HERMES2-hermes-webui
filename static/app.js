@@ -4930,6 +4930,7 @@ function chatRenderSessionBanner() {
     const banner = document.getElementById('chat-session-banner');
     if (!banner) return;
     const badges = [];
+    const profile = chatVisibleProfile();
     let text = chatState.currentTransportNotice || '';
     let cls = 'success';
     if (chatState.currentContinuity === 'hermes_resume') {
@@ -4948,6 +4949,9 @@ function chatRenderSessionBanner() {
         badges.push('<span class="badge badge-warning">API replay transport</span>');
     } else if (chatState.currentTransport === 'cli') {
         badges.push('<span class="badge badge-info">Hermes CLI transport</span>');
+    }
+    if (profile) {
+        badges.push('<span class="badge badge-accent">Profile: ' + escH(profile) + '</span>');
     }
     if (chatState.lastTurnUsedSidecarVision) {
         badges.push('<span class="badge badge-info">Sidecar vision used</span>');
