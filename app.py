@@ -8306,9 +8306,11 @@ def _resolved_target_api_key(target: dict | None) -> str:
     provider_api_key = _provider_env_api_key(target.get("provider"))
     if provider_api_key:
         return provider_api_key
-    return _runtime_env_value(
-        "HERMES_API_KEY",
-        _runtime_env_value("API_SERVER_KEY", ""),
+    return (
+        _runtime_env_value("HERMES_API_KEY", "")
+        or _runtime_env_value("HERMES_API_TOKEN", "")
+        or _runtime_env_value("API_SERVER_KEY", "")
+        or _runtime_env_value("API_SERVER_TOKEN", "")
     ).strip()
 
 
@@ -8318,9 +8320,11 @@ def _api_server_headers(api_key: str | None = None, provider: str | None = None)
     if not resolved_api_key and provider:
         resolved_api_key = _provider_env_api_key(provider)
     if not resolved_api_key:
-        resolved_api_key = _runtime_env_value(
-            "HERMES_API_KEY",
-            _runtime_env_value("API_SERVER_KEY", ""),
+        resolved_api_key = (
+            _runtime_env_value("HERMES_API_KEY", "")
+            or _runtime_env_value("HERMES_API_TOKEN", "")
+            or _runtime_env_value("API_SERVER_KEY", "")
+            or _runtime_env_value("API_SERVER_TOKEN", "")
         ).strip()
     if resolved_api_key:
         headers["Authorization"] = f"Bearer {resolved_api_key}"

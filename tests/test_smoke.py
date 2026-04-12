@@ -256,6 +256,24 @@ class HermesWebUISmokeTests(unittest.TestCase):
         self.assertEqual(captured["url"], "https://vision.example.test/v1/chat/completions")
         self.assertEqual(captured["payload"]["model"], "vision-model")
 
+    def test_call_api_server_uses_api_token_alias_for_authorization(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=300):
+            captured["headers"] = dict(req.header_items())
+            return FakeHTTPResponse({"choices": [{"message": {"content": "api ok"}}]})
+
+        with patch.dict(mod.os.environ, {"HERMES_API_TOKEN": "server-token"}, clear=False), \
+             patch.object(mod, "_normalized_model_config", return_value={
+                 "default_model": "default-model",
+                 "base_url": "https://api.example.test/v1",
+             }), \
+             patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = mod._call_api_server({}, [{"role": "user", "content": "hello"}], "sid-1")
+
+        self.assertEqual(result, "api ok")
+        self.assertEqual(captured["headers"].get("Authorization"), "Bearer server-token")
+
     def test_call_api_server_surfaces_top_level_error_payload(self):
         def fake_urlopen(req, timeout=300):
             return FakeHTTPResponse({"error": {"message": "image too small"}})
