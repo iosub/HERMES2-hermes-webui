@@ -2459,14 +2459,16 @@ def _raw_role_profile_candidate(role: str, *, model_cfg: dict | None = None, raw
     model_cfg = model_cfg if model_cfg is not None else _normalized_model_config()
     if role == "primary":
         explicit_profile = str(model_cfg.get("default_profile") or "").strip()
-        provider = _normalize_provider_type(model_cfg.get("default_provider", ""))
+        declared_provider = str(model_cfg.get("default_provider") or "").strip()
+        provider = _normalize_provider_type(declared_provider)
         model = str(model_cfg.get("default_model") or "").strip()
         base_url = str(model_cfg.get("base_url") or _provider_default_base_url(provider) or "").strip()
         api_key = str(model_cfg.get("api_key") or "").strip()
         routing_provider = _role_routing_provider("primary", model_cfg=model_cfg)
     elif role == "fallback":
         explicit_profile = str(model_cfg.get("fallback_profile") or "").strip()
-        provider = _normalize_provider_type(model_cfg.get("fallback_provider", ""))
+        declared_provider = str(model_cfg.get("fallback_provider") or "").strip()
+        provider = _normalize_provider_type(declared_provider)
         model = str(model_cfg.get("fallback_model") or "").strip()
         base_url = str(model_cfg.get("fallback_base_url") or _provider_default_base_url(provider) or "").strip()
         api_key = str(model_cfg.get("fallback_api_key") or "").strip()
@@ -2475,14 +2477,16 @@ def _raw_role_profile_candidate(role: str, *, model_cfg: dict | None = None, raw
         vision_cfg = model_cfg.get("vision")
         if isinstance(vision_cfg, str):
             explicit_profile = ""
-            provider = _normalize_provider_type(model_cfg.get("default_provider", ""))
+            declared_provider = str(model_cfg.get("default_provider") or "").strip()
+            provider = _normalize_provider_type(declared_provider)
             model = vision_cfg.strip()
             base_url = str(model_cfg.get("base_url") or _provider_default_base_url(provider) or "").strip()
             api_key = str(model_cfg.get("api_key") or "").strip()
             routing_provider = ""
         elif isinstance(vision_cfg, dict):
             explicit_profile = str(vision_cfg.get("profile") or "").strip()
-            provider = _normalize_provider_type(vision_cfg.get("provider", ""), base_url=vision_cfg.get("base_url", ""))
+            declared_provider = str(vision_cfg.get("provider") or "").strip()
+            provider = _normalize_provider_type(declared_provider, base_url=vision_cfg.get("base_url", ""))
             model = str(vision_cfg.get("model") or "").strip()
             base_url = str(vision_cfg.get("base_url") or _provider_default_base_url(provider) or "").strip()
             api_key = str(vision_cfg.get("api_key") or "").strip()
@@ -2496,7 +2500,7 @@ def _raw_role_profile_candidate(role: str, *, model_cfg: dict | None = None, raw
         return None
     if not explicit_profile and provider in ("", "auto") and not any((model, base_url, api_key)):
         return None
-    name = explicit_profile or provider or role
+    name = explicit_profile or declared_provider or provider or role
     return _normalize_provider_profile({
         "name": name,
         "provider": provider,

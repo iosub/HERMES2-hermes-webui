@@ -320,6 +320,20 @@ function activeProfileSidebarH(profile) {
         '</div>';
 }
 
+function runtimeProfileContextCardH(health, apiUrl, title = 'Runtime Context', description = '') {
+    const resolvedApiUrl = String(apiUrl || health?.api_url || '(not set)').trim() || '(not set)';
+    return '' +
+        '<div class="card mb-16"><div class="card-header"><span>' + escH(title) + '</span></div><div class="card-body">' +
+            (description ? '<p class="text-sm text-secondary mb-16">' + escH(description) + '</p>' : '') +
+            '<div class="form-row">' +
+                '<div class="form-group"><label class="form-label">Active Profile</label><div>' + activeProfileBadgeH(health?.profile) + '</div></div>' +
+                '<div class="form-group"><label class="form-label">Hermes Home</label><div class="font-mono text-sm">' + escH(health?.hermes_home || '?') + '</div></div>' +
+                '<div class="form-group"><label class="form-label">API Server</label><div class="font-mono text-sm">' + escH(resolvedApiUrl) + '</div></div>' +
+                '<div class="form-group"><label class="form-label">Gateway Status</label><div>' + (health?.gateway_running ? '<span class="badge badge-success">Running</span>' : '<span class="badge badge-danger">Stopped</span>') + '</div></div>' +
+            '</div>' +
+        '</div></div>';
+}
+
 function updateActiveProfileIndicators(health) {
     const profile = health?.profile || 'unknown';
     const topbar = document.getElementById('topbar-active-profile');
@@ -836,24 +850,28 @@ function renderRuntimeProfileCard(profileData, status) {
     return '' +
         '<div class="card mb-16"><div class="card-header"><span>Hermes Profile</span></div><div class="card-body">' +
             '<p class="text-sm text-secondary mb-16">Choose which Hermes profile this portal should read for config, env vars, CLI chats, and gateway actions. This does not modify the backend\'s own active profile file.</p>' +
-            '<div class="form-row">' +
-                '<div class="form-group"><label class="form-label">Profile</label>' + selectH('runtime-profile-select', options, selected) + '</div>' +
-                '<div class="form-group"><label class="form-label">Hermes Home</label><div id="runtime-profile-home" class="font-mono text-sm">' + escH(profileData?.paths?.home || '') + '</div></div>' +
-                '<div class="form-group"><label class="form-label">API Server</label><div class="font-mono text-sm">' + escH(currentApiUrl) + '</div></div>' +
-            '</div>' +
-            '<div class="card" style="margin: 12px 0 16px; border-style: dashed;"><div class="card-body">' +
-                '<div class="form-row">' +
-                    '<div class="form-group" style="flex:2 1 320px"><label class="form-label">API Server Token</label>' + inputH('runtime-profile-api-token', '', 'password', 'Set or replace the token for this gateway port') + '<div id="runtime-profile-api-token-status" class="form-hint" style="margin-top:8px"></div></div>' +
-                    '<div class="form-group" style="flex:1 1 220px"><label class="form-label">Stored In</label><div id="runtime-profile-api-token-path" class="font-mono text-sm text-muted">Loading...</div></div>' +
+            '<div style="display:grid;grid-template-columns:repeat(2, minmax(0, 1fr));gap:16px;align-items:start;margin-bottom:16px">' +
+                '<div style="display:flex;flex-direction:column;gap:12px">' +
+                    '<div class="form-group"><label class="form-label">Profile</label>' + selectH('runtime-profile-select', options, selected) + '</div>' +
+                    '<div class="form-group"><label class="form-label">API Server</label><div class="font-mono text-sm">' + escH(currentApiUrl) + '</div></div>' +
+                    '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+                        '<button class="btn btn-primary" onclick="saveRuntimeProfile(this)">Use Profile</button>' +
+                        '<button class="btn" onclick="Screens.settings()">Refresh</button>' +
+                    '</div>' +
                 '</div>' +
-                '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
-                    '<button class="btn btn-primary" onclick="saveRuntimeProfileApiToken(this)">Save API Token</button>' +
-                    '<button class="btn" onclick="clearRuntimeProfileApiToken(this)">Clear Token</button>' +
+                '<div style="display:flex;flex-direction:column;gap:12px">' +
+                    '<div class="form-group"><label class="form-label">Hermes Home</label><div id="runtime-profile-home" class="font-mono text-sm">' + escH(profileData?.paths?.home || '') + '</div></div>' +
+                    '<div class="card" style="border-style:dashed"><div class="card-body">' +
+                        '<div style="display:grid;grid-template-columns:minmax(0, 1fr);gap:12px">' +
+                            '<div class="form-group" style="flex:2 1 320px"><label class="form-label">API Server Token</label>' + inputH('runtime-profile-api-token', '', 'password', 'Set or replace the token for this gateway port') + '<div id="runtime-profile-api-token-status" class="form-hint" style="margin-top:8px"></div></div>' +
+                            '<div class="form-group" style="flex:1 1 220px"><label class="form-label">Stored In</label><div id="runtime-profile-api-token-path" class="font-mono text-sm text-muted">Loading...</div></div>' +
+                        '</div>' +
+                        '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+                            '<button class="btn btn-primary" onclick="saveRuntimeProfileApiToken(this)">Save API Token</button>' +
+                            '<button class="btn" onclick="clearRuntimeProfileApiToken(this)">Clear Token</button>' +
+                        '</div>' +
+                    '</div></div>' +
                 '</div>' +
-            '</div></div>' +
-            '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
-                '<button class="btn btn-primary" onclick="saveRuntimeProfile(this)">Use Profile</button>' +
-                '<button class="btn" onclick="Screens.settings()">Refresh</button>' +
             '</div>' +
         '</div></div>';
 }
@@ -1480,16 +1498,23 @@ async function loadProviderDiscoveryEndpoints(profileName, modelId, force = fals
     return data;
 }
 
-function modelRoleCardH(role, info) {
+function modelRoleCardH(role, info, status = null) {
     const meta = MODEL_ROLE_META[role] || { title: role, description: '' };
     const enabled = role === 'primary' ? true : !!info?.enabled;
-    const statusBadge = role === 'primary'
+    let statusBadge = role === 'primary'
         ? '<span class="badge badge-success">Required</span>'
         : '<span class="badge ' + (enabled ? 'badge-info' : 'badge-secondary') + '">' + (enabled ? 'Enabled' : 'Disabled') + '</span>';
+    if (status && status.label) {
+        statusBadge = '<span class="badge ' + escH(status.tone || 'badge-secondary') + '">' + escH(status.label) + '</span>';
+    }
     const profileLabel = info?.profile || '(not linked)';
+    const providerType = String(info?.provider || '').trim().toLowerCase();
     const providerLabel = info?.provider_label || info?.provider || '(not set)';
     const modelLabel = info?.model || '(not set)';
-    const routeLabel = info?.routing_provider || 'Auto';
+    const routeTitle = providerType === 'openrouter' ? 'OpenRouter Endpoint' : 'Routing';
+    const routeLabel = providerType === 'openrouter'
+        ? (info?.routing_provider || 'Auto')
+        : 'Direct';
     return '' +
         '<div class="card model-role-card">' +
             '<div class="card-header"><span>' + escH(meta.title) + '</span>' + statusBadge + '</div>' +
@@ -1499,7 +1524,7 @@ function modelRoleCardH(role, info) {
                     '<div class="model-role-meta-item"><label class="form-label">Provider Profile</label><div class="font-mono text-sm">' + escH(profileLabel) + '</div></div>' +
                     '<div class="model-role-meta-item"><label class="form-label">Provider Type</label><div class="text-sm">' + escH(providerLabel) + '</div></div>' +
                     '<div class="model-role-meta-item"><label class="form-label">Model</label><div class="font-mono text-sm">' + escH(modelLabel) + '</div></div>' +
-                    '<div class="model-role-meta-item"><label class="form-label">OpenRouter Endpoint</label><div class="font-mono text-sm">' + escH(routeLabel) + '</div></div>' +
+                    '<div class="model-role-meta-item"><label class="form-label">' + escH(routeTitle) + '</label><div class="font-mono text-sm">' + escH(routeLabel) + '</div></div>' +
                 '</div>' +
                 '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">' +
                     '<button class="btn btn-primary" onclick="editModelRole(\'' + escA(role) + '\')">Edit</button>' +
@@ -1511,10 +1536,11 @@ function modelRoleCardH(role, info) {
 Screens.providers = async function () {
     const content = document.getElementById('content');
     try {
-        const [data, chatStatus, roleData] = await Promise.all([
+        const [data, chatStatus, roleData, health] = await Promise.all([
             api('GET', '/api/providers'),
             api('GET', '/api/chat/status').catch(() => null),
             loadModelRoles(true),
+            api('GET', '/api/health').catch(() => ({ gateway_running: false, profile: 'unknown', hermes_home: '?' })),
         ]);
         const def = data.default || {};
         const custom = data.custom || [];
@@ -1528,7 +1554,13 @@ Screens.providers = async function () {
         const availableProfiles = roleData?.profiles || [];
         const implicitProfiles = availableProfiles.filter(profile => !(custom || []).some(saved => saved.name === profile.name));
 
-        let html = '<div class="card mb-16"><div class="card-body">';
+        let html = runtimeProfileContextCardH(
+            health,
+            primaryRole.base_url || chatStatus?.api_url || def.base_url || '',
+            'Providers Runtime Context',
+            'Provider Profiles and Model Roles are profile-sensitive. The active portal profile determines which Hermes home, env, gateway, and API server runtime you are inspecting here.'
+        );
+        html += '<div class="card mb-16"><div class="card-body">';
         html += '<p class="text-sm text-secondary mb-16">Provider Profiles store connection details like provider type, base URL, API key, and an optional suggested model. Model Roles decides which saved provider Hermes uses for Primary Chat, Fallback Chat, and Vision.</p>';
         html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
         html += '<button class="btn btn-primary" onclick="navigate(\'models\')">Open Model Roles</button>';
@@ -2034,14 +2066,32 @@ window.disableModelRole = async function (role) {
 Screens.models = async function () {
     const content = document.getElementById('content');
     try {
-        const data = await loadModelRoles(true);
+        const [data, chatStatus, health] = await Promise.all([
+            loadModelRoles(true),
+            api('GET', '/api/chat/status').catch(() => null),
+            api('GET', '/api/health').catch(() => ({ gateway_running: false, profile: 'unknown', hermes_home: '?' })),
+        ]);
         const roles = data.roles || {};
         const profiles = data.profiles || [];
-        let html = '<div class="card mb-16"><div class="card-body">';
+        const primaryRole = roles.primary || {};
+        const readiness = chatStatus?.readiness || {};
+        const screenshotReady = !!readiness.screenshots_ready;
+        let html = runtimeProfileContextCardH(
+            health,
+            chatStatus?.api_url || primaryRole.base_url || '',
+            'Models Runtime Context',
+            'Model Roles resolve within the active portal profile. This profile determines the Hermes home, gateway runtime, and API server context behind the roles shown below.'
+        );
+        html += '<div class="card mb-16"><div class="card-body">';
         html += '<p class="text-sm text-secondary">Model Roles decide which saved provider profile and model Hermes uses for primary chat, fallback chat, and vision. Provider Profiles live in the Providers screen; this screen is where you assign them.</p>';
         html += '</div></div>';
         html += '<div class="model-role-grid">';
-        ['primary', 'fallback', 'vision'].forEach(role => { html += modelRoleCardH(role, roles[role] || {}); });
+        ['primary', 'fallback', 'vision'].forEach(role => {
+            const status = role === 'vision'
+                ? { label: screenshotReady ? 'Ready' : 'Not Ready', tone: screenshotReady ? 'badge-success' : 'badge-danger' }
+                : null;
+            html += modelRoleCardH(role, roles[role] || {}, status);
+        });
         html += '</div>';
 
         html += '<div class="card mt-16"><div class="card-header"><span>Saved Provider Profiles</span><button class="btn btn-primary" onclick="navigate(\'providers\')">Open Providers</button></div>';

@@ -1938,6 +1938,22 @@ Sidecar output:
         self.assertEqual(data["roles"]["primary"]["profile"], "openrouter")
         self.assertEqual(data["roles"]["vision"]["profile"], "openrouter")
 
+    def test_model_roles_preserve_declared_custom_provider_name_for_implicit_profile(self):
+        mod.cfg._config = {
+            "model": {
+                "provider": "custom",
+                "default": "qwen3.5:cloud",
+                "base_url": "https://ollama.com/v1",
+            }
+        }
+
+        resp = self.client.get("/api/model-roles", headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        data = resp.get_json()
+        profiles = data["profiles"]
+        self.assertTrue(any(profile["name"] == "custom" for profile in profiles))
+        self.assertEqual(data["roles"]["primary"]["profile"], "custom")
+
     def test_resolve_api_target_defaults_known_provider_base_url(self):
         with patch.dict(mod.os.environ, {"OPENROUTER_API_KEY": "router-secret"}, clear=True):
             mod.cfg._config = {

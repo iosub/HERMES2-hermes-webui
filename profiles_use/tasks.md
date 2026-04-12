@@ -34,7 +34,7 @@ Make the active Hermes profile visible in the important runtime areas of the por
 - [x] Add a persistent active profile indicator in a global UI location.
 - [x] Show the active profile in Dashboard runtime information.
 - [x] Show the active profile in the Service screen next to gateway controls and runtime state.
-- [ ] Show the active profile in Providers / Models where runtime target data is shown.
+- [x] Show the active profile in Providers / Models where runtime target data is shown.
 - [x] Show the active profile in Chat in a lightweight but visible way.
 - [x] Distinguish the active portal profile from each chat session profile in chat history.
 - [x] Keep the chat session banner aligned with the selected profile when creating a new chat after switching profiles.
@@ -49,13 +49,13 @@ Make the active Hermes profile visible in the important runtime areas of the por
 ## In Progress
 
 - [ ] Define and implement the equivalent segment boundary rule for API replay if API transport becomes selectable.
-- [ ] Implement active profile visibility in Providers / Models.
+
 
 
 ## Next Execution Order
 
-1. Align `transport api` with segmented profile boundaries.
-2. Finish active profile visibility in Providers / Models.
+1. Validate profile switching visually for `default` and `leire`.
+2. Keep this tracking folder out of the final upstream PR.
 
 
 ## Future Roadmap
@@ -68,7 +68,7 @@ Make the active Hermes profile visible in the important runtime areas of the por
 - [x] Keep the chat visually unified while making runtime boundaries explicit.
 - [x] Keep chat-local profile switching isolated from the global portal profile state.
 - [x] Define and implement how Hermes CLI continuity behaves when crossing profile boundaries and when returning to a previously used profile.
-- [ ] Define and implement the equivalent segment boundary rule for API replay if API transport becomes selectable.
+- [x] Define and implement the equivalent segment boundary rule for API replay if API transport becomes selectable.
 
 ### Phase 2: Multi-profile comparison mode
 
@@ -104,13 +104,13 @@ Make the active Hermes profile visible in the important runtime areas of the por
 - [x] Switching the profile updates the persistent profile indicator.
 - [x] Dashboard shows the active profile and matching runtime paths.
 - [x] Service shows which profile's gateway is being controlled.
-- [ ] Providers / Models show which profile the displayed runtime configuration belongs to.
+- [x] Providers / Models show which profile the displayed runtime configuration belongs to.
 - [x] Chat shows the active profile without adding visual noise.
 - [x] The UI remains consistent after switching back and forth between `default` and `leire` for the global indicator, chat banner, and chat history labels.
 - [x] Switching profile inside a chat affects only that chat and does not mutate the global portal profile.
 - [x] New chats can choose a draft profile before the first turn without mutating the global portal profile.
 - [x] Returning to a previously used profile inside the same chat resumes that profile's own Hermes continuity.
-- [ ] API replay respects segment profile boundaries if API transport is enabled later.
+- [x] API replay respects segment profile boundaries if API transport is enabled later.
 
 
 ## Notes
@@ -118,7 +118,7 @@ Make the active Hermes profile visible in the important runtime areas of the por
 - The portal already supports runtime profile selection.
 - This work is about visibility and clarity, not reworking the full profile system.
 - The current segmented-chat implementation is safe by default: profile switches do not leak Hermes continuity across profile boundaries.
-- The remaining gap before Phase 2 is API replay alignment with segment profile boundaries and the remaining Providers / Models visibility work.
+- The remaining gap before Phase 2 is mostly validation and branch cleanup, not missing profile/runtime behavior.
 - `transport api` is not the active user path right now, but when it is enabled it must follow the same segment boundary rule as CLI.
 - A temporary `?token=...` URL bootstrap was added only to make testing easier in simple embedded browsers that do not handle the token prompt correctly.
 - Before the final upstream PR, remove or exclude this folder from the published diff.

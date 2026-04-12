@@ -250,14 +250,32 @@ The current CLI implementation now provides safe profile isolation and profile-s
 
 What still remains before Phase 2:
 
-- align `transport api` with the same segment boundary semantics
-- confirm the product rule for what API replay should include when a chat returns to an earlier profile segment
-- finish the remaining Providers / Models visibility work on this branch
+- validate the remaining profile visibility surfaces visually for `default` and `leire`
+- keep this branch-local planning folder out of the final upstream PR
 
 Current CLI rule:
 
 - Hermes continuity is isolated across profile boundaries
 - returning to a previously used profile resumes that profile's own prior Hermes session when available
+
+
+## Phase 1 Completion Update
+
+The remaining API transport and Providers / Models gaps have now been implemented in this branch.
+
+Implemented after the initial Phase 1 slice:
+
+- API replay is scoped to the active runtime segment instead of replaying messages across profile boundaries
+- API image-history decisions are scoped to the active segment
+- API chat authentication now uses the configured gateway URL and the token stored for that gateway port
+- Settings can read and save API server tokens per selected profile while persisting them in the Web UI `.env` by gateway port
+- Providers shows the active portal profile, Hermes home, gateway status, and API server context
+- Models shows the active portal profile, Hermes home, gateway status, and API server context
+
+What still remains before upstreaming:
+
+- visual validation for `default` and `leire`
+- exclude this branch-local `profiles_use/` folder from the final PR to `main`
 - one profile never inherits another profile's Hermes continuity
 
 Practical implication:
