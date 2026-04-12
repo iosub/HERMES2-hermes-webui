@@ -844,7 +844,15 @@ window.saveRuntimeProfile = async function (btn) {
     if (!select) return;
     try {
         setBtnLoading(btn, true);
-        await api('PUT', '/api/runtime/profiles', { profile: select.value || 'default' });
+        const selectedProfile = select.value || 'default';
+        await api('PUT', '/api/runtime/profiles', { profile: selectedProfile });
+        chatState.activeProfile = selectedProfile;
+        if (!chatState.currentSessionId) {
+            chatState.currentSessionProfile = selectedProfile;
+            if (currentScreenId() === 'chat') chatRenderSessionBanner();
+        }
+        _healthCache = null;
+        checkHealth();
         window.modelRolesCache = null;
         window.providerEnvCache = null;
         toast('Hermes profile updated', 'success');
