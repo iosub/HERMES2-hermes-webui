@@ -2109,23 +2109,80 @@ def _current_webui_token() -> str:
 
 HERMES_WEBUI_TOKEN = _current_webui_token()
 
+# --- Cookie-based session auth (login screen) ---
+import secrets as _secrets
+
+_DASHBOARD_USER = os.environ.get("HERMES_DASHBOARD_USER", "admin")
+_DASHBOARD_PASS = os.environ.get("HERMES_DASHBOARD_PASS", "Unaitxo@13")
+_SESSION_TOKENS: dict[str, float] = {}   # token -> expiry timestamp
+_SESSION_TOKEN_TTL = 86400  # 24 hours
+
+
+def _verify_session_cookie() -> bool:
+    token = request.cookies.get("hermes_webui")
+    if not token:
+        return False
+    expiry = _SESSION_TOKENS.get(token)
+    if expiry is None or time.time() > expiry:
+        _SESSION_TOKENS.pop(token, None)
+        return False
+    return True
+
+
+@app.route("/api/login", methods=["POST"])
+def webui_login():
+    data = request.get_json(silent=True) or {}
+    username = data.get("username", "")
+    password = data.get("password", "")
+    if username == _DASHBOARD_USER and password == _DASHBOARD_PASS:
+        token = _secrets.token_urlsafe(32)
+        _SESSION_TOKENS[token] = time.time() + _SESSION_TOKEN_TTL
+        resp = jsonify({"ok": True})
+        resp.set_cookie(
+            "hermes_webui", token,
+            httponly=True, samesite="Lax", secure=True, max_age=_SESSION_TOKEN_TTL,
+        )
+        return resp
+    return jsonify({"ok": False, "error": "Invalid credentials"}), 401
+
+
+@app.route("/api/auth/check", methods=["GET"])
+def webui_auth_check():
+    if _verify_session_cookie():
+        return jsonify({"authenticated": True})
+    return jsonify({"authenticated": False}), 401
+
+
+@app.route("/api/logout", methods=["POST"])
+def webui_logout():
+    token = request.cookies.get("hermes_webui")
+    _SESSION_TOKENS.pop(token, None)
+    resp = jsonify({"ok": True})
+    resp.delete_cookie("hermes_webui")
+    return resp
+
+
 def require_token(f):
-    """Decorator to require HERMES_WEBUI_TOKEN for API endpoints."""
+    """Decorator to require authentication for API endpoints.
+    Accepts either a session cookie (login screen) or Bearer token (legacy)."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        # 1. Check session cookie first (login screen flow)
+        if _verify_session_cookie():
+            return f(*args, **kwargs)
+
+        # 2. Fall back to Bearer token (legacy/API flow)
         expected_token = _current_webui_token()
         if not expected_token:
             logger.warning("Authentication not configured - rejecting API request")
-            # Fail closed: if no token is configured, deny access
             return jsonify({"ok": False, "error": "API authentication not configured"}), 401
         
-        # Check Authorization header for Bearer token
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
             logger.warning("API request missing Authorization header from %s", request.remote_addr)
             return jsonify({"ok": False, "error": "Missing or invalid Authorization header"}), 401
         
-        provided_token = auth_header[7:]  # Remove "Bearer " prefix
+        provided_token = auth_header[7:]
         if provided_token != expected_token:
             logger.warning("API authentication failed - invalid token from %s", request.remote_addr)
             return jsonify({"ok": False, "error": "Invalid token"}), 401

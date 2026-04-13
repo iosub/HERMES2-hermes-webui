@@ -37,91 +37,85 @@ function bootstrapTokenFromUrl() {
     } catch {}
 }
 
-// AuthRequired sentinel — thrown only when user cancels the token prompt
-// (api() retries internally after prompt; this is for the cancel path only)
+// AuthRequired sentinel
 class AuthRequired extends Error {
     constructor() { super('Authentication required'); this.name = 'AuthRequired'; }
 }
 
-let _tokenPromptActive = false;
-let _tokenPromptDeferred = null;
+// --- Login screen flow ---
+let _authed = false;
 
-function promptForToken() {
-    if (_tokenPromptActive) return null;
-    _tokenPromptActive = true;
-    // Create a deferred that waiting requests will await
-    let resolveDeferred;
-    _tokenPromptDeferred = new Promise(resolve => { resolveDeferred = resolve; });
+async function checkAuthSession() {
     try {
-        const token = prompt('Enter your HERMES_WEBUI_TOKEN to access the admin panel:\n\n(Set this with: export HERMES_WEBUI_TOKEN=your-token-here)');
-        if (token && token.trim()) {
-            const trimmed = token.trim();
-            setToken(trimmed);
-            resolveDeferred(trimmed); // resolve the deferred so all waiters retry
-            return trimmed;
+        const resp = await fetch(API.base + '/api/auth/check', { credentials: 'include' });
+        return resp.ok;
+    } catch { return false; }
+}
+
+function showLoginScreen() {
+    document.getElementById('login-screen').style.display = 'flex';
+    document.getElementById('app').style.display = 'none';
+}
+
+function showApp() {
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('app').style.display = '';
+    _authed = true;
+}
+
+function initLoginForm() {
+    const form = document.getElementById('login-form');
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btn = document.getElementById('login-submit');
+        const errEl = document.getElementById('login-error');
+        const username = document.getElementById('login-username').value.trim();
+        const password = document.getElementById('login-password').value;
+        errEl.style.display = 'none';
+        btn.disabled = true;
+        btn.textContent = 'Signing in...';
+        try {
+            const resp = await fetch(API.base + '/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password }),
+                credentials: 'include',
+            });
+            if (resp.ok) {
+                showApp();
+                bootstrapApp();
+            } else {
+                const d = await resp.json().catch(() => ({}));
+                errEl.textContent = d.error || 'Invalid credentials';
+                errEl.style.display = 'block';
+            }
+        } catch (err) {
+            errEl.textContent = 'Connection error';
+            errEl.style.display = 'block';
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Sign in';
         }
-        resolveDeferred(null); // user cancelled
-        return null;
-    } finally {
-        _tokenPromptActive = false;
-        _tokenPromptDeferred = null;
-    }
+    });
 }
 
 async function authFetch(path, options = {}, signal) {
-    const fetchWithToken = async (tokenValue) => {
-        const headers = new Headers(options.headers || {});
-        if (tokenValue && !headers.has('Authorization')) headers.set('Authorization', 'Bearer ' + tokenValue);
-        return fetch(API.base + path, { ...options, headers, signal });
-    };
-    const readAuthError = async (resp) => {
-        let errMsg = 'Authentication failed';
-        try {
-            const d = await resp.clone().json();
-            errMsg = d.error || d.message || errMsg;
-        } catch {}
-        return errMsg;
-    };
+    const headers = new Headers(options.headers || {});
+    // Include cookies for session auth
+    const fetchOpts = { ...options, headers, signal, credentials: 'include' };
 
-    let token = getToken();
-    let resp = await fetchWithToken(token);
-    if (!resp.ok && resp.status === 401) {
-        let errMsg = await readAuthError(resp);
-        if (/not configured/i.test(errMsg)) {
-            throw new Error(errMsg);
-        }
+    // Also send Bearer token if available (legacy compat)
+    const token = getToken();
+    if (token && !headers.has('Authorization')) headers.set('Authorization', 'Bearer ' + token);
 
-        // Another request may have prompted and stored a newer token while this
-        // request was still resolving its own 401. Retry once with the latest
-        // saved token before prompting again.
-        const latestSavedToken = getToken();
-        if (latestSavedToken && latestSavedToken !== token) {
-            resp = await fetchWithToken(latestSavedToken);
-            if (resp.ok) return resp;
-            if (resp.status !== 401) return resp;
-            token = latestSavedToken;
-            errMsg = await readAuthError(resp);
-        }
-
-        // Only clear the token we actually attempted. Another request may have
-        // already replaced localStorage with a newer valid token.
-        if (token && getToken() === token) clearToken();
-
-        let savedToken = null;
-        if (_tokenPromptActive && _tokenPromptDeferred) {
-            savedToken = await _tokenPromptDeferred;
-        } else {
-            savedToken = promptForToken();
-        }
-        if (!savedToken) throw new AuthRequired();
-
-        resp = await fetchWithToken(savedToken);
-        if (resp.ok) return resp;
-        if (resp.status === 401) {
-            if (getToken() === savedToken) clearToken();
-            errMsg = await readAuthError(resp);
-            throw new Error(errMsg || 'Authentication failed: check your token');
-        }
+    let resp = await fetch(API.base + path, fetchOpts);
+    if (resp.ok) return resp;
+    if (resp.status === 401) {
+        // Session expired — show login screen
+        _authed = false;
+        showLoginScreen();
+        throw new AuthRequired();
     }
     return resp;
 }
@@ -7214,8 +7208,21 @@ function chatStopVoiceUI() {
    INIT
    ═══════════════════════════════════════════════════════════════ */
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     bootstrapTokenFromUrl();
+    initLoginForm();
+
+    // Check session first
+    const authed = await checkAuthSession();
+    if (authed) {
+        showApp();
+        bootstrapApp();
+    } else {
+        showLoginScreen();
+    }
+});
+
+function bootstrapApp() {
     ThemeManager.init();
 
     document.querySelectorAll('.nav-item').forEach(item => {
@@ -7272,7 +7279,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const h = window.location.hash.replace('#', '');
         if (h && Screens[h]) navigate(h);
     });
-});
+}
 
-setInterval(checkHealth, 10000);
-setInterval(() => { HermesUpdate.refresh(false, { silent: true }).catch(() => {}); }, 300000);
+setInterval(() => { if (_authed) checkHealth(); }, 10000);
+setInterval(() => { if (_authed) HermesUpdate.refresh(false, { silent: true }).catch(() => {}); }, 300000);

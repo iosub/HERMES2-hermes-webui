@@ -12,7 +12,31 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 </head>
 <body data-theme="dark">
-    <div id="app">
+    <!-- Login Screen -->
+    <div id="login-screen" class="login-screen">
+        <div class="login-card">
+            <div class="login-logo">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent)">
+                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                </svg>
+                <h1>Hermes Admin</h1>
+            </div>
+            <form id="login-form" autocomplete="on">
+                <div class="login-field">
+                    <label for="login-username">Username</label>
+                    <input type="text" id="login-username" name="username" autocomplete="username" required autofocus>
+                </div>
+                <div class="login-field">
+                    <label for="login-password">Password</label>
+                    <input type="password" id="login-password" name="password" autocomplete="current-password" required>
+                </div>
+                <div id="login-error" class="login-error" style="display:none"></div>
+                <button type="submit" id="login-submit" class="login-btn">Sign in</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="app" style="display:none">
         <!-- Sidebar -->
         <aside id="sidebar" role="navigation" aria-label="Main navigation">
             <div class="sidebar-header">
