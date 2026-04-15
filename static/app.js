@@ -141,11 +141,16 @@ async function api(method, path, body, signal) {
             }
         }
         let errMsg = 'Request failed';
+        let errData = null;
         try {
             const d = await resp.json();
+            errData = d;
             errMsg = d.error || d.message || (Array.isArray(d.details) ? d.details.join('; ') : errMsg);
         } catch {}
-        throw new Error(errMsg);
+        const err = new Error(errMsg);
+        err.status = resp.status;
+        err.responseData = errData;
+        throw err;
     }
     return resp.json();
 }
@@ -4725,6 +4730,11 @@ const chatState = {
     currentFolderSourceDocs: [],
     lastSubmission: null,
     cancelRequested: false,
+    lastRequestErrorNotice: '',
+    requestProgressPoll: null,
+    persistDebugTrace: false,
+    lastProgressLines: [],
+    lastProgressTransport: '',
 };
 
 function makeRequestId() {
@@ -4830,6 +4840,10 @@ function chatReplacePendingFiles(files) {
 }
 
 function chatResetComposerAfterRequest() {
+    if (chatState.requestProgressPoll) {
+        clearInterval(chatState.requestProgressPoll);
+        chatState.requestProgressPoll = null;
+    }
     chatState.isThinking = false;
     chatState.currentRequestId = null;
     chatState.chatAbortController = null;
@@ -4847,7 +4861,157 @@ function chatResetComposerAfterRequest() {
     chatSyncSendButton();
 }
 
+function chatBindMessagesScroll(container) {
+    if (!container || container.dataset.scrollBound === 'true') return;
+    container.dataset.scrollBound = 'true';
+    container.dataset.autoScroll = 'true';
+    container.addEventListener('scroll', () => {
+        const isNearBottom = (container.scrollHeight - container.clientHeight - container.scrollTop) < 8;
+        container.dataset.autoScroll = isNearBottom ? 'true' : 'false';
+    });
+}
+
+function chatShouldAutoScroll(container) {
+    if (!container) return false;
+    chatBindMessagesScroll(container);
+    return container.dataset.autoScroll !== 'false';
+}
+
+function chatBindProgressLog(panel) {
+    if (!panel || panel.dataset.scrollBound === 'true') return;
+    panel.dataset.scrollBound = 'true';
+    panel.dataset.autoScroll = 'true';
+    panel.addEventListener('scroll', () => {
+        const isNearBottom = (panel.scrollHeight - panel.clientHeight - panel.scrollTop) < 8;
+        panel.dataset.autoScroll = isNearBottom ? 'true' : 'false';
+    });
+}
+
+function chatRenderLogPanel(panel, lines = [], transport = '') {
+    if (!panel) return;
+    chatBindProgressLog(panel);
+    const shouldAutoScroll = panel.dataset.autoScroll !== 'false';
+    const rows = Array.isArray(lines) ? lines.filter(Boolean) : [];
+    if (!rows.length) {
+        panel.innerHTML = '<div class="chat-progress-empty">' + escH(
+            transport === 'cli'
+                ? 'Waiting for Hermes CLI activity...'
+                : 'Live tool activity is only available for Hermes CLI transport.'
+        ) + '</div>';
+        return;
+    }
+    panel.innerHTML = rows.map(line => '<div class="chat-progress-line">' + escH(line) + '</div>').join('');
+    if (shouldAutoScroll) {
+        panel.scrollTop = panel.scrollHeight;
+    }
+}
+
+function chatSetDebugTraceStatus(label) {
+    chatState.lastProgressStatus = label || 'Idle';
+}
+
+function chatRenderProgressLines(lines = [], transport = '') {
+    const panel = document.getElementById('chat-progress-log');
+    chatState.lastProgressLines = Array.isArray(lines) ? lines.filter(Boolean) : [];
+    chatState.lastProgressTransport = transport || '';
+    chatRenderLogPanel(panel, lines, transport);
+    chatSetDebugTraceStatus(chatState.isThinking ? 'Running' : 'Updated');
+}
+
+function chatRenderProgressError(message) {
+    const panel = document.getElementById('chat-progress-log');
+    if (panel) {
+        chatBindProgressLog(panel);
+        panel.innerHTML = '<div class="chat-progress-error">' + escH(message || 'Live progress is temporarily unavailable.') + '</div>';
+    }
+    chatState.lastProgressLines = [message || 'Live progress is temporarily unavailable.'];
+    chatState.lastProgressTransport = 'cli';
+    chatSetDebugTraceStatus('Error');
+}
+
+function chatRenderPersistentProgressBubble(statusLabel) {
+    if (!chatState.persistDebugTrace) return;
+    const container = document.getElementById('chat-messages');
+    if (!container) return;
+    const existing = document.getElementById('chat-persistent-progress');
+    if (existing) existing.remove();
+    const bubble = document.createElement('div');
+    bubble.id = 'chat-persistent-progress';
+    bubble.className = 'chat-thinking chat-persistent-progress';
+    bubble.innerHTML = '<div class="chat-thinking-bubble"><div class="chat-thinking-header"><span class="chat-thinking-icon"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span><span class="chat-thinking-text">Debug trace (' + escH(statusLabel || chatState.lastProgressStatus || 'Completed') + ')</span></div><div class="chat-progress-log" id="chat-persistent-progress-log"></div></div>';
+    container.appendChild(bubble);
+    chatRenderLogPanel(document.getElementById('chat-persistent-progress-log'), chatState.lastProgressLines || [], chatState.lastProgressTransport || '');
+}
+
+async function chatFetchRequestProgress(requestId) {
+    if (!requestId || chatState.currentRequestId !== requestId) return;
+    try {
+        const resp = await authFetch('/api/chat/status?request_id=' + encodeURIComponent(requestId) + '&_ts=' + Date.now(), {
+            method: 'GET',
+            cache: 'no-store',
+            headers: {
+                'Cache-Control': 'no-store, no-cache, max-age=0',
+                'Pragma': 'no-cache',
+            },
+        });
+        const progress = await resp.json();
+        if (chatState.currentRequestId !== requestId) return;
+        chatRenderProgressLines(progress.progress_lines || [], progress.transport || '');
+        if (progress.status && progress.status !== 'running' && progress.status !== 'cancel_requested') {
+            if (chatState.requestProgressPoll) {
+                clearInterval(chatState.requestProgressPoll);
+                chatState.requestProgressPoll = null;
+            }
+        }
+    } catch (e) {
+        if (chatState.currentRequestId === requestId) {
+            chatRenderProgressError('Live CLI activity could not be loaded: ' + (e.message || 'request failed'));
+        }
+        if (chatState.requestProgressPoll) {
+            clearInterval(chatState.requestProgressPoll);
+            chatState.requestProgressPoll = null;
+        }
+    }
+}
+
+function chatStartRequestProgress(requestId, expectedTransport) {
+    if (chatState.requestProgressPoll) {
+        clearInterval(chatState.requestProgressPoll);
+        chatState.requestProgressPoll = null;
+    }
+    chatState.lastProgressLines = [];
+    chatState.lastProgressTransport = expectedTransport || '';
+    chatSetDebugTraceStatus('Running');
+    const persisted = document.getElementById('chat-persistent-progress');
+    if (persisted) persisted.remove();
+    chatRenderProgressLines([], expectedTransport || '');
+    chatFetchRequestProgress(requestId);
+    chatState.requestProgressPoll = window.setInterval(() => {
+        chatFetchRequestProgress(requestId);
+    }, 900);
+}
+
+function chatFormatNoticeTimestamp(date = new Date()) {
+    try {
+        return date.toLocaleTimeString();
+    } catch (e) {
+        return date.toISOString();
+    }
+}
+
+function chatSetRequestErrorNotice(message) {
+    chatState.lastRequestErrorNotice = String(message || '').trim();
+    chatRenderSessionBanner();
+}
+
+function chatClearRequestErrorNotice() {
+    if (!chatState.lastRequestErrorNotice) return;
+    chatState.lastRequestErrorNotice = '';
+    chatRenderSessionBanner();
+}
+
 function chatApplySessionMetadata(meta = null) {
+    chatState.lastRequestErrorNotice = '';
     const session = meta || {};
     const sessionSegments = Array.isArray(session.segments) ? session.segments.slice() : [];
     const activeSegmentId = session.active_segment_id || '';
@@ -5332,6 +5496,11 @@ function chatRenderSessionBanner() {
     const profile = chatVisibleProfile();
     let text = chatState.currentTransportNotice || '';
     let cls = 'success';
+    if (chatState.lastRequestErrorNotice) {
+        badges.push('<span class="badge badge-warning">Send failed</span>');
+        text = text ? (chatState.lastRequestErrorNotice + ' ' + text) : chatState.lastRequestErrorNotice;
+        cls = 'warning';
+    }
     if (chatState.currentContinuity === 'hermes_resume') {
         badges.push('<span class="badge badge-success">Hermes session backed</span>');
         text = text || 'This chat stays attached to the Hermes CLI session.';
@@ -5413,9 +5582,11 @@ async function chatRefreshCapabilities() {
         const caps = data.capabilities || {};
         const reasons = data.capability_reasons || {};
         const policy = data.transport_policy || {};
+        const debug = data.debug || {};
         chatState.apiServerEnabled = !!data.api_server;
         chatState.activeProfile = data.profile || chatState.activeProfile || '';
         updateChatHistoryActiveProfileBadge();
+        chatState.persistDebugTrace = !!debug.persist_trace;
         chatState.apiTransportSelectable = !!policy.api_selectable;
         chatState.transportPolicy = {
             requiresCli: !!policy.requires_cli,
@@ -5435,6 +5606,7 @@ async function chatRefreshCapabilities() {
         };
     } catch (e) {
         chatState.apiServerEnabled = false;
+        chatState.persistDebugTrace = false;
         chatState.apiTransportSelectable = false;
         chatState.transportPolicy = {
             requiresCli: false,
@@ -6043,6 +6215,20 @@ window.chatLoadSession = async function (sid) {
     chatLoadHistory();  // refresh active state
 };
 
+async function chatRestoreSessionAfterFailure(sessionId) {
+    if (!sessionId) return false;
+    try {
+        const data = await api('GET', '/api/chat/sessions/' + sessionId + '/messages');
+        chatState.currentSessionId = sessionId;
+        chatState.localMessages = data.messages || [];
+        chatApplySessionMetadata(data.session || null);
+        chatRenderMessages();
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 window.chatDeleteSession = async function (sid) {
     const activeScreen = document.querySelector('.nav-item.active')?.dataset.screen || 'chat';
     try {
@@ -6307,6 +6493,7 @@ function chatRenderFolderOverview(folder) {
 function chatPrepareTranscriptForConversation() {
     const msgs = document.getElementById('chat-messages');
     if (!msgs) return null;
+    chatBindMessagesScroll(msgs);
     if (msgs.querySelector('#chat-welcome') || msgs.querySelector('.chat-folder-overview')) {
         msgs.innerHTML = '';
     }
@@ -6316,6 +6503,7 @@ function chatPrepareTranscriptForConversation() {
 function chatRenderMessages() {
     const msgs = document.getElementById('chat-messages');
     if (!msgs) return;
+    const shouldAutoScroll = chatShouldAutoScroll(msgs);
     msgs.innerHTML = '';
     const messages = chatState.localMessages;
     if (!messages || messages.length === 0) {
@@ -6340,7 +6528,9 @@ function chatRenderMessages() {
         }
         msgs.appendChild(chatBuildMessageNode(m));
     });
-    msgs.scrollTop = msgs.scrollHeight;
+    if (shouldAutoScroll) {
+        msgs.scrollTop = msgs.scrollHeight;
+    }
     chatEnhanceCodeBlocks();
 }
 
@@ -6801,6 +6991,10 @@ window.chatSend = async function () {
     const message = input.value.trim();
     if (!message && chatState.pendingFiles.length === 0) return;
     if (chatState.isThinking) return;
+    const previousSessionId = chatState.currentSessionId || '';
+    const previousMessages = Array.isArray(chatState.localMessages)
+        ? chatState.localMessages.map(m => ({ ...m }))
+        : [];
 
     // Remove welcome if present
     const welcome = document.getElementById('chat-welcome');
@@ -6819,11 +7013,13 @@ window.chatSend = async function () {
     // Show thinking indicator
     const existing = document.getElementById('chat-thinking-dots');
     if (existing) existing.remove();
+    const persisted = document.getElementById('chat-persistent-progress');
+    if (persisted) persisted.remove();
     const msgs = document.getElementById('chat-messages');
     const dots = document.createElement('div');
     dots.id = 'chat-thinking-dots';
     dots.className = 'chat-thinking';
-    dots.innerHTML = '<div class="chat-thinking-bubble"><span class="chat-thinking-icon"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span><span class="chat-thinking-text">Hermes (' + escH(chatVisibleProfile()) + ') is thinking<span class="chat-thinking-ellipsis"></span></span>' + (chatState.currentRequestCancelSupported ? '<button class="chat-stop-btn" id="chat-stop-btn" onclick="chatAbort()" title="Stop"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>' : '') + '</div>';
+    dots.innerHTML = '<div class="chat-thinking-bubble"><div class="chat-thinking-header"><span class="chat-thinking-icon"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span><span class="chat-thinking-text">Hermes (' + escH(chatVisibleProfile()) + ') is thinking<span class="chat-thinking-ellipsis"></span></span>' + (chatState.currentRequestCancelSupported ? '<button class="chat-stop-btn" id="chat-stop-btn" onclick="chatAbort()" title="Stop"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>' : '') + '</div><div class="chat-progress-log" id="chat-progress-log"></div></div>';
     if (msgs) msgs.appendChild(dots);
 
     // Swap send button to stop
@@ -6865,6 +7061,7 @@ window.chatSend = async function () {
     const controller = new AbortController();
     chatState.chatAbortController = controller;
     chatState.currentRequestId = makeRequestId();
+    chatStartRequestProgress(chatState.currentRequestId, chatExpectedTransport());
 
     try {
         const resp = await api('POST', '/api/chat', {
@@ -6875,6 +7072,7 @@ window.chatSend = async function () {
             request_id: chatState.currentRequestId,
             files: pendingUploads.map(f => ({ stored_as: f.stored_as, name: f.name })),
         }, controller.signal);
+        chatClearRequestErrorNotice();
         chatState.currentSessionId = resp.session_id;
         chatApplySessionMetadata(resp.session || null);
         if (resp.user_message && chatState.localMessages.length > 0) {
@@ -6883,13 +7081,17 @@ window.chatSend = async function () {
         const assistantMsg = resp.assistant_message || { role: 'assistant', content: resp.response, timestamp: new Date().toISOString() };
         chatState.localMessages.push(assistantMsg);
         chatRenderMessages();
+        chatSetDebugTraceStatus('Completed');
+        chatRenderPersistentProgressBubble('Completed');
     } catch (e) {
         input.value = message;
         chatAutoResize(input);
         chatRenderFileBar();
         chatSyncSendButton();
+        const failedSessionId = e?.responseData?.session_id || chatState.currentSessionId || '';
 
         if (e.name === 'AbortError' || chatState.cancelRequested) {
+            chatSetDebugTraceStatus('Cancelled');
             chatState.localMessages.pop();
             const container = document.getElementById('chat-messages');
             if (container) {
@@ -6897,6 +7099,7 @@ window.chatSend = async function () {
                 const last = uls[uls.length - 1];
                 if (last) last.remove();
             }
+            chatRenderPersistentProgressBubble('Cancelled');
             chatResetComposerAfterRequest();
             if (chatState.localMessages.length === 0) {
                 chatRenderMessages();
@@ -6907,6 +7110,7 @@ window.chatSend = async function () {
             return;
         }
         // Roll back the optimistic user message — it was never processed
+        chatSetDebugTraceStatus('Failed');
         chatState.localMessages.pop(); // remove failed user msg from state
         // Now find and remove the user bubble (always the last .user in the container)
         const container = document.getElementById('chat-messages');
@@ -6915,12 +7119,18 @@ window.chatSend = async function () {
             const lastUser = userBubbles[userBubbles.length - 1];
             if (lastUser) lastUser.remove();
         }
+        chatRenderPersistentProgressBubble('Failed');
         chatResetComposerAfterRequest();
-        if (chatState.localMessages.length === 0) {
+        const restored = await chatRestoreSessionAfterFailure(failedSessionId);
+        if (!restored) {
+            chatState.currentSessionId = previousSessionId;
+            chatState.localMessages = previousMessages;
             chatRenderMessages();
         }
         chatLoadHistory();
-        toast(e.message || 'Request failed', 'error', 5000);
+        const errorAt = chatFormatNoticeTimestamp(new Date());
+        chatSetRequestErrorNotice('Send failed at ' + errorAt + '. Message restored as unsent draft.');
+        toast((e.message || 'Request failed') + ' (' + errorAt + ')', 'error', 5000);
         input.focus();
         return;
     }
@@ -6973,6 +7183,7 @@ window.chatExport = function () {
 function chatAppendMsg(role, content, files = [], messageMeta = {}) {
     const container = document.getElementById('chat-messages');
     if (!container) return;
+    const shouldAutoScroll = chatShouldAutoScroll(container);
     const div = chatBuildMessageNode({
         role,
         content,
@@ -6981,7 +7192,9 @@ function chatAppendMsg(role, content, files = [], messageMeta = {}) {
         ...messageMeta,
     });
     container.appendChild(div);
-    container.scrollTop = container.scrollHeight;
+    if (shouldAutoScroll) {
+        container.scrollTop = container.scrollHeight;
+    }
 }
 
 // ── COPY MESSAGE ───────────────────────────────────────────

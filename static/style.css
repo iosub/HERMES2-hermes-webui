@@ -3403,15 +3403,22 @@ pre code {
   align-items: center;
   gap: 10px;
   padding: 8px 32px;
-  max-width: 780px;
+  width: 100%;
+  max-width: none;
   margin: 0 auto;
   animation: chatFadeIn 0.3s ease;
 }
 
+.chat-persistent-progress {
+  margin-top: 12px;
+}
+
 .chat-thinking-bubble {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: 100%;
   padding: 10px 14px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-light);
@@ -3419,6 +3426,12 @@ pre code {
   border-bottom-left-radius: 4px;
   font-size: 13px;
   color: var(--text-secondary);
+}
+
+.chat-thinking-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .chat-thinking-icon {
@@ -3463,6 +3476,32 @@ pre code {
 .chat-stop-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+.chat-progress-log {
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.chat-progress-empty {
+  color: var(--text-muted);
+}
+
+.chat-progress-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary);
+}
+
+.chat-progress-line + .chat-progress-line {
+  margin-top: 4px;
 }
 
 /* Send button becomes stop button when thinking */

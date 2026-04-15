@@ -441,6 +441,7 @@ CHAT_FOLDERS_PATH = CHAT_DATA_DIR / ".folders.json"
 CHAT_REQUEST_DIR = APP_ROOT / "run" / "chat_requests"
 CHAT_REQUEST_DIR.mkdir(parents=True, exist_ok=True)
 CHAT_REQUEST_TIMEOUT = int(_runtime_env_value("HERMES_CHAT_TIMEOUT", "300"))
+CHAT_PERSIST_DEBUG_TRACE = _runtime_env_value("HERMES_WEBUI_PERSIST_DEBUG_TRACE", "0").strip().lower() not in {"", "0", "false", "no", "off"}
 CHAT_SERVER_TIMEOUT = int(
     _runtime_env_value(
         "GUNICORN_TIMEOUT",
@@ -1884,6 +1885,27 @@ def _write_request_control(request_id: str, payload: dict) -> None:
     tmp.replace(path)
 
 
+def _request_output_path(request_id: str) -> Path:
+    return CHAT_REQUEST_DIR / f"{secure_filename(request_id)}.log"
+
+
+def _truncate_recent_lines(lines: list[str], limit: int = 24) -> list[str]:
+    cleaned = [str(line).rstrip("\n") for line in (lines or []) if str(line).strip()]
+    if limit <= 0 or len(cleaned) <= limit:
+        return cleaned
+    return cleaned[-limit:]
+
+
+def _request_progress_lines(request_id: str, limit: int = 0) -> list[str]:
+    path = _request_output_path(request_id)
+    if not path.exists():
+        return []
+    try:
+        return _truncate_recent_lines(path.read_text(encoding="utf-8", errors="replace").splitlines(), limit=limit)
+    except Exception:
+        return []
+
+
 def _register_chat_request(
     request_id: str,
     session_id: str | None,
@@ -1902,6 +1924,7 @@ def _register_chat_request(
         "pid": None,
         "pgid": None,
         "cancel_requested_at": None,
+        "output_path": str(_request_output_path(request_id)),
     })
 
 
@@ -8349,19 +8372,27 @@ def _call_hermes_prompt(
         cmd.extend(["--resume", session["hermes_session_id"]])
     cmd.extend(["-q", prompt])
     try:
+        output_path = _request_output_path(request_id) if request_id else None
+        if output_path:
+            try:
+                output_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        output_handle = output_path.open("w", encoding="utf-8") if output_path else None
         proc = subprocess.Popen(
             cmd,
             cwd=str(Path.home()),
             env={**os.environ, "NO_COLOR": "1", "HERMES_HOME": str(_selected_hermes_home())},
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=output_handle if output_handle is not None else subprocess.PIPE,
+            stderr=subprocess.STDOUT if output_handle is not None else subprocess.PIPE,
             text=True,
             start_new_session=True,
         )
         if request_id:
             _update_chat_request(request_id, pid=proc.pid, pgid=os.getpgid(proc.pid))
 
-        deadline = time.time() + CHAT_REQUEST_TIMEOUT
+        last_activity_at = time.time()
+        last_output_size = 0
         while True:
             if request_id:
                 state = _read_request_control(request_id)
@@ -8373,9 +8404,19 @@ def _call_hermes_prompt(
                     except subprocess.TimeoutExpired:
                         _terminate_chat_process(proc.pid, pgid, signal.SIGKILL)
                         stdout, stderr = proc.communicate()
+                    if output_handle is not None:
+                        output_handle.flush()
                     _update_chat_request(request_id, status="cancelled")
                     raise ChatRequestCancelled("Request cancelled")
-            remaining = deadline - time.time()
+            if output_path and output_path.exists():
+                try:
+                    current_size = output_path.stat().st_size
+                    if current_size > last_output_size:
+                        last_output_size = current_size
+                        last_activity_at = time.time()
+                except OSError:
+                    pass
+            remaining = CHAT_REQUEST_TIMEOUT - (time.time() - last_activity_at)
             if remaining <= 0:
                 _terminate_chat_process(proc.pid, os.getpgid(proc.pid), signal.SIGKILL)
                 proc.communicate()
@@ -8384,7 +8425,20 @@ def _call_hermes_prompt(
                 stdout, stderr = proc.communicate(timeout=min(CHAT_CANCEL_POLL_INTERVAL, remaining))
                 break
             except subprocess.TimeoutExpired:
+                if output_handle is not None:
+                    output_handle.flush()
+                if output_path and output_path.exists():
+                    try:
+                        current_size = output_path.stat().st_size
+                        if current_size > last_output_size:
+                            last_output_size = current_size
+                            last_activity_at = time.time()
+                    except OSError:
+                        pass
                 continue
+
+        if output_handle is not None:
+            output_handle.flush()
 
         if request_id:
             state = _read_request_control(request_id)
@@ -8393,12 +8447,19 @@ def _call_hermes_prompt(
                 raise ChatRequestCancelled("Request cancelled")
 
         if proc.returncode != 0:
-            error_output = stderr.strip() or stdout.strip() or f"Hermes CLI exited with status {proc.returncode}"
+            if output_path and output_path.exists():
+                error_output = output_path.read_text(encoding="utf-8", errors="replace").strip()
+            else:
+                error_output = (stderr or "").strip() or (stdout or "").strip()
+            error_output = error_output or f"Hermes CLI exited with status {proc.returncode}"
             raise ChatBackendError(error_output)
 
-        output = stdout.strip()
+        if output_path and output_path.exists():
+            output = output_path.read_text(encoding="utf-8", errors="replace").strip()
+        else:
+            output = (stdout or "").strip()
         if not output:
-            raise ChatBackendError(stderr.strip() or "Hermes returned an empty response")
+            raise ChatBackendError(((stderr or "").strip()) or "Hermes returned an empty response")
         import re as _re
         output = _re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', output)
         output = _re.sub(r'\x1b\].*?\x07', '', output)
@@ -8406,11 +8467,14 @@ def _call_hermes_prompt(
     except ChatRequestCancelled:
         raise
     except subprocess.TimeoutExpired:
-        raise ChatRequestTimeout(f"Hermes did not respond within {CHAT_REQUEST_TIMEOUT} seconds")
+        raise ChatRequestTimeout(f"Hermes did not produce activity within {CHAT_REQUEST_TIMEOUT} seconds")
     except ChatBackendError:
         raise
     except Exception as e:
         raise ChatBackendError(f"Error calling Hermes: {e}") from e
+    finally:
+        if 'output_handle' in locals() and output_handle is not None:
+            output_handle.close()
 
 
 def _call_hermes_direct(
@@ -9535,6 +9599,26 @@ def api_chat_clear(session_id):
 @app.route("/api/chat/status", methods=["GET"])
 @require_token
 def api_chat_status():
+    request_id = str(request.args.get("request_id") or "").strip()
+    if request_id:
+        payload = _read_request_control(request_id)
+        if payload is None:
+            return jsonify({"error": "Request not found", "request_id": request_id}), 404
+        response = jsonify({
+            "request_id": request_id,
+            "status": payload.get("status") or "running",
+            "transport": payload.get("transport") or "",
+            "cancel_supported": bool(payload.get("cancel_supported")),
+            "session_id": payload.get("session_id") or "",
+            "created_at": payload.get("created_at") or "",
+            "updated_at": payload.get("updated_at") or "",
+            "progress_lines": _request_progress_lines(request_id),
+            "error": payload.get("error") or "",
+        })
+        response.headers["Cache-Control"] = "no-store, no-cache, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
     api_server = _check_api_server()
     default_api_ok, default_api_reason, default_api_probe = _api_server_probe(timeout=2)
     image_support, image_reason = _image_attachment_support_status()
@@ -9574,6 +9658,9 @@ def api_chat_status():
         "limits": {
             "max_upload_bytes": MAX_UPLOAD_SIZE,
             "max_request_body_bytes": MAX_REQUEST_BODY_SIZE,
+        },
+        "debug": {
+            "persist_trace": CHAT_PERSIST_DEBUG_TRACE,
         },
         "transport_policy": {
             "requires_cli": runtime.get("requires_cli"),
