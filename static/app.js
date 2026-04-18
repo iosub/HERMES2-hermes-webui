@@ -4715,7 +4715,7 @@ const chatState = {
         reasons: [],
     },
     runtimeStatus: null,
-    transportPreference: 'auto',
+    transportPreference: localStorage.getItem('hermes-transport-preference') || 'auto',
     currentTransport: null,
     currentContinuity: null,
     currentTransportNotice: '',
@@ -6698,6 +6698,7 @@ window.chatSetTransportPreference = async function (value) {
         toast(chatState.transportPolicy.reason || 'API transport is unavailable right now', 'warning');
         return;
     }
+    localStorage.setItem('hermes-transport-preference', next);
     try {
         if (chatState.currentSessionId) {
             const resp = await api('PUT', '/api/chat/sessions/' + chatState.currentSessionId + '/transport', {

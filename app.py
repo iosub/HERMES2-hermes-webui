@@ -295,7 +295,10 @@ def _api_token_repo_keys_for_port(port: str | None) -> list[str]:
 
 
 def _profile_api_gateway_url(profile_name: str | None = None) -> str:
-    with _scoped_profile_override(profile_name):
+    # When no explicit profile is given, preserve the currently active
+    # PROFILE_OVERRIDE so that nested calls don't accidentally clear it.
+    effective = profile_name if profile_name is not None else (PROFILE_OVERRIDE.get("") or None)
+    with _scoped_profile_override(effective):
         hermes_env = _hermes_env_values()
         explicit = str(hermes_env.get("HERMES_API_URL") or "").strip()
         if explicit:
