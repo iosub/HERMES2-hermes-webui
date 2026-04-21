@@ -4697,6 +4697,7 @@ const chatState = {
     currentActiveSegmentIndex: 1,
     historyProfileFilter: 'all',
     currentRequestId: null,
+    requestProgressErrorCount: 0,
     currentRequestCancelSupported: false,
     isThinking: false,
     pendingFiles: [],
@@ -4970,6 +4971,17 @@ async function chatFetchRequestProgress(requestId) {
                 'Pragma': 'no-cache',
             },
         });
+        if (!resp.ok) {
+            // Progress endpoint can briefly return 404 before backend registers request.
+            // Tolerate a few misses, then reset to avoid infinite stuck polling.
+            chatState.requestProgressErrorCount = (chatState.requestProgressErrorCount || 0) + 1;
+            if (chatState.requestProgressErrorCount <= 6) {
+                return;
+            }
+            chatResetComposerAfterRequest();
+            return;
+        }
+        chatState.requestProgressErrorCount = 0;
         const progress = await resp.json();
         if (chatState.currentRequestId !== requestId) return;
         chatRenderProgressLines(progress.progress_lines || [], progress.transport || '');
@@ -4995,6 +5007,7 @@ function chatStartRequestProgress(requestId, expectedTransport) {
         clearInterval(chatState.requestProgressPoll);
         chatState.requestProgressPoll = null;
     }
+    chatState.requestProgressErrorCount = 0;
     chatState.lastProgressLines = [];
     chatState.lastProgressTransport = expectedTransport || '';
     chatSetDebugTraceStatus('Running');
@@ -5235,6 +5248,14 @@ window.chatSetHistoryProfileFilter = function (value) {
 };
 
 function chatGoHome() {
+    if (chatState.requestProgressPoll) {
+        clearInterval(chatState.requestProgressPoll);
+        chatState.requestProgressPoll = null;
+    }
+    chatState.isThinking = false;
+    chatState.currentRequestId = null;
+    chatState.currentRequestCancelSupported = false;
+    chatState.cancelRequested = false;
     chatState.currentSessionId = null;
     chatState.localMessages = [];
     chatState.lastSubmission = null;
@@ -5829,9 +5850,15 @@ Screens.chat = function () {
     // Load sessions
     chatLoadHistory();
 
-    // Render current session or welcome
-    if (chatState.currentSessionId) {
+    // Render current session, in-flight draft, or welcome
+    const hasInFlightOrDraft = (Array.isArray(chatState.localMessages) && chatState.localMessages.length > 0)
+        || chatState.isThinking
+        || !!chatState.currentRequestId;
+    if (chatState.currentSessionId || hasInFlightOrDraft) {
         chatRenderMessages();
+        if (chatState.isThinking) {
+            chatRestoreThinkingBubble();
+        }
     } else if (chatState.selectedFolderId) {
         const folder = chatFindFolder(chatState.selectedFolderId);
         if (folder) chatRenderFolderOverview(folder);
@@ -6218,10 +6245,33 @@ async function chatLoadHistory() {
 window.chatLoadSession = async function (sid) {
     try {
         const data = await api('GET', '/api/chat/sessions/' + sid + '/messages');
+        if (chatState.requestProgressPoll) {
+            clearInterval(chatState.requestProgressPoll);
+            chatState.requestProgressPoll = null;
+        }
         chatState.currentSessionId = sid;
         chatState.localMessages = data.messages || [];
         chatApplySessionMetadata(data.session || null);
-        chatRenderMessages();
+        const activeRequestId = String(data?.session?.active_request_id || '').trim();
+        if (activeRequestId) {
+            chatState.currentRequestId = activeRequestId;
+            chatState.isThinking = true;
+            chatState.currentRequestCancelSupported = !!data?.session?.active_request_cancel_supported;
+            chatState.cancelRequested = String(data?.session?.active_request_status || '').toLowerCase() === 'cancel_requested';
+            chatRenderMessages();
+            chatRestoreThinkingBubble();
+            chatStartRequestProgress(
+                activeRequestId,
+                data?.session?.active_request_transport || data?.session?.transport_mode || ''
+            );
+        } else {
+            chatState.currentRequestId = null;
+            chatState.isThinking = false;
+            chatState.currentRequestCancelSupported = false;
+            chatState.cancelRequested = false;
+            chatRenderMessages();
+            chatSyncSendButton();
+        }
     } catch (e) {
         toast('Failed to load session', 'error');
     }
@@ -7351,10 +7401,38 @@ function chatFileIcon(mime) {
 }
 function chatFmtSize(b) { return b < 1024 ? b + ' B' : b < 1048576 ? (b / 1024).toFixed(1) + ' KB' : (b / 1048576).toFixed(1) + ' MB'; }
 
+function chatRestoreThinkingBubble() {
+    if (!document.getElementById('chat-thinking-dots')) {
+        const msgs = document.getElementById('chat-messages');
+        if (!msgs) return;
+        const dots = document.createElement('div');
+        dots.id = 'chat-thinking-dots';
+        dots.className = 'chat-thinking';
+        dots.innerHTML = '<div class="chat-thinking-bubble"><div class="chat-thinking-header"><span class="chat-thinking-icon"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span><span class="chat-thinking-text">Hermes (' + escH(chatVisibleProfile()) + ') is thinking<span class="chat-thinking-ellipsis"></span></span>' + (chatState.currentRequestCancelSupported ? '<button class="chat-stop-btn" id="chat-stop-btn" onclick="chatAbort()" title="Stop"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>' : '') + '</div><div class="chat-progress-log" id="chat-progress-log"></div></div>';
+        msgs.appendChild(dots);
+    }
+    const sendBtn = document.getElementById('chat-send-btn');
+    if (sendBtn && chatState.currentRequestCancelSupported) {
+        sendBtn.disabled = false;
+        sendBtn.classList.add('chat-stop-state');
+        sendBtn.onclick = chatAbort;
+        const svg = sendBtn.querySelector('svg');
+        if (svg) svg.innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>';
+    } else if (sendBtn) {
+        sendBtn.disabled = true;
+    }
+}
+
 function chatSyncSendButton() {
     const input = document.getElementById('chat-input');
     const sendBtn = document.getElementById('chat-send-btn');
     if (!sendBtn) return;
+    if (chatState.isThinking) {
+        sendBtn.classList.add('chat-stop-state');
+        sendBtn.onclick = chatState.currentRequestCancelSupported ? chatAbort : chatSend;
+        sendBtn.disabled = !chatState.currentRequestCancelSupported;
+        return;
+    }
     sendBtn.disabled = !(input?.value.trim() || chatState.pendingFiles.length > 0);
 }
 

@@ -1909,6 +1909,33 @@ def _request_progress_lines(request_id: str, limit: int = 0) -> list[str]:
         return []
 
 
+def _active_request_for_session(session_id: str) -> dict | None:
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
+    latest = None
+    for path in CHAT_REQUEST_DIR.glob("*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if str(payload.get("session_id") or "").strip() != sid:
+            continue
+        status = str(payload.get("status") or "").strip().lower()
+        if status not in {"running", "cancel_requested"}:
+            continue
+        updated_at = str(payload.get("updated_at") or "")
+        if latest is None or updated_at > latest.get("updated_at", ""):
+            latest = {
+                "request_id": str(payload.get("request_id") or "").strip(),
+                "status": status,
+                "cancel_supported": bool(payload.get("cancel_supported")),
+                "transport": str(payload.get("transport") or "").strip(),
+                "updated_at": updated_at,
+            }
+    return latest
+
+
 def _register_chat_request(
     request_id: str,
     session_id: str | None,
@@ -7095,6 +7122,7 @@ def _chat_session_meta(session: dict) -> dict:
     normalized = _normalize_chat_session(copy.deepcopy(session))
     context = _effective_session_context(normalized)
     active_segment = _active_chat_segment(normalized) or {}
+    active_request = _active_request_for_session(normalized.get("id") or "")
     return {
         "profile": normalized.get("profile") or _selected_hermes_profile_name(),
         "active_segment_id": active_segment.get("id") or "",
@@ -7115,6 +7143,10 @@ def _chat_session_meta(session: dict) -> dict:
         "source_docs": context.get("source_docs") or [],
         "folder_workspace_roots": context.get("folder_workspace_roots") or [],
         "folder_source_docs": context.get("folder_source_docs") or [],
+        "active_request_id": (active_request or {}).get("request_id") or "",
+        "active_request_status": (active_request or {}).get("status") or "",
+        "active_request_cancel_supported": bool((active_request or {}).get("cancel_supported")),
+        "active_request_transport": (active_request or {}).get("transport") or "",
     }
 
 
