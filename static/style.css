@@ -4647,6 +4647,10 @@ pre code {
 
 /* Tablet & small desktop */
 @media (max-width: 768px) {
+  #sidebar-collapse {
+    display: inline-flex;
+  }
+
   /* Sidebar becomes overlay */
   #sidebar {
     transform: translateX(-100%);

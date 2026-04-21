@@ -7453,6 +7453,21 @@ document.addEventListener('DOMContentLoaded', async () => {
 function bootstrapApp() {
     ThemeManager.init();
 
+    const isMobileViewport = () => window.innerWidth <= 768;
+    const normalizeSidebarForViewport = () => {
+        const sidebar = document.getElementById('sidebar');
+        const mainWrapper = document.getElementById('main-wrapper');
+        if (!sidebar || !mainWrapper) return;
+
+        if (isMobileViewport()) {
+            // Mobile supports only overlay open/closed states.
+            sidebar.classList.remove('collapsed');
+            mainWrapper.classList.remove('sidebar-collapsed');
+        } else {
+            sidebar.classList.remove('mobile-open');
+        }
+    };
+
     document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', () => {
             if (item.dataset.screen === 'folders') {
@@ -7472,17 +7487,37 @@ function bootstrapApp() {
     document.getElementById('menu-toggle').addEventListener('click', () => {
         // On desktop: toggle the sidebar collapse (same as collapse button)
         // On mobile: toggle the mobile overlay
-        if (window.innerWidth > 768) {
-            document.getElementById('sidebar').classList.toggle('collapsed');
-            document.getElementById('main-wrapper').classList.toggle('sidebar-collapsed');
+        const sidebar = document.getElementById('sidebar');
+        const mainWrapper = document.getElementById('main-wrapper');
+        if (!sidebar || !mainWrapper) return;
+
+        if (!isMobileViewport()) {
+            sidebar.classList.remove('mobile-open');
+            sidebar.classList.toggle('collapsed');
+            mainWrapper.classList.toggle('sidebar-collapsed');
         } else {
-            document.getElementById('sidebar').classList.toggle('mobile-open');
+            // Always open the full overlay, never the mini (collapsed) sidebar on mobile.
+            sidebar.classList.remove('collapsed');
+            mainWrapper.classList.remove('sidebar-collapsed');
+            sidebar.classList.toggle('mobile-open');
         }
     });
 
     document.getElementById('sidebar-collapse').addEventListener('click', () => {
-        document.getElementById('sidebar').classList.toggle('collapsed');
-        document.getElementById('main-wrapper').classList.toggle('sidebar-collapsed');
+        const sidebar = document.getElementById('sidebar');
+        const mainWrapper = document.getElementById('main-wrapper');
+        if (!sidebar || !mainWrapper) return;
+
+        if (isMobileViewport()) {
+            // In mobile, this button closes/opens the overlay only.
+            sidebar.classList.remove('collapsed');
+            mainWrapper.classList.remove('sidebar-collapsed');
+            sidebar.classList.toggle('mobile-open');
+            return;
+        }
+
+        sidebar.classList.toggle('collapsed');
+        mainWrapper.classList.toggle('sidebar-collapsed');
         renderSidebarFoldersTree();
     });
 
@@ -7501,6 +7536,8 @@ function bootstrapApp() {
     const hash = window.location.hash.replace('#', '');
     const direct = params.get('go') || hash || '';
     navigate(direct && Screens[direct] ? direct : 'chat');
+    normalizeSidebarForViewport();
+    window.addEventListener('resize', normalizeSidebarForViewport);
     renderSidebarFoldersTree();
     // Listen for hash changes
     window.addEventListener('hashchange', () => {
