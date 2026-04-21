@@ -2390,9 +2390,15 @@ pre code {
 
 .chat-layout {
   display: flex;
-  height: 100vh;
+  height: 100%;
   width: 100%;
   min-height: 0;
+  overflow: hidden;
+}
+
+/* Remove content-area padding when chat is active */
+#content.content-area:has(#chat-layout) {
+  padding: 0;
   overflow: hidden;
 }
 
@@ -2726,8 +2732,7 @@ pre code {
 .chat-container, .chat-main {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  margin: -24px;
+  height: 100%;
   background: var(--bg-primary);
 }
 
