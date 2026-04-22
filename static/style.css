@@ -62,7 +62,7 @@
   --sidebar-collapsed: 64px;
 
   /* Safe space for browsers that overlap bottom UI */
-  --app-bottom-safe: max(12px, env(safe-area-inset-bottom, 0px));
+  --app-bottom-safe: max(90px, env(safe-area-inset-bottom, 0px));
 }
 
 /* ============================================================
@@ -318,7 +318,8 @@ pre code {
   width: 100%;
   height: 100dvh;
   min-height: 100vh;
-  padding-bottom: var(--app-bottom-safe);
+  padding-top: var(--app-bottom-safe);
+  /*padding-bottom: var(--app-bottom-safe);*/
   overflow: hidden;
 }
 
