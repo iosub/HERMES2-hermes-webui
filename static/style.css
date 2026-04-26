@@ -29,20 +29,25 @@
 
   /* Accent */
   --accent: #6366f1;
+  --accent-text: #a5b4fc;
   --accent-hover: #818cf8;
-  --accent-dim: rgba(99, 102, 241, 0.12);
-  --accent-glow: rgba(99, 102, 241, 0.25);
-  --accent-muted: rgba(99, 102, 241, 0.2);
+  --accent-dim: rgba(99, 102, 241, 0.15);
+  --accent-glow: rgba(99, 102, 241, 0.30);
+  --accent-muted: rgba(99, 102, 241, 0.22);
 
   /* Semantic */
-  --teal: #06b6d4;
-  --teal-dim: rgba(6, 182, 212, 0.12);
+  --teal: #22d3ee;
+  --teal-text: #67e8f9;
+  --teal-dim: rgba(34, 211, 238, 0.13);
   --green: #10b981;
-  --green-dim: rgba(16, 185, 129, 0.12);
+  --green-text: #6ee7b7;
+  --green-dim: rgba(16, 185, 129, 0.13);
   --amber: #f59e0b;
-  --amber-dim: rgba(245, 158, 11, 0.12);
+  --amber-text: #fcd34d;
+  --amber-dim: rgba(245, 158, 11, 0.13);
   --red: #ef4444;
-  --red-dim: rgba(239, 68, 68, 0.12);
+  --red-text: #fca5a5;
+  --red-dim: rgba(239, 68, 68, 0.13);
 
   /* Spacing & Radius */
   --radius-sm: 8px;
@@ -105,12 +110,23 @@
   --text-primary: #e2e5f0;
   --text-secondary: #8890a8;
   --text-muted: #6b7389;
-  --accent-dim: rgba(99, 102, 241, 0.12);
-  --accent-glow: rgba(99, 102, 241, 0.25);
-  --teal-dim: rgba(6, 182, 212, 0.12);
-  --green-dim: rgba(16, 185, 129, 0.12);
-  --amber-dim: rgba(245, 158, 11, 0.12);
-  --red-dim: rgba(239, 68, 68, 0.12);
+  --accent: #6366f1;
+  --accent-text: #a5b4fc;
+  --accent-hover: #818cf8;
+  --accent-dim: rgba(99, 102, 241, 0.15);
+  --accent-glow: rgba(99, 102, 241, 0.30);
+  --teal: #22d3ee;
+  --teal-text: #67e8f9;
+  --teal-dim: rgba(34, 211, 238, 0.13);
+  --green: #10b981;
+  --green-text: #6ee7b7;
+  --green-dim: rgba(16, 185, 129, 0.13);
+  --amber: #f59e0b;
+  --amber-text: #fcd34d;
+  --amber-dim: rgba(245, 158, 11, 0.13);
+  --red: #ef4444;
+  --red-text: #fca5a5;
+  --red-dim: rgba(239, 68, 68, 0.13);
   --shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
   --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.4);
 }
@@ -142,7 +158,7 @@
 
 .theme-btn.active {
   background: var(--accent-dim);
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
 }
 
@@ -199,7 +215,7 @@ body {
 }
 
 a {
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: none;
   transition: color var(--transition);
 }
@@ -318,8 +334,6 @@ pre code {
   width: 100%;
   height: 100dvh;
   min-height: 100vh;
-  padding-top: var(--app-bottom-safe);
-  /*padding-bottom: var(--app-bottom-safe);*/
   overflow: hidden;
 }
 
@@ -350,10 +364,10 @@ pre code {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 13px 14px;
+  padding: calc(13px + env(safe-area-inset-top, 0px)) 14px 13px;
   border-bottom: 1px solid var(--border);
-  height: 60px;
-  min-height: 60px;
+  height: calc(60px + env(safe-area-inset-top, 0px));
+  min-height: calc(60px + env(safe-area-inset-top, 0px));
   flex-shrink: 0;
   overflow: visible;
   box-sizing: border-box;
@@ -384,7 +398,7 @@ pre code {
 
 #sidebar.collapsed .sidebar-header {
   justify-content: center;
-  padding: 13px 8px;
+  padding: calc(13px + env(safe-area-inset-top, 0px)) 8px 13px;
   gap: 0;
 }
 #sidebar.collapsed .logo {
@@ -395,7 +409,7 @@ pre code {
   width: 28px;
   height: 28px;
   flex-shrink: 0;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .logo-text {
@@ -514,7 +528,7 @@ pre code {
 
 .nav-item.active {
   background: var(--accent-dim);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .nav-item.active::before {
@@ -629,7 +643,7 @@ pre code {
 
 .sidebar-folder-node-target.active {
   background: var(--accent-dim);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .sidebar-folder-name {
@@ -752,17 +766,17 @@ pre code {
 }
 
 .sidebar-chat-profile-name-green {
-  color: var(--green);
+  color: var(--green-text);
 }
 
 .sidebar-folder-chat.active {
   background: rgba(90, 147, 255, 0.12);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .sidebar-folder-ungrouped-btn.active {
   background: rgba(90, 147, 255, 0.12);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .sidebar-folder-chat-delete {
@@ -893,12 +907,12 @@ pre code {
    7. TOPBAR (#topbar)
    ============================================================ */
 #topbar {
-  height: 48px;
-  min-height: 48px;
+  height: calc(48px + env(safe-area-inset-top, 0px));
+  min-height: calc(48px + env(safe-area-inset-top, 0px));
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 24px;
+  padding: env(safe-area-inset-top, 0px) 24px 0;
   border-bottom: 1px solid var(--border);
   background: var(--bg-secondary);
   z-index: 50;
@@ -988,7 +1002,7 @@ pre code {
 
 #search-input:focus,
 .search-input:focus {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
   box-shadow: 0 0 0 3px var(--accent-dim);
   background: var(--bg-input);
 }
@@ -1028,7 +1042,7 @@ pre code {
 }
 
 .page-breadcrumb a:hover {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .page-breadcrumb .separator {
@@ -1258,27 +1272,27 @@ pre code {
 
 .stat-card-icon.accent {
   background: var(--accent-dim);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .stat-card-icon.teal {
   background: var(--teal-dim);
-  color: var(--teal);
+  color: var(--teal-text);
 }
 
 .stat-card-icon.green {
   background: var(--green-dim);
-  color: var(--green);
+  color: var(--green-text);
 }
 
 .stat-card-icon.amber {
   background: var(--amber-dim);
-  color: var(--amber);
+  color: var(--amber-text);
 }
 
 .stat-card-icon.red {
   background: var(--red-dim);
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .stat-card-change {
@@ -1290,11 +1304,11 @@ pre code {
 }
 
 .stat-card-change.positive {
-  color: var(--green);
+  color: var(--green-text);
 }
 
 .stat-card-change.negative {
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .stat-value {
@@ -1361,7 +1375,7 @@ pre code {
 .form-input:focus,
 .form-select:focus,
 .form-textarea:focus {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
   box-shadow: 0 0 0 3px var(--accent-dim);
 }
 
@@ -1405,14 +1419,14 @@ pre code {
 
 .form-error {
   font-size: 12px;
-  color: var(--red);
+  color: var(--red-text);
   margin-top: 4px;
 }
 
 .form-input.error,
 .form-select.error,
 .form-textarea.error {
-  border-color: var(--red);
+  border-color: var(--red-text);
   box-shadow: 0 0 0 3px var(--red-dim);
 }
 
@@ -1437,7 +1451,7 @@ pre code {
 .form-checkbox input[type="radio"] {
   width: 16px;
   height: 16px;
-  accent-color: var(--accent);
+  accent-color: var(--accent-text);
   cursor: pointer;
 }
 
@@ -1483,7 +1497,7 @@ pre code {
 
 .toggle-switch input:checked + .toggle-slider {
   background: var(--accent-dim);
-  border-color: var(--accent);
+  border-color: var(--accent-text);
 }
 
 .toggle-switch input:checked + .toggle-slider::before {
@@ -1553,7 +1567,7 @@ pre code {
 
 .btn-primary {
   background: var(--accent);
-  border-color: var(--accent);
+  border-color: var(--accent-text);
   color: #ffffff;
 }
 
@@ -1565,8 +1579,8 @@ pre code {
 
 .btn-selection {
   background: var(--accent-dim);
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--accent-text);
+  color: var(--accent-text);
 }
 
 .btn-selection:hover {
@@ -1577,30 +1591,30 @@ pre code {
 
 .btn-danger {
   background: var(--red-dim);
-  border-color: var(--red);
-  color: var(--red);
+  border-color: var(--red-text);
+  color: var(--red-text);
 }
 
 .btn-danger:hover {
   background: rgba(239, 68, 68, 0.2);
-  border-color: var(--red);
+  border-color: var(--red-text);
 }
 
 .btn-success {
   background: var(--green-dim);
-  border-color: var(--green);
-  color: var(--green);
+  border-color: var(--green-text);
+  color: var(--green-text);
 }
 
 .btn-success:hover {
   background: rgba(16, 185, 129, 0.2);
-  border-color: var(--green);
+  border-color: var(--green-text);
 }
 
 .btn-warning {
   background: var(--amber-dim);
-  border-color: var(--amber);
-  color: var(--amber);
+  border-color: var(--amber-text);
+  color: var(--amber-text);
 }
 
 .btn-warning:hover {
@@ -1773,25 +1787,25 @@ pre code {
 
 .badge-success {
   background: var(--green-dim);
-  color: var(--green);
+  color: var(--green-text);
   border: 1px solid rgba(16, 185, 129, 0.2);
 }
 
 .badge-danger {
   background: var(--red-dim);
-  color: var(--red);
+  color: var(--red-text);
   border: 1px solid rgba(239, 68, 68, 0.2);
 }
 
 .badge-warning {
   background: var(--amber-dim);
-  color: var(--amber);
+  color: var(--amber-text);
   border: 1px solid rgba(245, 158, 11, 0.2);
 }
 
 .badge-info {
   background: var(--teal-dim);
-  color: var(--teal);
+  color: var(--teal-text);
   border: 1px solid rgba(6, 182, 212, 0.2);
 }
 
@@ -1803,7 +1817,7 @@ pre code {
 
 .badge-accent {
   background: var(--accent-dim);
-  color: var(--accent);
+  color: var(--accent-text);
   border: 1px solid rgba(99, 102, 241, 0.2);
 }
 
@@ -1845,8 +1859,8 @@ pre code {
 }
 
 .tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
+  color: var(--accent-text);
+  border-bottom-color: var(--accent-text);
 }
 
 .tab-pane {
@@ -2125,7 +2139,7 @@ pre code {
   width: 28px;
   height: 28px;
   border: 3px solid var(--border);
-  border-top-color: var(--accent);
+  border-top-color: var(--accent-text);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
@@ -2259,7 +2273,7 @@ pre code {
 }
 
 .text-danger {
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .text-primary {
@@ -2267,23 +2281,23 @@ pre code {
 }
 
 .text-accent {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .text-teal {
-  color: var(--teal);
+  color: var(--teal-text);
 }
 
 .text-green {
-  color: var(--green);
+  color: var(--green-text);
 }
 
 .text-amber {
-  color: var(--amber);
+  color: var(--amber-text);
 }
 
 .text-red {
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .text-sm {
@@ -2837,7 +2851,7 @@ pre code {
 }
 
 .chat-select:focus {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
   box-shadow: 0 0 0 3px var(--accent-dim);
 }
 
@@ -2874,7 +2888,7 @@ pre code {
 }
 
 .chat-mode-tab.active {
-  color: var(--teal);
+  color: var(--teal-text);
   background: var(--teal-dim);
   border-bottom: 2px solid var(--teal);
 }
@@ -3218,7 +3232,7 @@ pre code {
 
 .folder-admin-main:hover .folder-admin-title,
 .folder-admin-main:hover .folder-admin-toggle {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .folder-admin-toggle {
@@ -3303,7 +3317,7 @@ pre code {
 
 .chat-msg.user .chat-msg-avatar {
   background: var(--accent-dim);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .chat-msg-content {
@@ -3514,7 +3528,7 @@ pre code {
   border-radius: 4px;
   background: rgba(239, 68, 68, 0.14);
   border: 1px solid rgba(239, 68, 68, 0.38);
-  color: var(--red);
+  color: var(--red-text);
   cursor: pointer;
   margin-left: 4px;
   flex-shrink: 0;
@@ -3607,8 +3621,8 @@ pre code {
 
 .chat-msg-copy.copied {
   opacity: 1;
-  color: var(--accent);
-  border-color: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent-text);
 }
 
 /* Chat Composer */
@@ -3631,7 +3645,7 @@ pre code {
 }
 
 .chat-composer-row:focus-within {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
   box-shadow: 0 0 0 3px var(--accent-dim), 0 0 24px var(--accent-glow);
 }
 
@@ -3661,7 +3675,7 @@ pre code {
 }
 
 .chat-btn.recording {
-  color: var(--red);
+  color: var(--red-text);
   animation: voicePulse 1.5s ease infinite;
 }
 
@@ -3814,7 +3828,7 @@ pre code {
 
 .chat-transport-btn.active {
   background: var(--accent-dim);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .chat-transport-btn.disabled,
@@ -4080,7 +4094,7 @@ pre code {
 
 .skill-source-selection-bar {
   margin-bottom: 14px;
-  border-color: var(--accent);
+  border-color: var(--accent-text);
   background: linear-gradient(135deg, var(--accent-dim), transparent 70%);
 }
 
@@ -4143,7 +4157,7 @@ pre code {
 }
 
 .capability-type-card.active {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
   box-shadow: 0 0 0 1px var(--accent-glow), var(--shadow);
   background:
     linear-gradient(135deg, rgba(99, 102, 241, 0.14), transparent 60%),
@@ -4241,7 +4255,7 @@ pre code {
 }
 
 .capability-created-card {
-  border-color: var(--green);
+  border-color: var(--green-text);
   background:
     linear-gradient(135deg, var(--green-dim), transparent 65%),
     var(--bg-secondary);
@@ -4357,12 +4371,12 @@ pre code {
 
 .chat-action-btn:active {
   background: var(--accent-dim);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .chat-voice-status {
   font-size: 11px;
-  color: var(--red);
+  color: var(--red-text);
   display: none;
   order: 4;
 }
@@ -4420,7 +4434,7 @@ pre code {
   border-radius: 4px;
   transition: color 0.2s;
 }
-.chat-file-item .remove-file:hover { color: var(--red); }
+.chat-file-item .remove-file:hover { color: var(--red-text); }
 
 /* Message body and files */
 .chat-msg-body { flex: 1; min-width: 0; }
@@ -4495,7 +4509,7 @@ pre code {
 }
 
 .chat-file-chip-remove:hover {
-  color: var(--red);
+  color: var(--red-text);
   background: var(--red-dim);
 }
 
@@ -4515,7 +4529,7 @@ pre code {
 .chat-welcome-icon {
   width: 64px;
   height: 64px;
-  color: var(--accent);
+  color: var(--accent-text);
   margin-bottom: 24px;
   filter: drop-shadow(0 0 16px var(--accent-glow));
   animation: welcomePulse 3s ease infinite;
@@ -4565,7 +4579,7 @@ pre code {
 }
 
 .chat-quick-btn:hover {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
   color: var(--text-primary);
   transform: translateY(-2px);
   box-shadow: var(--shadow);
@@ -4580,7 +4594,7 @@ pre code {
   justify-content: center;
   flex-shrink: 0;
   background: var(--accent-dim);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .chat-quick-btn-text {
@@ -4629,7 +4643,7 @@ pre code {
 .chat-drag-overlay-icon {
   width: 40px;
   height: 40px;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* ============================================================
@@ -4683,7 +4697,7 @@ pre code {
 
   /* Topbar */
   #topbar {
-    padding: 0 16px;
+    padding: env(safe-area-inset-top, 0px) 16px 0;
   }
 
   /* Chat History — mobile overlay */
@@ -5163,7 +5177,7 @@ pre code {
 }
 
 .dropdown-item.danger {
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .dropdown-item.danger:hover {
@@ -5182,7 +5196,7 @@ pre code {
   height: 32px;
   border-radius: 50%;
   background: var(--accent-dim);
-  color: var(--accent);
+  color: var(--accent-text);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -5224,8 +5238,8 @@ pre code {
 
 .tag.active {
   background: var(--accent-dim);
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--accent-text);
+  color: var(--accent-text);
 }
 
 /* Copy button for code blocks */
@@ -5397,14 +5411,14 @@ pre code {
 }
 
 .provider-card:hover {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
   background: var(--bg-hover);
   transform: translateY(-2px);
   box-shadow: var(--shadow);
 }
 
 .provider-card.active {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
   background: var(--accent-dim);
 }
 
@@ -5546,15 +5560,15 @@ pre code {
 }
 
 .log-line .log-level-info {
-  color: var(--teal);
+  color: var(--teal-text);
 }
 
 .log-line .log-level-warn {
-  color: var(--amber);
+  color: var(--amber-text);
 }
 
 .log-line .log-level-error {
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .log-line .log-level-debug {
