@@ -4661,15 +4661,17 @@ window.saveSessions = async function () {
 // ── LOGS ───────────────────────────────────────────────────
 Screens.logs = async function () {
     const content = document.getElementById('content');
-    content.innerHTML = '<div class="card"><div class="card-header"><span>Hermes Log File Tail</span><div class="flex gap-8"><select class="form-select" id="log-lines" style="width:auto"><option value="100">100 lines</option><option value="500" selected>500 lines</option><option value="1000">1000 lines</option></select><button class="btn btn-sm" onclick="loadLogs()">Refresh</button><button class="btn btn-sm" onclick="copyLogs()">Copy</button></div></div><div class="card-body"><p class="text-sm text-secondary mb-16">Shows recent lines from Hermes log files when present. This is not a complete diagnostics or session activity view.</p></div><div class="card-body" style="padding:0"><div id="log-output" class="font-mono text-xs" style="padding:16px;max-height:70vh;overflow:auto;background:var(--bg-primary);white-space:pre-wrap;line-height:1.6;color:var(--text-secondary)"><div class="loading"><div class="spinner"></div></div></div></div></div>';
+    content.innerHTML = '<div class="card"><div class="card-header"><span>Hermes Log File Tail</span><div class="flex gap-8"><select class="form-select" id="log-file-select" style="width:auto"><option value="agent">agent.log</option><option value="gateway">gateway.log</option><option value="errors">errors.log</option></select><select class="form-select" id="log-lines" style="width:auto"><option value="100">100 lines</option><option value="500" selected>500 lines</option><option value="1000">1000 lines</option></select><button class="btn btn-sm" onclick="loadLogs()">Refresh</button><button class="btn btn-sm" onclick="copyLogs()">Copy</button><button class="btn btn-sm btn-danger" onclick="clearLog()">Clear Log</button></div></div><div class="card-body"><p class="text-sm text-secondary mb-16">Shows recent lines from Hermes log files when present. This is not a complete diagnostics or session activity view.</p></div><div class="card-body" style="padding:0"><div id="log-output" class="font-mono text-xs" style="padding:16px;max-height:70vh;overflow:auto;background:var(--bg-primary);white-space:pre-wrap;line-height:1.6;color:var(--text-secondary)"><div class="loading"><div class="spinner"></div></div></div></div></div>';
+    document.getElementById('log-file-select').addEventListener('change', loadLogs);
     document.getElementById('log-lines').addEventListener('change', loadLogs);
     loadLogs();
 };
 
 window.loadLogs = async function () {
     const lines = document.getElementById('log-lines')?.value || 500;
+    const file = document.getElementById('log-file-select')?.value || 'hermes';
     try {
-        const data = await api('GET', '/api/logs?lines=' + lines);
+        const data = await api('GET', '/api/logs?lines=' + lines + '&file=' + encodeURIComponent(file));
         const detail = data.source_detail ? data.source_detail + '\n\n' : '';
         document.getElementById('log-output').textContent = detail + (data.logs || 'No logs available.');
     } catch (e) {
@@ -4680,6 +4682,18 @@ window.loadLogs = async function () {
 window.copyLogs = function () {
     const text = document.getElementById('log-output')?.textContent || '';
     navigator.clipboard.writeText(text).then(() => toast('Logs copied', 'success')).catch(() => toast('Copy failed', 'error'));
+};
+
+window.clearLog = async function () {
+    const file = document.getElementById('log-file-select')?.value || 'hermes';
+    if (!confirm('¿Borrar el contenido de ' + file + '.log? Esta acción no se puede deshacer.')) return;
+    try {
+        await api('POST', '/api/logs/clear', { file });
+        toast('Log borrado', 'success');
+        loadLogs();
+    } catch (e) {
+        toast('Error al borrar log: ' + e.message, 'error');
+    }
 };
 
 /* ═══════════════════════════════════════════════════════════════

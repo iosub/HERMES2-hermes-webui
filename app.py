@@ -6588,24 +6588,50 @@ def api_hooks_put():
 # 29. Logs
 # ===================================================================
 
+# Allowed log file keys mapped to candidate relative paths (security: no arbitrary paths)
+# _selected_hermes_home() already resolves the active profile
+# (HERMES_HOME for default, HERMES_PROFILES_DIR/<profile> for named profiles)
+_LOG_FILE_KEYS: dict = {
+    "agent":   ["logs/agent.log"],
+    "gateway": ["logs/gateway.log", "gateway.log"],
+    "errors":  ["logs/errors.log"],
+}
+
+def _resolve_log_path(key: str) -> "Path | None":
+    """Return the first existing path for a known log key, or the primary candidate if none exist."""
+    key = (key or "").strip().lower()
+    if key not in _LOG_FILE_KEYS:
+        return None
+    home = _selected_hermes_home()
+    for rel in _LOG_FILE_KEYS[key]:
+        p = home / rel
+        if p.exists():
+            return p
+    # Return primary candidate even if it doesn't exist yet
+    return home / _LOG_FILE_KEYS[key][0]
+
+
 @app.route("/api/logs")
 @require_token
 def api_logs_get():
     try:
         lines = request.args.get("lines", 200, type=int)
         lines = max(10, min(lines, 2000))
+        file_key = request.args.get("file", "").strip().lower()
 
-        # hermes logs is not a valid CLI command - skip CLI entirely
-        # and read log files directly (hermes sessions are in SQLite, not text logs)
         log_text = ""
 
-        # Fallback: read from common log locations
-        if not log_text:
+        if file_key and file_key in _LOG_FILE_KEYS:
+            # Read a specific log file by key
+            p = _resolve_log_path(file_key)
+            if p and p.exists():
+                log_text = _read_log_file(p, lines) or ""
+        else:
+            # Auto-detect: return first available log
             log_candidates = [
-                _selected_hermes_home() / "logs" / "hermes.log",
+                _selected_hermes_home() / "logs" / "agent.log",
                 _selected_hermes_home() / "logs" / "gateway.log",
                 _selected_hermes_home() / "logs" / "errors.log",
-                _selected_hermes_home() / "hermes.log",
                 _selected_hermes_home() / "gateway.log",
             ]
             for lc in log_candidates:
@@ -6619,6 +6645,24 @@ def api_logs_get():
             "source": "log_files",
             "source_detail": "Tail of Hermes log files under ~/.hermes/logs when present.",
         })
+    except Exception as exc:
+        return _http_error(str(exc))
+
+
+@app.route("/api/logs/clear", methods=["POST"])
+@require_token
+def api_logs_clear():
+    try:
+        body = request.get_json(silent=True) or {}
+        file_key = (body.get("file") or "").strip().lower()
+        if file_key not in _LOG_FILE_KEYS:
+            return jsonify({"error": "Invalid log file key. Allowed: " + ", ".join(_LOG_FILE_KEYS)}), 400
+        p = _resolve_log_path(file_key)
+        if p is None:
+            return jsonify({"error": "Could not resolve log path"}), 400
+        if p.exists():
+            p.write_text("", encoding="utf-8")
+        return jsonify({"ok": True, "file": file_key})
     except Exception as exc:
         return _http_error(str(exc))
 
