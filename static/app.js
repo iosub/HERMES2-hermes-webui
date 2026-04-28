@@ -233,7 +233,7 @@ const ThemeManager = {
     },
 
     cycle() {
-        const themes = ['dark', 'light', 'system'];
+        const themes = ['dark', 'light', 'warm', 'system'];
         const next = themes[(themes.indexOf(this.current) + 1) % themes.length];
         this.set(next);
     },
@@ -243,12 +243,12 @@ const ThemeManager = {
         const l = document.getElementById('theme-icon-light');
         const s = document.getElementById('theme-icon-system');
         if (d) d.style.display = this.current === 'dark' ? '' : 'none';
-        if (l) l.style.display = this.current === 'light' ? '' : 'none';
+        if (l) l.style.display = (this.current === 'light' || this.current === 'warm') ? '' : 'none';
         if (s) s.style.display = this.current === 'system' ? '' : 'none';
     },
 
     getLabel() {
-        return { dark: 'Dark', light: 'Light', system: 'System' }[this.current] || 'Dark';
+        return { dark: 'Dark', light: 'Light', warm: 'Warm', system: 'System' }[this.current] || 'Dark';
     }
 };
 
@@ -276,8 +276,12 @@ function navigate(screen) {
     const content = document.getElementById('content');
     content.style.padding = screen === 'chat' ? '0' : '';
     content.style.overflow = screen === 'chat' ? 'hidden' : '';
+    content.style.display = '';
+    content.style.flexDirection = '';
     content.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
     document.getElementById('sidebar').classList.remove('mobile-open');
+    const _so = document.getElementById('sidebar-overlay');
+    if (_so) _so.classList.remove('active');
     // Show/hide topbar: hide when chat is active
     document.getElementById('topbar').classList.toggle('hidden-by-chat', screen === 'chat');
     if (Screens[screen]) Screens[screen]();
@@ -1034,7 +1038,7 @@ Screens.settings = async function () {
                 if (sec === 'display') {
                     formHtml += '<div class="form-row"><div class="form-group"><label class="form-label">Theme</label>';
                     formHtml += '<div class="theme-chooser">';
-                    ['dark', 'light', 'system'].forEach(th => {
+                    ['dark', 'light', 'warm', 'system'].forEach(th => {
                         formHtml += '<button class="theme-btn' + (ThemeManager.current === th ? ' active' : '') + '" data-theme="' + th + '" onclick="ThemeManager.set(\'' + th + '\')">' + th.charAt(0).toUpperCase() + th.slice(1) + '</button>';
                     });
                     formHtml += '</div></div></div>';
@@ -4661,7 +4665,11 @@ window.saveSessions = async function () {
 // ── LOGS ───────────────────────────────────────────────────
 Screens.logs = async function () {
     const content = document.getElementById('content');
-    content.innerHTML = '<div class="card"><div class="card-header"><span>Hermes Log File Tail</span><div class="flex gap-8"><select class="form-select" id="log-file-select" style="width:auto"><option value="agent">agent.log</option><option value="gateway">gateway.log</option><option value="errors">errors.log</option></select><select class="form-select" id="log-lines" style="width:auto"><option value="100">100 lines</option><option value="500" selected>500 lines</option><option value="1000">1000 lines</option></select><button class="btn btn-sm" onclick="loadLogs()">Refresh</button><button class="btn btn-sm" onclick="copyLogs()">Copy</button><button class="btn btn-sm btn-danger" onclick="clearLog()">Clear Log</button></div></div><div class="card-body"><p class="text-sm text-secondary mb-16">Shows recent lines from Hermes log files when present. This is not a complete diagnostics or session activity view.</p></div><div class="card-body" style="padding:0"><div id="log-output" class="font-mono text-xs" style="padding:16px;max-height:70vh;overflow:auto;background:var(--bg-primary);white-space:pre-wrap;line-height:1.6;color:var(--text-secondary)"><div class="loading"><div class="spinner"></div></div></div></div></div>';
+    content.style.display = 'flex';
+    content.style.flexDirection = 'column';
+    content.style.overflow = 'hidden';
+    content.style.padding = '0';
+    content.innerHTML = '<div class="card" style="display:flex;flex-direction:column;flex:1;min-height:0;margin:16px;overflow:hidden"><div class="card-header" style="flex-shrink:0"><span>Hermes Log File Tail</span><div class="flex gap-8"><select class="form-select" id="log-file-select" style="width:auto"><option value="agent">agent.log</option><option value="gateway">gateway.log</option><option value="errors">errors.log</option></select><select class="form-select" id="log-lines" style="width:auto"><option value="100">100 lines</option><option value="500" selected>500 lines</option><option value="1000">1000 lines</option></select><button class="btn btn-sm" onclick="loadLogs()">Refresh</button><button class="btn btn-sm" onclick="copyLogs()">Copy</button><button class="btn btn-sm btn-danger" onclick="clearLog()">Clear Log</button></div></div><div class="card-body" style="flex-shrink:0"><p class="text-sm text-secondary">Shows recent lines from Hermes log files when present. This is not a complete diagnostics or session activity view.</p></div><div style="flex:1;min-height:0;overflow:auto;background:var(--bg-primary)"><div id="log-output" class="font-mono text-xs" style="padding:16px;white-space:pre-wrap;line-height:1.6;color:var(--text-secondary)"><div class="loading"><div class="spinner"></div></div></div></div></div>';
     document.getElementById('log-file-select').addEventListener('change', loadLogs);
     document.getElementById('log-lines').addEventListener('change', loadLogs);
     loadLogs();
@@ -7540,6 +7548,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Always require explicit login — never auto-enter dashboard from a
     // leftover session cookie.  Show the login screen on every page load.
     showLoginScreen();
+
+    // Fix for foldable devices (e.g. Galaxy Z Fold): safe-area-inset-top
+    // is sometimes 0 on first render and only updates after a resize event.
+    // Force a reflow on next frame so the topbar picks up the correct inset.
+    requestAnimationFrame(() => {
+        const topbar = document.getElementById('topbar');
+        if (topbar) {
+            topbar.style.display = 'none';
+            // eslint-disable-next-line no-unused-expressions
+            topbar.offsetHeight; // trigger reflow
+            topbar.style.display = '';
+        }
+    });
 });
 
 function bootstrapApp() {
@@ -7583,16 +7604,27 @@ function bootstrapApp() {
         const mainWrapper = document.getElementById('main-wrapper');
         if (!sidebar || !mainWrapper) return;
 
+        const sidebarOverlay = document.getElementById('sidebar-overlay');
         if (!isMobileViewport()) {
             sidebar.classList.remove('mobile-open');
             sidebar.classList.toggle('collapsed');
             mainWrapper.classList.toggle('sidebar-collapsed');
+            if (sidebarOverlay) sidebarOverlay.classList.remove('active');
         } else {
             // Always open the full overlay, never the mini (collapsed) sidebar on mobile.
             sidebar.classList.remove('collapsed');
             mainWrapper.classList.remove('sidebar-collapsed');
+            const opening = !sidebar.classList.contains('mobile-open');
             sidebar.classList.toggle('mobile-open');
+            if (sidebarOverlay) sidebarOverlay.classList.toggle('active', opening);
         }
+    });
+
+    const sidebarOverlayEl = document.getElementById('sidebar-overlay');
+    if (sidebarOverlayEl) sidebarOverlayEl.addEventListener('click', () => {
+        const sidebar = document.getElementById('sidebar');
+        if (sidebar) sidebar.classList.remove('mobile-open');
+        sidebarOverlayEl.classList.remove('active');
     });
 
     document.getElementById('sidebar-collapse').addEventListener('click', () => {

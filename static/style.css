@@ -71,7 +71,44 @@
 }
 
 /* ============================================================
-   1b. CSS CUSTOM PROPERTIES — LIGHT THEME
+   1b. CSS CUSTOM PROPERTIES — WARM THEME (beige/naranja, inspirado en beta1)
+   ============================================================ */
+[data-theme="warm"] {
+  --bg-primary: #f4efe5;
+  --bg-secondary: #fffdf9;
+  --bg-tertiary: #ede4d6;
+  --bg-hover: #e6dbca;
+  --bg-active: #ddd0bc;
+  --bg-input: #fffdf9;
+  --border: rgba(90, 63, 43, 0.18);
+  --border-light: rgba(90, 63, 43, 0.10);
+  --text-primary: #2e2016;
+  --text-secondary: #796253;
+  --text-muted: #9a8070;
+  --accent: #bc5f2c;
+  --accent-text: #bc5f2c;
+  --accent-hover: #a84f22;
+  --accent-dim: rgba(188, 95, 44, 0.13);
+  --accent-glow: rgba(188, 95, 44, 0.28);
+  --accent-muted: rgba(188, 95, 44, 0.20);
+  --teal: #2d8a7a;
+  --teal-text: #236b5e;
+  --teal-dim: rgba(45, 138, 122, 0.13);
+  --green: #4a8a3f;
+  --green-text: #3a6e31;
+  --green-dim: rgba(74, 138, 63, 0.13);
+  --amber: #c07a1e;
+  --amber-text: #9a5f10;
+  --amber-dim: rgba(192, 122, 30, 0.13);
+  --red: #b24b3f;
+  --red-text: #8f3228;
+  --red-dim: rgba(178, 75, 63, 0.13);
+  --shadow: 0 2px 12px rgba(82, 51, 30, 0.12);
+  --shadow-lg: 0 8px 32px rgba(82, 51, 30, 0.22);
+}
+
+/* ============================================================
+   1c. CSS CUSTOM PROPERTIES — LIGHT THEME
    ============================================================ */
 [data-theme="light"] {
   --bg-primary: #f4f5fa;
@@ -917,6 +954,8 @@ pre code {
   background: var(--bg-secondary);
   z-index: 50;
   flex-shrink: 0;
+  position: sticky;
+  top: 0;
 }
 
 .topbar-left {
@@ -2771,11 +2810,11 @@ pre code {
 /* Hide the global topbar when chat is active */
 /* In chat mode, collapse topbar to show only the theme toggle */
 #topbar.hidden-by-chat {
-  height: 40px;
-  min-height: 40px;
-  padding: 0 12px;
-  background: transparent;
-  border-bottom: none;
+  height: calc(40px + env(safe-area-inset-top, 0px));
+  min-height: calc(40px + env(safe-area-inset-top, 0px));
+  padding: env(safe-area-inset-top, 0px) 12px 0;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
   justify-content: flex-end;
   flex-shrink: 0;
 }
@@ -2793,7 +2832,7 @@ pre code {
 }
 
 /* On mobile, also show the hamburger menu button in chat mode */
-@media (max-width: 768px) {
+@media (max-width: 820px) {
   #menu-toggle {
     display: inline-flex !important;
   }
