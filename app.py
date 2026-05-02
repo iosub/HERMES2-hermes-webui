@@ -2537,7 +2537,18 @@ def _normalized_model_config() -> dict:
     raw = cfg.get_raw()
     model_cfg = raw.get("model", {}) or {}
     auxiliary_cfg = raw.get("auxiliary", {}) or {}
-    normalized = copy.deepcopy(model_cfg)
+
+    if isinstance(model_cfg, str):
+        normalized = {"default_model": model_cfg.strip()}
+    elif isinstance(model_cfg, dict):
+        normalized = copy.deepcopy(model_cfg)
+    else:
+        normalized = {}
+
+    model_cfg = normalized
+    if not isinstance(auxiliary_cfg, dict):
+        auxiliary_cfg = {}
+
     if "default_model" not in normalized and model_cfg.get("default"):
         normalized["default_model"] = model_cfg.get("default")
     if "default_provider" not in normalized and model_cfg.get("provider"):
@@ -2592,8 +2603,13 @@ def _provider_default_base_url(provider: str = "") -> str:
     return PROVIDER_DEFAULT_BASE_URLS.get(normalized, "")
 
 
-def _normalize_provider_profile(entry: dict) -> dict:
-    normalized = copy.deepcopy(entry or {})
+def _normalize_provider_profile(entry: dict | str | None) -> dict:
+    if isinstance(entry, str):
+        entry = {"name": entry}
+    elif not isinstance(entry, dict):
+        entry = {}
+
+    normalized = copy.deepcopy(entry)
     normalized["name"] = str(normalized.get("name") or "").strip()
     normalized["base_url"] = str(normalized.get("base_url") or "").strip()
     normalized["model"] = str(normalized.get("model") or "").strip()

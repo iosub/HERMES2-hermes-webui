@@ -1978,6 +1978,59 @@ Sidecar output:
         self.assertTrue(any(profile["name"] == "custom" for profile in profiles))
         self.assertEqual(data["roles"]["primary"]["profile"], "custom")
 
+    def test_provider_screens_accept_legacy_string_custom_provider_entries(self):
+        mod.cfg._config = {
+            "custom_providers": ["openrouter"],
+            "model": {
+                "default_profile": "openrouter",
+                "default_provider": "openrouter",
+                "default_model": "openai/gpt-5.4-mini",
+            },
+        }
+
+        providers_resp = self.client.get("/api/providers", headers=self.headers)
+        model_roles_resp = self.client.get("/api/model-roles", headers=self.headers)
+        capabilities_resp = self.client.get("/api/capabilities", headers=self.headers)
+
+        self.assertEqual(providers_resp.status_code, 200, providers_resp.data)
+        self.assertEqual(model_roles_resp.status_code, 200, model_roles_resp.data)
+        self.assertEqual(capabilities_resp.status_code, 200, capabilities_resp.data)
+
+        providers_data = providers_resp.get_json()
+        model_roles_data = model_roles_resp.get_json()
+        capabilities_data = capabilities_resp.get_json()
+
+        self.assertEqual(providers_data["custom"][0]["name"], "openrouter")
+        self.assertTrue(any(profile["name"] == "openrouter" for profile in model_roles_data["profiles"]))
+        self.assertTrue(any(profile["name"] == "openrouter" for profile in capabilities_data["context"]["provider_profiles"]))
+
+    def test_provider_screens_accept_legacy_string_model_config(self):
+        mod.cfg._config = {
+            "model": "qwen3.5:397b",
+            "auxiliary": {
+                "vision": {
+                    "provider": "auto",
+                    "model": "qwen3.5:cloud",
+                    "base_url": "https://ollama.com/v1",
+                    "api_key": "",
+                }
+            },
+        }
+
+        providers_resp = self.client.get("/api/providers", headers=self.headers)
+        model_roles_resp = self.client.get("/api/model-roles", headers=self.headers)
+        capabilities_resp = self.client.get("/api/capabilities", headers=self.headers)
+
+        self.assertEqual(providers_resp.status_code, 200, providers_resp.data)
+        self.assertEqual(model_roles_resp.status_code, 200, model_roles_resp.data)
+        self.assertEqual(capabilities_resp.status_code, 200, capabilities_resp.data)
+
+        providers_data = providers_resp.get_json()
+        model_roles_data = model_roles_resp.get_json()
+
+        self.assertEqual(providers_data["default"]["model"], "qwen3.5:397b")
+        self.assertEqual(model_roles_data["roles"]["primary"]["model"], "qwen3.5:397b")
+
     def test_resolve_api_target_defaults_known_provider_base_url(self):
         with patch.dict(mod.os.environ, {"OPENROUTER_API_KEY": "router-secret"}, clear=True):
             mod.cfg._config = {
