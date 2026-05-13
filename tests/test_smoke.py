@@ -147,6 +147,25 @@ class HermesWebUISmokeTests(unittest.TestCase):
             self.assertEqual(cleared_data["messages"], [])
             self.assertIsNone(cleared_data["hermes_session_id"])
 
+    def test_clean_cli_output_prefers_final_hermes_box(self):
+        output = """
+╭─ ⚕ Hermes ───────────────────────────────────────────────────────────────────╮
+    La URL del blog no funciona (error 404). Voy a buscar más información.
+╰──────────────────────────────────────────────────────────────────────────────╯
+  ┊ 💻 preparing terminal…
+╭─ ⚕ Hermes ───────────────────────────────────────────────────────────────────╮
+    Basado en mi investigación, aquí está lo que he verificado:
+
+    1. Thinking Machines Lab existe.
+    2. El blog post es real.
+╰──────────────────────────────────────────────────────────────────────────────╯
+        """.strip()
+
+        self.assertEqual(
+            mod._clean_cli_output(output),
+            "Basado en mi investigación, aquí está lo que he verificado:\n\n1. Thinking Machines Lab existe.\n2. El blog post es real.",
+        )
+
     def test_service_control_success_semantics(self):
         def fake_run(returncode=0, stdout="ok", stderr=""):
             return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)

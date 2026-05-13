@@ -6938,6 +6938,7 @@ def _clean_cli_output(output: str) -> str:
     # Prefer the final Hermes response box when verbose CLI output is available.
     in_response_box = False
     response_lines = []
+    latest_response = ""
     for line in lines:
         if re.match(r'^\s*╭.*Hermes.*╮\s*$', line):
             in_response_box = True
@@ -6951,11 +6952,14 @@ def _clean_cli_output(output: str) -> str:
                 normalized_lines.pop()
             response = '\n'.join(normalized_lines).strip()
             if response:
-                return response
+                latest_response = response
             in_response_box = False
             continue
         if in_response_box:
             response_lines.append(line)
+
+    if latest_response:
+        return latest_response
 
     # Strip think blocks: matches <think>...</think> tags and everything between them
     output = re.sub(r'<think>.*?</think>', '', output, flags=re.DOTALL)
