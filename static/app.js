@@ -6911,6 +6911,43 @@ function chatMessageBadges(message) {
     return badges.length ? '<div class="chat-msg-badges">' + badges.join('') + '</div>' : '';
 }
 
+function chatCopyIconMarkup() {
+    return '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+}
+
+function chatExtractRenderedNodeCopyText(node) {
+    if (!node) return '';
+    const clone = node.cloneNode(true);
+    if (clone.querySelectorAll) {
+        clone.querySelectorAll('button,.chat-response-toolbar,.chat-response-section-toolbar').forEach(function(el) {
+            el.remove();
+        });
+    }
+    if (clone.classList && clone.classList.contains('chat-virtud-checklist')) {
+        const items = ['Virtud checklist'];
+        clone.querySelectorAll('.chat-virtud-checklist-body li').forEach(function(li) {
+            const text = (li.textContent || '').trim();
+            if (text) items.push(text);
+        });
+        return items.join('\n');
+    }
+    const tagName = clone.nodeType === 1 ? clone.tagName.toUpperCase() : '';
+    if (tagName === 'UL' || tagName === 'OL') {
+        return Array.from(clone.children || [])
+            .filter(function(child) { return child.tagName && child.tagName.toUpperCase() === 'LI'; })
+            .map(function(li) { return (li.textContent || '').trim(); })
+            .filter(Boolean)
+            .join('\n');
+    }
+    const text = clone.innerText || clone.textContent || '';
+    return String(text).replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function chatBuildResponseMarkup(content) {
+    if (!content) return '';
+    return '<div class="chat-response-body">' + chatRenderMd(content) + '</div>';
+}
+
 function chatBuildMessageNode(message) {
     const role = message.role;
     const content = message.content;
@@ -6927,19 +6964,29 @@ function chatBuildMessageNode(message) {
     const traceHtml = role === 'assistant' ? chatMessageTraceMarkup(message) : '';
     let bubbleHtml = '';
     if (content || traceHtml) {
-        const tmp = document.createElement('div');
-        tmp.innerHTML = chatRenderMd(content);
-        const plainText = tmp.textContent || tmp.innerText || content;
-        const escapedPlain = escH(plainText);
+        const renderedContent = role === 'assistant'
+            ? chatBuildResponseMarkup(content)
+            : chatRenderMd(content);
         bubbleHtml = '<div class="chat-bubble' + (traceHtml ? ' chat-bubble-has-trace' : '') + '">'
             + traceHtml
-            + (content ? '<div class="chat-bubble-content">' + chatRenderMd(content) + '</div>' : '')
-            + (content ? '<button class="chat-msg-copy" onclick="chatCopyMsg(this)" data-text="' + escapedPlain + '" title="Copy message"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>' : '')
+            + (content ? '<div class="chat-bubble-content">' + renderedContent + '</div>' : '')
             + '</div>';
     }
     const div = document.createElement('div');
     div.className = 'chat-msg ' + role + ' ' + chatMessageToneClass(profile) + (message?._pendingAssistant ? ' is-pending' : '');
-    div.innerHTML = '<div class="chat-msg-inner"><div class="chat-msg-avatar">' + avatarSvg + '</div><div class="chat-msg-body">' + chatMessageBadges(message) + bubbleHtml + filesHtml + (time ? '<div class="chat-msg-time">' + time + '</div>' : '') + '</div></div>';
+    const timeHtml = time
+        ? '<div class="chat-msg-time">'
+            + (role === 'assistant'
+                ? '<button class="chat-response-tool chat-msg-time-copy" type="button" data-copy-scope="message" onclick="chatCopyResponseBlock(this)" title="Copy response">' + chatCopyIconMarkup() + '</button>'
+                : '')
+            + '<span class="chat-msg-time-label">' + time + '</span>'
+            + '</div>'
+        : '';
+    div.innerHTML = '<div class="chat-msg-inner"><div class="chat-msg-avatar">' + avatarSvg + '</div><div class="chat-msg-body">' + chatMessageBadges(message) + bubbleHtml + filesHtml + timeHtml + '</div></div>';
+    if (role === 'assistant' && content) {
+        const copyBtn = div.querySelector('.chat-msg-time-copy');
+        if (copyBtn) copyBtn._copyText = content;
+    }
     return div;
 }
 
@@ -7576,6 +7623,22 @@ function chatAppendMsg(role, content, files = [], messageMeta = {}) {
 // ── COPY MESSAGE ───────────────────────────────────────────
 window.chatCopyMsg = function (btn) {
     const text = btn.getAttribute('data-text') || '';
+    navigator.clipboard.writeText(text).then(function() {
+        btn.classList.add('copied');
+        setTimeout(function() { btn.classList.remove('copied'); }, 1500);
+    }).catch(function() { toast('Copy failed', 'error'); });
+};
+
+window.chatCopyResponseBlock = function (btn) {
+    const rawText = typeof btn?._copyText === 'string' ? btn._copyText.trim() : '';
+    const responseBody = btn?.closest('.chat-msg-body')?.querySelector('.chat-response-body')
+        || btn?.closest('.chat-bubble-content')?.querySelector('.chat-response-body')
+        || btn?.closest('.chat-bubble-content');
+    const text = rawText || chatExtractRenderedNodeCopyText(responseBody);
+    if (!text) {
+        toast('Nothing to copy', 'error');
+        return;
+    }
     navigator.clipboard.writeText(text).then(function() {
         btn.classList.add('copied');
         setTimeout(function() { btn.classList.remove('copied'); }, 1500);

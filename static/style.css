@@ -3488,14 +3488,27 @@ pre code {
 
 /* Message time */
 .chat-msg-time {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
   font-size: 10px;
   color: var(--text-muted);
   margin-top: 4px;
   padding: 0 32px;
 }
 
+.chat-msg-time-label {
+  min-width: 0;
+}
+
+.chat-msg-time-copy {
+  width: 24px;
+  height: 24px;
+}
+
 .chat-msg.user .chat-msg-time {
-  text-align: right;
+  justify-content: flex-end;
 }
 
 /* Chat Thinking Indicator */
@@ -3727,7 +3740,37 @@ pre code {
 }
 
 .chat-bubble-content {
-  /* wrapper for content + copy button positioning */
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chat-response-body {
+  min-width: 0;
+}
+
+.chat-response-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.chat-response-tool:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.chat-response-tool.copied {
+  color: var(--accent-text);
+  border-color: var(--accent-text);
 }
 
 .chat-virtud-checklist {
