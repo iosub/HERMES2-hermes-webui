@@ -238,6 +238,84 @@ session_id: 20260513_124953_76cd78
         self.assertEqual(lines[1], "  ┊ 🌐 browser_navigate example.com/path?q=1")
         self.assertIn("  ┊ 🌐 browser_navigate example.com/path?q=1", lines)
 
+    def test_debug_trace_lines_for_chat_prefers_rich_raw_log(self):
+        request_id = "rich-trace"
+        mod._request_output_path(request_id).write_text(
+            "\n".join([
+                "Query: hi",
+                "  ┊ 📚 preparing skill_view…",
+                "  ┊ 🌐 navigate  x.com  2.0s",
+                "  ┊ 💻 $         pwd  0.1s",
+            ]),
+            encoding="utf-8",
+        )
+        session_path = Path(self.tmpdir.name) / "session_20260513_130200_tracebb.json"
+        session_path.write_text(json.dumps({
+            "session_id": "20260513_130200_tracebb",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "call_id": "call_1",
+                            "function": {
+                                "name": "skill_view",
+                                "arguments": json.dumps({"name": "virtus-check"}),
+                            },
+                        },
+                    ],
+                },
+                {"role": "tool", "name": "skill_view", "tool_call_id": "call_1", "content": json.dumps({"name": "virtus-check"})},
+            ],
+        }))
+
+        with patch.object(mod, "_find_updated_hermes_native_session", return_value=session_path):
+            lines = mod._debug_trace_lines_for_chat(request_id, "20260513_130200_tracebb")
+
+        self.assertEqual(lines[1], "  ┊ 📚 preparing skill_view…")
+        self.assertEqual(lines[2], "  ┊ 🌐 navigate  x.com  2.0s")
+
+    def test_debug_trace_lines_for_chat_falls_back_to_native_when_raw_log_is_plain(self):
+        request_id = "plain-trace"
+        mod._request_output_path(request_id).write_text(
+            "\n".join([
+                "session_id: 20260513_130300_tracecc",
+                "**respuesta**",
+            ]),
+            encoding="utf-8",
+        )
+        session_path = Path(self.tmpdir.name) / "session_20260513_130300_tracecc.json"
+        session_path.write_text(json.dumps({
+            "session_id": "20260513_130300_tracecc",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "call_id": "call_1",
+                            "function": {
+                                "name": "browser_navigate",
+                                "arguments": json.dumps({"url": "https://example.com/path?q=1"}),
+                            },
+                        },
+                    ],
+                },
+                {"role": "tool", "name": "browser_navigate", "tool_call_id": "call_1", "content": json.dumps({"url": "https://example.com/path?q=1"})},
+            ],
+        }))
+
+        with patch.object(mod, "_find_updated_hermes_native_session", return_value=session_path):
+            lines = mod._debug_trace_lines_for_chat(request_id, "20260513_130300_tracecc")
+
+        self.assertEqual(lines, [
+            "  ┊ 🌐 browser_navigate example.com/path?q=1",
+            "  ┊ 🌐 browser_navigate example.com/path?q=1",
+        ])
+
     def test_find_updated_hermes_native_session_ignores_stale_unmatched_files(self):
         stale_path = Path(self.tmpdir.name) / "session_20260513_074053_ff29d0.json"
         stale_path.write_text("{}")

@@ -5089,6 +5089,13 @@ function chatGetPendingAssistantMessage() {
     return index >= 0 ? chatState.localMessages[index] : null;
 }
 
+function chatFindLastUserMessageIndex() {
+    for (let index = chatState.localMessages.length - 1; index >= 0; index -= 1) {
+        if (chatState.localMessages[index]?.role === 'user') return index;
+    }
+    return -1;
+}
+
 function chatCreatePendingAssistantMessage() {
     const pendingAssistant = {
         role: 'assistant',
@@ -5248,8 +5255,10 @@ function chatRenderPersistentProgressBubble(statusLabel) {
     if (!chatState.persistDebugTrace) return;
     const latestMessage = chatState.localMessages[chatState.localMessages.length - 1] || null;
     if (statusLabel === 'Completed' && latestMessage?.role === 'assistant' && !latestMessage?._pendingAssistant) {
-        latestMessage.debug_trace_lines = Array.isArray(chatState.lastProgressLines) ? [...chatState.lastProgressLines] : [];
-        latestMessage.debug_trace_transport = chatState.lastProgressTransport || '';
+        const serverTraceLines = Array.isArray(latestMessage?.debug_trace_lines) ? latestMessage.debug_trace_lines.filter(Boolean) : [];
+        const liveTraceLines = Array.isArray(chatState.lastProgressLines) ? chatState.lastProgressLines.filter(Boolean) : [];
+        latestMessage.debug_trace_lines = serverTraceLines.length ? [...serverTraceLines] : [...liveTraceLines];
+        latestMessage.debug_trace_transport = latestMessage?.debug_trace_transport || chatState.lastProgressTransport || '';
         latestMessage.debug_trace_status = statusLabel || chatState.lastProgressStatus || 'Completed';
         latestMessage.show_debug_trace = true;
         chatRenderMessages();
@@ -7495,8 +7504,11 @@ window.chatSend = async function () {
         chatClearRequestErrorNotice();
         chatState.currentSessionId = resp.session_id;
         chatApplySessionMetadata(resp.session || null);
-        if (resp.user_message && chatState.localMessages.length > 0) {
-            chatState.localMessages[chatState.localMessages.length - 1] = resp.user_message;
+        if (resp.user_message) {
+            const latestUserIndex = chatFindLastUserMessageIndex();
+            if (latestUserIndex >= 0) {
+                chatState.localMessages[latestUserIndex] = resp.user_message;
+            }
         }
         const assistantMsg = resp.assistant_message || { role: 'assistant', content: resp.response, timestamp: new Date().toISOString() };
         const pendingAssistantIndex = chatFindPendingAssistantIndex();
@@ -7504,6 +7516,10 @@ window.chatSend = async function () {
             chatState.localMessages[pendingAssistantIndex] = assistantMsg;
         } else {
             chatState.localMessages.push(assistantMsg);
+        }
+        if (Array.isArray(assistantMsg?.debug_trace_lines) && assistantMsg.debug_trace_lines.length) {
+            chatState.lastProgressLines = [...assistantMsg.debug_trace_lines];
+            chatState.lastProgressTransport = assistantMsg.debug_trace_transport || chatState.lastProgressTransport || '';
         }
         chatRenderMessages();
         chatSetDebugTraceStatus('Completed');

@@ -7162,13 +7162,28 @@ def _load_hermes_native_session_trace_lines(path: Path) -> list[str]:
     return _truncate_recent_lines(lines, limit=120)
 
 
+def _looks_like_rich_cli_trace(lines: list[str]) -> bool:
+    rows = [str(line or "") for line in (lines or []) if str(line or "").strip()]
+    if not rows:
+        return False
+    tool_progress = sum(1 for line in rows if re.search(r"^\s*┊\s+[📚🌐💻🔍🧠⚙]", line))
+    if tool_progress >= 2:
+        return True
+    tool_progress = sum(1 for line in rows if re.search(r"^\s*┊\s+", line))
+    return tool_progress >= 3
+
+
 def _debug_trace_lines_for_chat(request_id: str, hermes_session_id: str | None) -> list[str]:
+    raw_lines = _request_progress_lines(request_id)
+    if _looks_like_rich_cli_trace(raw_lines):
+        return raw_lines
+
     native_path = _find_updated_hermes_native_session(None, hermes_session_id)
     if native_path:
         native_lines = _load_hermes_native_session_trace_lines(native_path)
         if native_lines:
             return native_lines
-    return _request_progress_lines(request_id)
+    return raw_lines
 
 
 def _extract_cli_reply_after_session_marker(output: str) -> str:
