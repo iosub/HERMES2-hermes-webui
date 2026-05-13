@@ -5001,20 +5001,15 @@ function chatBuildProgressGroups(lines = []) {
     const rows = Array.isArray(lines) ? lines.filter(Boolean) : [];
     const groups = [];
     let current = null;
-    let previousTrimmed = '';
 
     rows.forEach((line, index) => {
         const raw = String(line || '').replace(/\r/g, '');
         const trimmed = raw.trim();
         if (!trimmed) return;
-        const startsIndented = /^\s/.test(raw);
-        const structural = chatProgressIsStructuralLine(trimmed);
         const toolName = chatExtractProgressToolName(trimmed);
-        const previousEndedBlock = /[.?!:]$/.test(previousTrimmed) || /^<\//.test(previousTrimmed);
         const shouldStartNewGroup = !current
-            || structural
             || (!!toolName && (!current?.toolName || toolName !== current.toolName))
-            || (!startsIndented && previousEndedBlock);
+            || (!toolName && current?.toolName);
 
         if (shouldStartNewGroup) {
             const title = chatProgressGroupTitle(trimmed, groups.length);
@@ -5031,8 +5026,6 @@ function chatBuildProgressGroups(lines = []) {
             }
             current.lines.push(trimmed);
         }
-
-        previousTrimmed = trimmed;
     });
 
     return groups;
