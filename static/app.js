@@ -4968,6 +4968,42 @@ function chatRenderProgressError(message) {
     chatSetDebugTraceStatus('Error');
 }
 
+function chatProgressBubbleMarkup(title, logId, canStop = false) {
+    return '<div class="chat-thinking-bubble is-collapsed">'
+        + '<div class="chat-thinking-header">'
+        + '<span class="chat-thinking-icon"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span>'
+        + '<span class="chat-thinking-text">' + title + '</span>'
+        + '<button class="chat-progress-toggle" type="button" onclick="chatToggleProgressLog(this)" aria-expanded="false" title="Show debug trace">'
+        + '<span class="chat-progress-toggle-label">Show trace</span>'
+        + '<span class="chat-progress-toggle-icon" aria-hidden="true">+</span>'
+        + '</button>'
+        + (canStop ? '<button class="chat-stop-btn" id="chat-stop-btn" onclick="chatAbort()" title="Stop"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>' : '')
+        + '</div>'
+        + '<div class="chat-progress-log" id="' + logId + '" hidden></div>'
+        + '</div>';
+}
+
+function chatToggleProgressLog(trigger) {
+    const bubble = trigger?.closest('.chat-thinking-bubble');
+    if (!bubble) return;
+    const panel = bubble.querySelector('.chat-progress-log');
+    const label = trigger.querySelector('.chat-progress-toggle-label');
+    const icon = trigger.querySelector('.chat-progress-toggle-icon');
+    const willExpand = bubble.classList.contains('is-collapsed');
+
+    bubble.classList.toggle('is-collapsed', !willExpand);
+    if (panel) {
+        panel.hidden = !willExpand;
+        if (willExpand) {
+            panel.scrollTop = panel.scrollHeight;
+        }
+    }
+    trigger.setAttribute('aria-expanded', willExpand ? 'true' : 'false');
+    trigger.title = willExpand ? 'Hide debug trace' : 'Show debug trace';
+    if (label) label.textContent = willExpand ? 'Hide trace' : 'Show trace';
+    if (icon) icon.textContent = willExpand ? '−' : '+';
+}
+
 function chatRenderPersistentProgressBubble(statusLabel) {
     if (!chatState.persistDebugTrace) return;
     const container = document.getElementById('chat-messages');
@@ -4977,7 +5013,7 @@ function chatRenderPersistentProgressBubble(statusLabel) {
     const bubble = document.createElement('div');
     bubble.id = 'chat-persistent-progress';
     bubble.className = 'chat-thinking chat-persistent-progress';
-    bubble.innerHTML = '<div class="chat-thinking-bubble"><div class="chat-thinking-header"><span class="chat-thinking-icon"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span><span class="chat-thinking-text">Debug trace (' + escH(statusLabel || chatState.lastProgressStatus || 'Completed') + ')</span></div><div class="chat-progress-log" id="chat-persistent-progress-log"></div></div>';
+    bubble.innerHTML = chatProgressBubbleMarkup('Debug trace (' + escH(statusLabel || chatState.lastProgressStatus || 'Completed') + ')', 'chat-persistent-progress-log');
     container.appendChild(bubble);
     chatRenderLogPanel(document.getElementById('chat-persistent-progress-log'), chatState.lastProgressLines || [], chatState.lastProgressTransport || '');
 }
@@ -7105,7 +7141,7 @@ window.chatSend = async function () {
     const dots = document.createElement('div');
     dots.id = 'chat-thinking-dots';
     dots.className = 'chat-thinking';
-    dots.innerHTML = '<div class="chat-thinking-bubble"><div class="chat-thinking-header"><span class="chat-thinking-icon"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span><span class="chat-thinking-text">Hermes (' + escH(chatVisibleProfile()) + ') is thinking<span class="chat-thinking-ellipsis"></span></span>' + (chatState.currentRequestCancelSupported ? '<button class="chat-stop-btn" id="chat-stop-btn" onclick="chatAbort()" title="Stop"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>' : '') + '</div><div class="chat-progress-log" id="chat-progress-log"></div></div>';
+    dots.innerHTML = chatProgressBubbleMarkup('Hermes (' + escH(chatVisibleProfile()) + ') is thinking<span class="chat-thinking-ellipsis"></span>', 'chat-progress-log', chatState.currentRequestCancelSupported);
     if (msgs) msgs.appendChild(dots);
 
     // Swap send button to stop

@@ -3542,7 +3542,38 @@ pre code {
 }
 
 .chat-thinking-text {
+  flex: 1 1 auto;
   font-style: italic;
+}
+
+.chat-progress-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.chat-progress-toggle:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.chat-progress-toggle-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  font-size: 14px;
 }
 
 .chat-thinking-ellipsis::after {
@@ -3589,6 +3620,10 @@ pre code {
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.chat-thinking-bubble.is-collapsed .chat-progress-log {
+  display: none;
 }
 
 .chat-progress-empty {
