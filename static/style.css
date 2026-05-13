@@ -3622,6 +3622,71 @@ pre code {
   line-height: 1.5;
 }
 
+.chat-progress-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-progress-group {
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.chat-progress-group-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.chat-progress-group-toggle:hover {
+  background: rgba(99, 102, 241, 0.06);
+  color: var(--text-primary);
+}
+
+.chat-progress-group-badge {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.12);
+  color: var(--accent);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.chat-progress-group-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-progress-group-icon {
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+  font-size: 14px;
+}
+
+.chat-progress-group-body {
+  padding: 0 10px 10px;
+}
+
+.chat-progress-group-body .chat-progress-line:first-child {
+  margin-top: 0;
+}
+
 .chat-thinking-bubble.is-collapsed .chat-progress-log {
   display: none;
 }
@@ -3663,6 +3728,10 @@ pre code {
 
 .chat-bubble-content {
   /* wrapper for content + copy button positioning */
+}
+
+.chat-bubble-has-trace .chat-thinking-bubble {
+  margin-top: 12px;
 }
 
 .chat-msg-copy {

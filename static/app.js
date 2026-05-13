@@ -4774,6 +4774,7 @@ const chatState = {
     persistDebugTrace: false,
     lastProgressLines: [],
     lastProgressTransport: '',
+    progressGroupExpanded: {},
 };
 
 function makeRequestId() {
@@ -4926,49 +4927,193 @@ function chatBindProgressLog(panel) {
     });
 }
 
+function chatProgressGroupKey(title, index) {
+    const slug = String(title || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 48);
+    return 'progress-group-' + index + (slug ? '-' + slug : '');
+}
+
+function chatProgressGroupTitle(line, index) {
+    const trimmed = String(line || '').trim();
+    const boxed = trimmed.match(/^[┌├└]─\s*([^─]+?)\s*─+[┐┤┘]?$/);
+    if (boxed) return boxed[1].trim();
+    const tag = trimmed.match(/^<([^>]+)>$/);
+    if (tag) return tag[1].trim();
+    if (/^session_id\s*:/i.test(trimmed)) return 'Session';
+    const ordered = trimmed.match(/^(\d+)\.\s+/);
+    if (ordered) return 'Step ' + ordered[1];
+    if (/^[-*]\s+/.test(trimmed)) return trimmed.replace(/^[-*]\s+/, '').slice(0, 72);
+    return trimmed.slice(0, 72) || ('Block ' + (index + 1));
+}
+
+function chatProgressIsStructuralLine(line) {
+    const trimmed = String(line || '').trim();
+    return /^[┌├└]─/.test(trimmed)
+        || /^session_id\s*:/i.test(trimmed)
+        || /^<[^>]+>$/.test(trimmed)
+        || /^\*\*.*\*\*$/.test(trimmed)
+        || /^(\d+\.|[-*])\s+/.test(trimmed);
+}
+
+function chatBuildProgressGroups(lines = []) {
+    const rows = Array.isArray(lines) ? lines.filter(Boolean) : [];
+    const groups = [];
+    let current = null;
+    let previousTrimmed = '';
+
+    rows.forEach((line, index) => {
+        const raw = String(line || '').replace(/\r/g, '');
+        const trimmed = raw.trim();
+        if (!trimmed) return;
+        const startsIndented = /^\s/.test(raw);
+        const structural = chatProgressIsStructuralLine(trimmed);
+        const previousEndedBlock = /[.?!:]$/.test(previousTrimmed) || /^<\//.test(previousTrimmed);
+        const shouldStartNewGroup = !current
+            || structural
+            || (!startsIndented && previousEndedBlock);
+
+        if (shouldStartNewGroup) {
+            const title = chatProgressGroupTitle(trimmed, groups.length);
+            current = {
+                key: chatProgressGroupKey(title, groups.length),
+                title,
+                lines: [trimmed],
+            };
+            groups.push(current);
+        } else {
+            current.lines.push(trimmed);
+        }
+
+        previousTrimmed = trimmed;
+    });
+
+    return groups;
+}
+
+function chatProgressGroupMarkup(group, index) {
+    const expanded = chatState.progressGroupExpanded[group.key] === true;
+    return '<div class="chat-progress-group' + (expanded ? ' is-open' : '') + '" data-group-key="' + escA(group.key) + '">'
+        + '<button class="chat-progress-group-toggle" type="button" onclick="chatToggleProgressGroup(this)" aria-expanded="' + (expanded ? 'true' : 'false') + '" title="Toggle trace block">'
+        + '<span class="chat-progress-group-badge">Block ' + (index + 1) + '</span>'
+        + '<span class="chat-progress-group-title">' + escH(group.title) + '</span>'
+        + '<span class="chat-progress-group-icon" aria-hidden="true">' + (expanded ? '−' : '+') + '</span>'
+        + '</button>'
+        + '<div class="chat-progress-group-body"' + (expanded ? '' : ' hidden') + '>'
+        + group.lines.map(line => '<div class="chat-progress-line">' + escH(line) + '</div>').join('')
+        + '</div>'
+        + '</div>';
+}
+
 function chatRenderLogPanel(panel, lines = [], transport = '') {
     if (!panel) return;
     chatBindProgressLog(panel);
     const shouldAutoScroll = panel.dataset.autoScroll !== 'false';
+    panel.innerHTML = chatProgressPanelInnerHtml(lines, transport);
+    if (shouldAutoScroll) {
+        panel.scrollTop = panel.scrollHeight;
+    }
+}
+
+function chatProgressPanelInnerHtml(lines = [], transport = '') {
     const rows = Array.isArray(lines) ? lines.filter(Boolean) : [];
     if (!rows.length) {
-        panel.innerHTML = '<div class="chat-progress-empty">' + escH(
+        return '<div class="chat-progress-empty">' + escH(
             transport === 'cli'
                 ? 'Waiting for Hermes CLI activity...'
                 : 'Live tool activity is only available for Hermes CLI transport.'
         ) + '</div>';
-        return;
     }
-    panel.innerHTML = rows.map(line => '<div class="chat-progress-line">' + escH(line) + '</div>').join('');
-    if (shouldAutoScroll) {
-        panel.scrollTop = panel.scrollHeight;
+    const groups = chatBuildProgressGroups(rows);
+    if (groups.length <= 1) {
+        return rows.map(line => '<div class="chat-progress-line">' + escH(line) + '</div>').join('');
     }
+    return '<div class="chat-progress-groups">' + groups.map(chatProgressGroupMarkup).join('') + '</div>';
 }
 
 function chatSetDebugTraceStatus(label) {
     chatState.lastProgressStatus = label || 'Idle';
 }
 
+function chatFindPendingAssistantIndex() {
+    for (let index = chatState.localMessages.length - 1; index >= 0; index -= 1) {
+        if (chatState.localMessages[index]?._pendingAssistant) return index;
+    }
+    return -1;
+}
+
+function chatGetPendingAssistantMessage() {
+    const index = chatFindPendingAssistantIndex();
+    return index >= 0 ? chatState.localMessages[index] : null;
+}
+
+function chatCreatePendingAssistantMessage() {
+    const pendingAssistant = {
+        role: 'assistant',
+        content: '',
+        timestamp: new Date().toISOString(),
+        profile: chatVisibleProfile(),
+        _pendingAssistant: true,
+        debug_trace_lines: Array.isArray(chatState.lastProgressLines) ? [...chatState.lastProgressLines] : [],
+        debug_trace_transport: chatState.lastProgressTransport || '',
+        debug_trace_status: chatState.cancelRequested ? 'Cancelling' : 'Running',
+        show_debug_trace: true,
+    };
+    chatState.localMessages.push(pendingAssistant);
+    return pendingAssistant;
+}
+
+function chatEnsurePendingAssistantMessage() {
+    return chatGetPendingAssistantMessage() || chatCreatePendingAssistantMessage();
+}
+
+function chatRemovePendingAssistantMessage() {
+    const index = chatFindPendingAssistantIndex();
+    if (index >= 0) {
+        chatState.localMessages.splice(index, 1);
+    }
+}
+
+function chatActiveProgressPanel() {
+    return document.querySelector('#chat-messages .chat-msg.assistant.is-pending .chat-progress-log');
+}
+
 function chatRenderProgressLines(lines = [], transport = '') {
-    const panel = document.getElementById('chat-progress-log');
-    chatState.lastProgressLines = Array.isArray(lines) ? lines.filter(Boolean) : [];
+    const filteredLines = Array.isArray(lines) ? lines.filter(Boolean) : [];
+    const panel = chatActiveProgressPanel();
+    const pendingAssistant = chatGetPendingAssistantMessage();
+    chatState.lastProgressLines = filteredLines;
     chatState.lastProgressTransport = transport || '';
-    chatRenderLogPanel(panel, lines, transport);
+    if (pendingAssistant) {
+        pendingAssistant.debug_trace_lines = [...filteredLines];
+        pendingAssistant.debug_trace_transport = chatState.lastProgressTransport;
+        pendingAssistant.debug_trace_status = chatState.cancelRequested ? 'Cancelling' : (chatState.isThinking ? 'Running' : 'Updated');
+    }
+    chatRenderLogPanel(panel, filteredLines, transport);
     chatSetDebugTraceStatus(chatState.isThinking ? 'Running' : 'Updated');
 }
 
 function chatRenderProgressError(message) {
-    const panel = document.getElementById('chat-progress-log');
+    const panel = chatActiveProgressPanel();
+    const pendingAssistant = chatGetPendingAssistantMessage();
     if (panel) {
         chatBindProgressLog(panel);
         panel.innerHTML = '<div class="chat-progress-error">' + escH(message || 'Live progress is temporarily unavailable.') + '</div>';
     }
     chatState.lastProgressLines = [message || 'Live progress is temporarily unavailable.'];
     chatState.lastProgressTransport = 'cli';
+    if (pendingAssistant) {
+        pendingAssistant.debug_trace_lines = [...chatState.lastProgressLines];
+        pendingAssistant.debug_trace_transport = 'cli';
+        pendingAssistant.debug_trace_status = 'Error';
+    }
     chatSetDebugTraceStatus('Error');
 }
 
-function chatProgressBubbleMarkup(title, logId, canStop = false) {
+function chatProgressBubbleMarkup(title, logId = '', canStop = false, lines = [], transport = '') {
+    const logIdAttr = logId ? ' id="' + logId + '"' : '';
     return '<div class="chat-thinking-bubble is-collapsed">'
         + '<div class="chat-thinking-header">'
         + '<span class="chat-thinking-icon"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span>'
@@ -4979,8 +5124,24 @@ function chatProgressBubbleMarkup(title, logId, canStop = false) {
         + '</button>'
         + (canStop ? '<button class="chat-stop-btn" id="chat-stop-btn" onclick="chatAbort()" title="Stop"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>' : '')
         + '</div>'
-        + '<div class="chat-progress-log" id="' + logId + '" hidden></div>'
+        + '<div class="chat-progress-log"' + logIdAttr + ' hidden>' + chatProgressPanelInnerHtml(lines, transport) + '</div>'
         + '</div>';
+}
+
+function chatMessageTraceMarkup(message) {
+    const isPending = !!message?._pendingAssistant;
+    const shouldShowTrace = isPending || !!message?.show_debug_trace;
+    if (!shouldShowTrace) return '';
+    const title = isPending
+        ? 'Hermes (' + escH(message?.profile || chatVisibleProfile()) + ') is thinking<span class="chat-thinking-ellipsis"></span>'
+        : 'Debug trace (' + escH(message?.debug_trace_status || 'Completed') + ')';
+    return chatProgressBubbleMarkup(
+        title,
+        isPending ? 'chat-progress-log' : '',
+        isPending && chatState.currentRequestCancelSupported,
+        message?.debug_trace_lines || [],
+        message?.debug_trace_transport || ''
+    );
 }
 
 function chatToggleProgressLog(trigger) {
@@ -5004,8 +5165,38 @@ function chatToggleProgressLog(trigger) {
     if (icon) icon.textContent = willExpand ? '−' : '+';
 }
 
+function chatToggleProgressGroup(trigger) {
+    const group = trigger?.closest('.chat-progress-group');
+    if (!group) return;
+    const body = group.querySelector('.chat-progress-group-body');
+    const icon = trigger.querySelector('.chat-progress-group-icon');
+    const groupKey = group.dataset.groupKey || '';
+    const willExpand = trigger.getAttribute('aria-expanded') !== 'true';
+
+    trigger.setAttribute('aria-expanded', willExpand ? 'true' : 'false');
+    group.classList.toggle('is-open', willExpand);
+    if (body) {
+        body.hidden = !willExpand;
+    }
+    if (icon) {
+        icon.textContent = willExpand ? '−' : '+';
+    }
+    if (groupKey) {
+        chatState.progressGroupExpanded[groupKey] = willExpand;
+    }
+}
+
 function chatRenderPersistentProgressBubble(statusLabel) {
     if (!chatState.persistDebugTrace) return;
+    const latestMessage = chatState.localMessages[chatState.localMessages.length - 1] || null;
+    if (statusLabel === 'Completed' && latestMessage?.role === 'assistant' && !latestMessage?._pendingAssistant) {
+        latestMessage.debug_trace_lines = Array.isArray(chatState.lastProgressLines) ? [...chatState.lastProgressLines] : [];
+        latestMessage.debug_trace_transport = chatState.lastProgressTransport || '';
+        latestMessage.debug_trace_status = statusLabel || chatState.lastProgressStatus || 'Completed';
+        latestMessage.show_debug_trace = true;
+        chatRenderMessages();
+        return;
+    }
     const container = document.getElementById('chat-messages');
     if (!container) return;
     const existing = document.getElementById('chat-persistent-progress');
@@ -6652,6 +6843,7 @@ function chatRenderMessages() {
     if (shouldAutoScroll) {
         msgs.scrollTop = msgs.scrollHeight;
     }
+    msgs.querySelectorAll('.chat-progress-log').forEach(chatBindProgressLog);
     chatEnhanceCodeBlocks();
 }
 
@@ -6679,16 +6871,21 @@ function chatBuildMessageNode(message) {
     if (files && files.length > 0) {
         filesHtml = '<div class="chat-msg-files">' + files.map(f => '<span class="chat-file-tag"><span>' + UI_ICONS.paperclip + '</span>' + escH(f) + '</span>').join('') + '</div>';
     }
+    const traceHtml = role === 'assistant' ? chatMessageTraceMarkup(message) : '';
     let bubbleHtml = '';
-    if (content) {
+    if (content || traceHtml) {
         const tmp = document.createElement('div');
         tmp.innerHTML = chatRenderMd(content);
         const plainText = tmp.textContent || tmp.innerText || content;
         const escapedPlain = escH(plainText);
-        bubbleHtml = '<div class="chat-bubble"><div class="chat-bubble-content">' + chatRenderMd(content) + '</div><button class="chat-msg-copy" onclick="chatCopyMsg(this)" data-text="' + escapedPlain + '" title="Copy message"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>';
+        bubbleHtml = '<div class="chat-bubble' + (traceHtml ? ' chat-bubble-has-trace' : '') + '">'
+            + (content ? '<div class="chat-bubble-content">' + chatRenderMd(content) + '</div>' : '')
+            + traceHtml
+            + (content ? '<button class="chat-msg-copy" onclick="chatCopyMsg(this)" data-text="' + escapedPlain + '" title="Copy message"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>' : '')
+            + '</div>';
     }
     const div = document.createElement('div');
-    div.className = 'chat-msg ' + role + ' ' + chatMessageToneClass(profile);
+    div.className = 'chat-msg ' + role + ' ' + chatMessageToneClass(profile) + (message?._pendingAssistant ? ' is-pending' : '');
     div.innerHTML = '<div class="chat-msg-inner"><div class="chat-msg-avatar">' + avatarSvg + '</div><div class="chat-msg-body">' + chatMessageBadges(message) + bubbleHtml + filesHtml + (time ? '<div class="chat-msg-time">' + time + '</div>' : '') + '</div></div>';
     return div;
 }
@@ -7132,17 +7329,8 @@ window.chatSend = async function () {
         files: pendingUploads.map(f => ({ ...f, preview_url: null })),
     };
 
-    // Show thinking indicator
-    const existing = document.getElementById('chat-thinking-dots');
-    if (existing) existing.remove();
     const persisted = document.getElementById('chat-persistent-progress');
     if (persisted) persisted.remove();
-    const msgs = document.getElementById('chat-messages');
-    const dots = document.createElement('div');
-    dots.id = 'chat-thinking-dots';
-    dots.className = 'chat-thinking';
-    dots.innerHTML = chatProgressBubbleMarkup('Hermes (' + escH(chatVisibleProfile()) + ') is thinking<span class="chat-thinking-ellipsis"></span>', 'chat-progress-log', chatState.currentRequestCancelSupported);
-    if (msgs) msgs.appendChild(dots);
 
     // Swap send button to stop
     const sendBtn = document.getElementById('chat-send-btn');
@@ -7175,6 +7363,8 @@ window.chatSend = async function () {
         profile: userMsg.profile,
         transport: userMsg.transport,
     });
+    const pendingAssistant = chatCreatePendingAssistantMessage();
+    chatAppendMsg('assistant', '', [], pendingAssistant);
     input.value = '';
     chatAutoResize(input);
     document.getElementById('chat-send-btn').disabled = !chatState.currentRequestCancelSupported;
@@ -7201,7 +7391,12 @@ window.chatSend = async function () {
             chatState.localMessages[chatState.localMessages.length - 1] = resp.user_message;
         }
         const assistantMsg = resp.assistant_message || { role: 'assistant', content: resp.response, timestamp: new Date().toISOString() };
-        chatState.localMessages.push(assistantMsg);
+        const pendingAssistantIndex = chatFindPendingAssistantIndex();
+        if (pendingAssistantIndex >= 0) {
+            chatState.localMessages[pendingAssistantIndex] = assistantMsg;
+        } else {
+            chatState.localMessages.push(assistantMsg);
+        }
         chatRenderMessages();
         chatSetDebugTraceStatus('Completed');
         chatRenderPersistentProgressBubble('Completed');
@@ -7214,9 +7409,12 @@ window.chatSend = async function () {
 
         if (e.name === 'AbortError' || chatState.cancelRequested) {
             chatSetDebugTraceStatus('Cancelled');
+            chatRemovePendingAssistantMessage();
             chatState.localMessages.pop();
             const container = document.getElementById('chat-messages');
             if (container) {
+                const pendingAssistantBubble = container.querySelector('.chat-msg.assistant.is-pending');
+                if (pendingAssistantBubble) pendingAssistantBubble.remove();
                 const uls = container.querySelectorAll('.chat-msg.user');
                 const last = uls[uls.length - 1];
                 if (last) last.remove();
@@ -7233,10 +7431,13 @@ window.chatSend = async function () {
         }
         // Roll back the optimistic user message — it was never processed
         chatSetDebugTraceStatus('Failed');
+        chatRemovePendingAssistantMessage();
         chatState.localMessages.pop(); // remove failed user msg from state
         // Now find and remove the user bubble (always the last .user in the container)
         const container = document.getElementById('chat-messages');
         if (container) {
+            const pendingAssistantBubble = container.querySelector('.chat-msg.assistant.is-pending');
+            if (pendingAssistantBubble) pendingAssistantBubble.remove();
             const userBubbles = container.querySelectorAll('.chat-msg.user');
             const lastUser = userBubbles[userBubbles.length - 1];
             if (lastUser) lastUser.remove();
@@ -7460,15 +7661,13 @@ function chatFileIcon(mime) {
 function chatFmtSize(b) { return b < 1024 ? b + ' B' : b < 1048576 ? (b / 1024).toFixed(1) + ' KB' : (b / 1048576).toFixed(1) + ' MB'; }
 
 function chatRestoreThinkingBubble() {
-    if (!document.getElementById('chat-thinking-dots')) {
-        const msgs = document.getElementById('chat-messages');
-        if (!msgs) return;
-        const dots = document.createElement('div');
-        dots.id = 'chat-thinking-dots';
-        dots.className = 'chat-thinking';
-        dots.innerHTML = '<div class="chat-thinking-bubble"><div class="chat-thinking-header"><span class="chat-thinking-icon"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span><span class="chat-thinking-text">Hermes (' + escH(chatVisibleProfile()) + ') is thinking<span class="chat-thinking-ellipsis"></span></span>' + (chatState.currentRequestCancelSupported ? '<button class="chat-stop-btn" id="chat-stop-btn" onclick="chatAbort()" title="Stop"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>' : '') + '</div><div class="chat-progress-log" id="chat-progress-log"></div></div>';
-        msgs.appendChild(dots);
-    }
+    const pendingAssistant = chatEnsurePendingAssistantMessage();
+    pendingAssistant.profile = pendingAssistant.profile || chatVisibleProfile();
+    pendingAssistant.debug_trace_lines = Array.isArray(chatState.lastProgressLines) ? [...chatState.lastProgressLines] : [];
+    pendingAssistant.debug_trace_transport = chatState.lastProgressTransport || '';
+    pendingAssistant.debug_trace_status = chatState.cancelRequested ? 'Cancelling' : 'Running';
+    pendingAssistant.show_debug_trace = true;
+    chatRenderMessages();
     const sendBtn = document.getElementById('chat-send-btn');
     if (sendBtn && chatState.currentRequestCancelSupported) {
         sendBtn.disabled = false;
