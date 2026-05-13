@@ -160,6 +160,7 @@ def _normalize_hermes_profile_name(name: str | None) -> str:
 
 def _root_active_profile_name() -> str:
     active_profile_path = HERMES_HOME / "active_profile"
+    debug_trace_lines = []
     try:
         return _normalize_hermes_profile_name(active_profile_path.read_text(encoding="utf-8").strip())
     except Exception:
@@ -6943,7 +6944,12 @@ def _clean_cli_output(output: str) -> str:
             response_lines = []
             continue
         if in_response_box and re.match(r'^\s*╰.*╯\s*$', line):
-            response = '\n'.join(part.strip() for part in response_lines if part.strip()).strip()
+            normalized_lines = [part.strip() if part.strip() else '' for part in response_lines]
+            while normalized_lines and not normalized_lines[0]:
+                normalized_lines.pop(0)
+            while normalized_lines and not normalized_lines[-1]:
+                normalized_lines.pop()
+            response = '\n'.join(normalized_lines).strip()
             if response:
                 return response
             in_response_box = False
@@ -9286,6 +9292,8 @@ def api_chat():
         )
         return jsonify({"error": f"Unexpected chat error: {exc}", "request_id": request_id, "session_id": sid}), 500
     finally:
+        if request_id:
+            debug_trace_lines = _request_progress_lines(request_id)
         _remove_chat_request(request_id)
     assistant_msg = {"role": "assistant", "content": response_text,
                      "timestamp": datetime.now().isoformat(),
@@ -9293,6 +9301,11 @@ def api_chat():
                      "segment_index": active_segment.get("index"),
                      "profile": active_segment.get("profile") or sess.get("profile"),
                      "transport": sess.get("transport_mode") or request_plan["transport"]}
+    if debug_trace_lines:
+        assistant_msg["debug_trace_lines"] = debug_trace_lines
+        assistant_msg["debug_trace_transport"] = sess.get("transport_mode") or request_plan["transport"] or ""
+        assistant_msg["debug_trace_status"] = "Completed"
+        assistant_msg["show_debug_trace"] = True
     sess["messages"].append(assistant_msg)
     sess["updated"] = datetime.now().isoformat()
     _write_session(sess)
