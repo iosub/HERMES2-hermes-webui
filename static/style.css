@@ -3749,6 +3749,12 @@ pre code {
   min-width: 0;
 }
 
+.chat-response-body hr {
+  margin: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--border-light);
+}
+
 .chat-response-tool {
   display: inline-flex;
   align-items: center;

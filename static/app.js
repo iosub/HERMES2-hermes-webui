@@ -6945,7 +6945,7 @@ function chatExtractRenderedNodeCopyText(node) {
 
 function chatBuildResponseMarkup(content) {
     if (!content) return '';
-    return '<div class="chat-response-body">' + chatRenderMd(content) + '</div>';
+    return '<div class="chat-response-body">' + chatRenderMd(content, { assistantFormatting: true }) + '</div>';
 }
 
 function chatBuildMessageNode(message) {
@@ -7653,9 +7653,21 @@ window.chatCopyResponseBlock = function (btn) {
     }).catch(function() { toast('Copy failed', 'error'); });
 };
 
-function chatRenderMd(text) {
+function chatRenderMd(text, options) {
     if (!text) return '';
-    let h = escH(text);
+    const assistantFormatting = !!(options && options.assistantFormatting);
+    let source = String(text || '');
+    if (assistantFormatting) {
+        source = source
+            .replace(/^\s*[─—]{8,}\s*$/gm, '\n\n---\n\n')
+            .replace(/(^|\n\n)([A-ZÁÉÍÓÚÑ][^\n.:!?]{2,60})(\n\n)/g, function(match, before, title, after) {
+                const trimmed = String(title || '').trim();
+                if (!trimmed) return match;
+                if (/^(?:[-*]|\d+\.|<)/.test(trimmed)) return match;
+                return before + '## ' + trimmed + after;
+            });
+    }
+    let h = escH(source);
 
     // 1. Fenced code blocks and inline code are rendered first so they are
     // not touched by subsequent transforms (\n, \n\n, etc.).
@@ -7671,6 +7683,7 @@ function chatRenderMd(text) {
     h = h.replace(/^### (.+)$/gm, '<h3>$1</h3>');
     h = h.replace(/^## (.+)$/gm, '<h2>$1</h2>');
     h = h.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+    h = h.replace(/^---$/gm, '<hr>');
 
     // 2. Preserve list numbering/bullets instead of collapsing values like "269."
     h = h.replace(/^[-*] (.+)$/gm, '<li data-list="ul">$1</li>');
@@ -7712,7 +7725,17 @@ function chatRenderMd(text) {
     h = h.replace(/(<\/ol>)<\/p>/g, '$1');
     h = h.replace(/<p>(<blockquote>)/g, '$1');
     h = h.replace(/(<\/blockquote>)<\/p>/g, '$1');
-    h = h.replace(/<p><\/p>/g, '');
+    h = h.replace(/<p>(<hr>)<\/p>/g, '$1');
+    h = h.replace(/(<hr>)<\/p>/g, '$1');
+    h = h.replace(/<p><(ul|ol)>/g, '<$1>');
+    h = h.replace(/<\/(ul|ol)><\/p>/g, '</$1>');
+    h = h.replace(/<(ul|ol)>([\s\S]*?)<\/(ul|ol)>/g, function(match, openTag, inner, closeTag) {
+        if (openTag !== closeTag) return match;
+        return '<' + openTag + '>' + String(inner || '').replace(/<p>\s*<\/p>/g, '') + '</' + closeTag + '>';
+    });
+    h = h.replace(/<br\s*\/?\s*>\s*(<hr>)/gi, '$1');
+    h = h.replace(/(<hr>)\s*<br\s*\/?\s*>/gi, '$1');
+    h = h.replace(/<p>\s*<\/p>/g, '');
 
     h = h.replace(
         /(?:<p>)?&lt;virtud-checklist&gt;(?:<\/p>)?([\s\S]*?)(?:<p>)?&lt;\/virtud-checklist&gt;(?:<\/p>)?/gi,
@@ -7734,6 +7757,28 @@ function chatRenderMd(text) {
                 + '</div>';
         }
     );
+
+    if (assistantFormatting && typeof document !== 'undefined') {
+        const normalized = document.createElement('div');
+        normalized.innerHTML = h;
+        normalized.querySelectorAll('ol p:empty, ul p:empty').forEach(function(node) {
+            node.remove();
+        });
+        normalized.querySelectorAll('p').forEach(function(node) {
+            node.innerHTML = String(node.innerHTML || '').replace(/^(?:\s*<br\s*\/?\s*>\s*)+/i, '');
+            if (!String(node.textContent || '').trim() && !node.querySelector('img,code,a,strong,em,span')) {
+                node.remove();
+            }
+        });
+        normalized.querySelectorAll('hr').forEach(function(node) {
+            const next = node.nextElementSibling;
+            if (next && next.tagName === 'P') {
+                next.innerHTML = String(next.innerHTML || '').replace(/^(?:\s*<br\s*\/?\s*>\s*)+/i, '');
+                if (!String(next.textContent || '').trim()) next.remove();
+            }
+        });
+        h = normalized.innerHTML;
+    }
 
     return h;
 }
