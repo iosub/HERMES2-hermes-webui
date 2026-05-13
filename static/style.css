@@ -3730,6 +3730,37 @@ pre code {
   /* wrapper for content + copy button positioning */
 }
 
+.chat-virtud-checklist {
+  margin: 12px 0 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.35);
+  overflow: hidden;
+}
+
+.chat-virtud-checklist summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.chat-virtud-checklist summary::-webkit-details-marker {
+  display: none;
+}
+
+.chat-virtud-checklist-body {
+  padding: 0 12px 12px;
+}
+
+.chat-virtud-checklist[open] summary {
+  color: var(--text-primary);
+}
+
 .chat-bubble-has-trace .chat-thinking-bubble {
   margin-top: 12px;
 }

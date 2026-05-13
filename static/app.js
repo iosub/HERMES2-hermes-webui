@@ -7621,7 +7621,17 @@ function chatRenderMd(text) {
     h = h.replace(/(<\/ol>)<\/p>/g, '$1');
     h = h.replace(/<p>(<blockquote>)/g, '$1');
     h = h.replace(/(<\/blockquote>)<\/p>/g, '$1');
-    return h.replace(/<p><\/p>/g, '');
+    h = h.replace(/<p><\/p>/g, '');
+
+    h = h.replace(
+        /(?:<p>)?&lt;virtud-checklist&gt;(?:<\/p>)?([\s\S]*?)(?:<p>)?&lt;\/virtud-checklist&gt;(?:<\/p>)?/gi,
+        function(_, inner) {
+            const body = String(inner || '').replace(/^(<br\s*\/?\s*>)+|(<br\s*\/?\s*>)+$/gi, '');
+            return '<details class="chat-virtud-checklist"><summary>Virtud checklist</summary><div class="chat-virtud-checklist-body">' + body + '</div></details>';
+        }
+    );
+
+    return h;
 }
 
 window.chatKeyDown = function (e) {
