@@ -8501,8 +8501,16 @@ def _plan_chat_request(session: dict, files: list[Path]) -> dict:
 
 def _parse_hermes_chat_result(output: str) -> tuple[str, str | None]:
     session_match = re.search(r"(?mi)^session_id:\s*(\S+)\s*$", output)
-    hermes_session_id = session_match.group(1) if session_match else None
+    resume_match = re.search(r"(?mi)^\s*hermes\s+--resume\s+(\S+)\s*$", output)
+    summary_match = re.search(r"(?mi)^Session:\s*(\S+)\s*$", output)
+    hermes_session_id = None
+    for match in (session_match, resume_match, summary_match):
+        if match and match.group(1):
+            hermes_session_id = match.group(1)
+            break
     cleaned = re.sub(r"(?mi)^session_id:\s*\S+\s*$", "", output)
+    cleaned = re.sub(r"(?mi)^Resume this session with:\s*$", "", cleaned)
+    cleaned = re.sub(r"(?mi)^\s*hermes\s+--resume\s+\S+\s*$", "", cleaned)
     cleaned = re.sub(r"(?m)^↻ Resumed session .*$", "", cleaned)
     cleaned = re.sub(r"(?m)^Resumed session .*$", "", cleaned)
     return _clean_cli_output(cleaned), hermes_session_id
