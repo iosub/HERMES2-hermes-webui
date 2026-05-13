@@ -316,6 +316,60 @@ session_id: 20260513_124953_76cd78
             "  ┊ 🌐 browser_navigate example.com/path?q=1",
         ])
 
+    def test_filter_live_progress_lines_removes_reasoning_blocks(self):
+        lines = [
+            "Query: hola",
+            "Initializing agent...",
+            "┌─ Reasoning ─────────────────────┐",
+            "texto razonando",
+            "└────────────────────────────────┘",
+            "  ┊ 📚 preparing skill_view…",
+            "  ┊ 🌐 navigate  x.com  2.0s",
+        ]
+
+        filtered = mod._filter_live_progress_lines(lines)
+
+        self.assertEqual(filtered, [
+            "Query: hola",
+            "Initializing agent...",
+            "  ┊ 📚 preparing skill_view…",
+            "  ┊ 🌐 navigate  x.com  2.0s",
+        ])
+
+    def test_api_chat_status_filters_reasoning_from_live_progress(self):
+        request_id = "live-progress-filter"
+        mod._write_request_control(request_id, {
+            "request_id": request_id,
+            "session_id": "sid-1",
+            "status": "running",
+            "transport": "cli",
+            "cancel_supported": True,
+            "created_at": "2026-05-13T14:00:00",
+            "updated_at": "2026-05-13T14:00:01",
+            "pid": None,
+            "pgid": None,
+            "cancel_requested_at": None,
+            "output_path": str(mod._request_output_path(request_id)),
+        })
+        mod._request_output_path(request_id).write_text(
+            "\n".join([
+                "Query: hola",
+                "┌─ Reasoning ─────────────────────┐",
+                "texto razonando",
+                "└────────────────────────────────┘",
+                "  ┊ 📚 preparing skill_view…",
+            ]),
+            encoding="utf-8",
+        )
+
+        resp = self.client.get(f"/api/chat/status?request_id={request_id}", headers=self.headers)
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.get_json()["progress_lines"], [
+            "Query: hola",
+            "  ┊ 📚 preparing skill_view…",
+        ])
+
     def test_find_updated_hermes_native_session_ignores_stale_unmatched_files(self):
         stale_path = Path(self.tmpdir.name) / "session_20260513_074053_ff29d0.json"
         stale_path.write_text("{}")

@@ -1910,6 +1910,25 @@ def _request_progress_lines(request_id: str, limit: int = 0) -> list[str]:
         return []
 
 
+def _filter_live_progress_lines(lines: list[str]) -> list[str]:
+    filtered = []
+    in_reasoning_block = False
+    for raw_line in lines or []:
+        line = str(raw_line or "").rstrip("\n")
+        trimmed = line.strip()
+        if not trimmed:
+            continue
+        if re.match(r"^[┌├└]─\s*Reasoning\s*─+[┐┤┘]?$", trimmed):
+            in_reasoning_block = True
+            continue
+        if in_reasoning_block:
+            if re.match(r"^[└┘]?[─]+", trimmed) or re.match(r"^[└├┌]─", trimmed):
+                in_reasoning_block = False
+            continue
+        filtered.append(line)
+    return filtered
+
+
 def _active_request_for_session(session_id: str) -> dict | None:
     sid = str(session_id or "").strip()
     if not sid:
@@ -8810,7 +8829,7 @@ def _call_hermes_prompt(
             _update_chat_request(request_id, status="cancelled")
             raise ChatRequestCancelled("Request cancelled before Hermes started")
     native_session_snapshot = _snapshot_hermes_native_sessions()
-    cmd = [str(_selected_hermes_bin()), "chat", "-Q"]
+    cmd = [str(_selected_hermes_bin()), "chat"]
     if session.get("hermes_session_id"):
         cmd.extend(["--resume", session["hermes_session_id"]])
     cmd.extend(["-q", prompt])
@@ -10069,7 +10088,7 @@ def api_chat_status():
             "session_id": payload.get("session_id") or "",
             "created_at": payload.get("created_at") or "",
             "updated_at": payload.get("updated_at") or "",
-            "progress_lines": _request_progress_lines(request_id),
+            "progress_lines": _filter_live_progress_lines(_request_progress_lines(request_id)),
             "error": payload.get("error") or "",
         })
         response.headers["Cache-Control"] = "no-store, no-cache, max-age=0"
