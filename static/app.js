@@ -7691,6 +7691,8 @@ function chatRenderMd(text) {
     });
     h = h.replace(/\n\n/g, '</p><p>');
     h = h.replace(/\n/g, '<br>');
+    h = h.replace(/(<\/?(?:ul|ol|li)\b[^>]*>)\s*<br\s*\/?\s*>/gi, '$1');
+    h = h.replace(/<br\s*\/?\s*>\s*(<\/?(?:ul|ol|li)\b[^>]*>)/gi, '$1');
     if (!h.startsWith('<')) h = '<p>' + h + '</p>';
     h = h.replace(/<p>(<h[1-3]>)/g, '$1');
     h = h.replace(/(<\/h[1-3]>)<\/p>/g, '$1');
