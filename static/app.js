@@ -4936,6 +4936,45 @@ function chatProgressGroupKey(title, index) {
     return 'progress-group-' + index + (slug ? '-' + slug : '');
 }
 
+function chatExtractProgressToolName(line) {
+    const text = String(line || '').trim();
+    if (!text) return '';
+    const explicit = text.match(/^(?:[┊\s\p{Emoji_Presentation}\p{Extended_Pictographic}$]+)?([a-z]+(?:_[a-z0-9]+)+)\b/iu);
+    if (explicit) return explicit[1].toLowerCase();
+    const preparing = text.match(/preparing\s+([a-z][a-z0-9_-]*)/i);
+    if (preparing) return preparing[1].toLowerCase();
+    const browserVerb = text.match(/^[┊\s\p{Emoji_Presentation}\p{Extended_Pictographic}]*?(navigate|scroll|snapshot|vision|click|type|hover|drag)\b/iu);
+    if (browserVerb) return 'browser_' + browserVerb[1].toLowerCase();
+    return '';
+}
+
+function chatProgressToolActionLabel(line) {
+    const text = String(line || '').replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    const stripped = text
+        .replace(/^[┊\s\p{Emoji_Presentation}\p{Extended_Pictographic}$]+/gu, '')
+        .replace(/\s+\d+(?:\.\d+)?s$/i, '')
+        .trim();
+    if (!stripped) return '';
+    if (/^preparing\s+/i.test(stripped)) return '';
+    if (/^(Query:|Initializing agent|Reasoning|session_id:)/i.test(stripped)) return '';
+    if (/^[┌└─]+$/.test(stripped)) return '';
+    return stripped;
+}
+
+function chatProgressToolLabel(toolName) {
+    return String(toolName || '').trim() || 'trace';
+}
+
+function chatProgressGroupDisplayTitle(group) {
+    if (group?.toolName) {
+        const actionLine = (group.lines || []).find(line => chatProgressToolActionLabel(line));
+        if (actionLine) return chatProgressToolActionLabel(actionLine);
+        return 'preparing ' + group.toolName;
+    }
+    return group?.title || 'trace';
+}
+
 function chatProgressGroupTitle(line, index) {
     const trimmed = String(line || '').trim();
     const boxed = trimmed.match(/^[┌├└]─\s*([^─]+?)\s*─+[┐┤┘]?$/);
@@ -4970,9 +5009,11 @@ function chatBuildProgressGroups(lines = []) {
         if (!trimmed) return;
         const startsIndented = /^\s/.test(raw);
         const structural = chatProgressIsStructuralLine(trimmed);
+        const toolName = chatExtractProgressToolName(trimmed);
         const previousEndedBlock = /[.?!:]$/.test(previousTrimmed) || /^<\//.test(previousTrimmed);
         const shouldStartNewGroup = !current
             || structural
+            || (!!toolName && (!current?.toolName || toolName !== current.toolName))
             || (!startsIndented && previousEndedBlock);
 
         if (shouldStartNewGroup) {
@@ -4980,10 +5021,14 @@ function chatBuildProgressGroups(lines = []) {
             current = {
                 key: chatProgressGroupKey(title, groups.length),
                 title,
+                toolName,
                 lines: [trimmed],
             };
             groups.push(current);
         } else {
+            if (!current.toolName && toolName) {
+                current.toolName = toolName;
+            }
             current.lines.push(trimmed);
         }
 
@@ -4995,10 +5040,12 @@ function chatBuildProgressGroups(lines = []) {
 
 function chatProgressGroupMarkup(group, index) {
     const expanded = chatState.progressGroupExpanded[group.key] === true;
+    const badgeText = chatProgressToolLabel(group.toolName || '');
+    const groupTitle = chatProgressGroupDisplayTitle(group);
     return '<div class="chat-progress-group' + (expanded ? ' is-open' : '') + '" data-group-key="' + escA(group.key) + '">'
         + '<button class="chat-progress-group-toggle" type="button" onclick="chatToggleProgressGroup(this)" aria-expanded="' + (expanded ? 'true' : 'false') + '" title="Toggle trace block">'
-        + '<span class="chat-progress-group-badge">Block ' + (index + 1) + '</span>'
-        + '<span class="chat-progress-group-title">' + escH(group.title) + '</span>'
+        + '<span class="chat-progress-group-badge">' + escH(badgeText) + '</span>'
+        + '<span class="chat-progress-group-title">' + escH(groupTitle) + '</span>'
         + '<span class="chat-progress-group-icon" aria-hidden="true">' + (expanded ? '−' : '+') + '</span>'
         + '</button>'
         + '<div class="chat-progress-group-body"' + (expanded ? '' : ' hidden') + '>'
@@ -5726,11 +5773,6 @@ function chatRenderTransportControls() {
                     '<select id="chat-profile-select" class="chat-profile-select" onchange="chatHandleProfileDraftChange()">' + profileOptions + '</select>' +
                 '</div>' +
             '</div>' +
-        '</div>' +
-        '<div class="chat-transport-note">' + escH(note) + '</div>' +
-        '<div class="chat-runtime-note">' +
-            (activeSegment ? '<span class="badge">Current profile: ' + escH(activeSegment.profile || chatVisibleProfile()) + '</span> ' : '') +
-            escH(switchSummary) +
         '</div>';
     chatHandleProfileDraftChange();
 }

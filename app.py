@@ -6931,7 +6931,26 @@ def api_onboarding_get():
 # ===================================================================
 
 def _clean_cli_output(output: str) -> str:
-    """Strip CLI banner, box-drawing, tool list, metadata, and think blocks from hermes -q output."""
+    """Extract the final Hermes reply from verbose CLI output while discarding trace noise."""
+    lines = output.split('\n')
+
+    # Prefer the final Hermes response box when verbose CLI output is available.
+    in_response_box = False
+    response_lines = []
+    for line in lines:
+        if re.match(r'^\s*╭.*Hermes.*╮\s*$', line):
+            in_response_box = True
+            response_lines = []
+            continue
+        if in_response_box and re.match(r'^\s*╰.*╯\s*$', line):
+            response = '\n'.join(part.strip() for part in response_lines if part.strip()).strip()
+            if response:
+                return response
+            in_response_box = False
+            continue
+        if in_response_box:
+            response_lines.append(line)
+
     # Strip think blocks: matches <think>...</think> tags and everything between them
     output = re.sub(r'<think>.*?</think>', '', output, flags=re.DOTALL)
     lines = output.split('\n')
@@ -8501,7 +8520,7 @@ def _call_hermes_prompt(
         if state and state.get("cancel_requested_at"):
             _update_chat_request(request_id, status="cancelled")
             raise ChatRequestCancelled("Request cancelled before Hermes started")
-    cmd = [str(_selected_hermes_bin()), "chat", "-Q"]
+    cmd = [str(_selected_hermes_bin()), "chat"]
     if session.get("hermes_session_id"):
         cmd.extend(["--resume", session["hermes_session_id"]])
     cmd.extend(["-q", prompt])
