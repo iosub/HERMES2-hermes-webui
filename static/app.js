@@ -6967,7 +6967,11 @@ function chatBuildMessageNode(message) {
         const renderedContent = role === 'assistant'
             ? chatBuildResponseMarkup(content)
             : chatRenderMd(content);
+        const userCopyButton = role === 'user' && content
+            ? '<button class="chat-msg-copy" type="button" onclick="chatCopyMsg(this)" title="Copy message">' + chatCopyIconMarkup() + '</button>'
+            : '';
         bubbleHtml = '<div class="chat-bubble' + (traceHtml ? ' chat-bubble-has-trace' : '') + '">'
+            + userCopyButton
             + traceHtml
             + (content ? '<div class="chat-bubble-content">' + renderedContent + '</div>' : '')
             + '</div>';
@@ -6985,6 +6989,10 @@ function chatBuildMessageNode(message) {
     div.innerHTML = '<div class="chat-msg-inner"><div class="chat-msg-avatar">' + avatarSvg + '</div><div class="chat-msg-body">' + chatMessageBadges(message) + bubbleHtml + filesHtml + timeHtml + '</div></div>';
     if (role === 'assistant' && content) {
         const copyBtn = div.querySelector('.chat-msg-time-copy');
+        if (copyBtn) copyBtn._copyText = content;
+    }
+    if (role === 'user' && content) {
+        const copyBtn = div.querySelector('.chat-msg-copy');
         if (copyBtn) copyBtn._copyText = content;
     }
     return div;
@@ -7622,7 +7630,7 @@ function chatAppendMsg(role, content, files = [], messageMeta = {}) {
 
 // ── COPY MESSAGE ───────────────────────────────────────────
 window.chatCopyMsg = function (btn) {
-    const text = btn.getAttribute('data-text') || '';
+    const text = (typeof btn?._copyText === 'string' ? btn._copyText.trim() : '') || btn.getAttribute('data-text') || '';
     navigator.clipboard.writeText(text).then(function() {
         btn.classList.add('copied');
         setTimeout(function() { btn.classList.remove('copied'); }, 1500);
