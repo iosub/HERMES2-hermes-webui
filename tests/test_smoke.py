@@ -200,6 +200,44 @@ session_id: 20260513_124953_76cd78
         self.assertEqual(hermes_session_id, "20260513_130000_deadbe")
         self.assertEqual(response, "**respuesta**\n## bloque")
 
+    def test_load_hermes_native_session_trace_lines_preserves_unicode_tool_style(self):
+        session_path = Path(self.tmpdir.name) / "session_20260513_130100_traceaa.json"
+        session_path.write_text(json.dumps({
+            "session_id": "20260513_130100_traceaa",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "call_id": "call_1",
+                            "function": {
+                                "name": "skill_view",
+                                "arguments": json.dumps({"name": "virtus-check"}),
+                            },
+                        },
+                        {
+                            "id": "call_2",
+                            "call_id": "call_2",
+                            "function": {
+                                "name": "browser_navigate",
+                                "arguments": json.dumps({"url": "https://example.com/path?q=1"}),
+                            },
+                        },
+                    ],
+                },
+                {"role": "tool", "name": "skill_view", "tool_call_id": "call_1", "content": json.dumps({"name": "virtus-check"})},
+                {"role": "tool", "name": "browser_navigate", "tool_call_id": "call_2", "content": json.dumps({"url": "https://example.com/path?q=1"})},
+            ],
+        }))
+
+        lines = mod._load_hermes_native_session_trace_lines(session_path)
+
+        self.assertEqual(lines[0], "  ┊ 📚 skill_view virtus-check")
+        self.assertEqual(lines[1], "  ┊ 🌐 browser_navigate example.com/path?q=1")
+        self.assertIn("  ┊ 🌐 browser_navigate example.com/path?q=1", lines)
+
     def test_find_updated_hermes_native_session_ignores_stale_unmatched_files(self):
         stale_path = Path(self.tmpdir.name) / "session_20260513_074053_ff29d0.json"
         stale_path.write_text("{}")

@@ -7023,6 +7023,19 @@ def _trace_summary_text(value, limit: int = 160) -> str:
     return text[: max(0, limit - 3)].rstrip() + "..."
 
 
+def _trace_summary_url(value, limit: int = 140) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if parsed.scheme or parsed.netloc:
+        compact = f"{parsed.netloc}{parsed.path or ''}".strip()
+        if parsed.query:
+            compact = f"{compact}?{parsed.query}"
+        return _trace_summary_text(compact or raw, limit)
+    return _trace_summary_text(raw, limit)
+
+
 def _parse_trace_json(value) -> dict | list | None:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -7036,7 +7049,7 @@ def _parse_trace_json(value) -> dict | list | None:
 def _summarize_native_tool_call(tool_name: str, arguments) -> str:
     payload = arguments if isinstance(arguments, dict) else {}
     if tool_name in {"browser_navigate", "fetch_webpage"} and payload.get("url"):
-        return _trace_summary_text(payload.get("url"), 140)
+        return _trace_summary_url(payload.get("url"), 140)
     if tool_name == "browser_click" and payload.get("ref"):
         return f"ref {payload.get('ref')}"
     if tool_name == "browser_type" and payload.get("text"):
@@ -7059,7 +7072,7 @@ def _summarize_native_tool_result(tool_name: str, content) -> str:
         if parsed.get("error"):
             return _trace_summary_text(parsed.get("error"), 140)
         if tool_name in {"browser_navigate", "fetch_webpage"} and parsed.get("url"):
-            return _trace_summary_text(parsed.get("url"), 140)
+            return _trace_summary_url(parsed.get("url"), 140)
         if tool_name == "skill_view" and parsed.get("name"):
             return _trace_summary_text(parsed.get("name"), 120)
         if tool_name == "terminal":
@@ -7070,6 +7083,33 @@ def _summarize_native_tool_result(tool_name: str, content) -> str:
             if parsed.get(key):
                 return _trace_summary_text(parsed.get(key), 140)
     return _trace_summary_text(content, 140) if isinstance(content, str) else ""
+
+
+def _native_trace_icon(tool_name: str) -> str:
+    name = str(tool_name or "").strip().lower()
+    if not name:
+        return "⚙"
+    if name.startswith("browser_"):
+        return "🌐"
+    if name.startswith("skill_"):
+        return "📚"
+    if name in {"terminal", "process"}:
+        return "💻"
+    if name.startswith("web_") or name in {"fetch_webpage", "search_files"}:
+        return "🔍"
+    if name.startswith("memory"):
+        return "🧠"
+    return "⚙"
+
+
+def _format_native_trace_line(tool_name: str, summary: str = "") -> str:
+    name = str(tool_name or "").strip()
+    if not name:
+        return ""
+    icon = _native_trace_icon(name)
+    if summary:
+        return f"  ┊ {icon} {name} {summary}".rstrip()
+    return f"  ┊ {icon} {name}"
 
 
 def _load_hermes_native_session_trace_lines(path: Path) -> list[str]:
@@ -7100,7 +7140,9 @@ def _load_hermes_native_session_trace_lines(path: Path) -> list[str]:
                     continue
                 arguments = _parse_trace_json(function.get("arguments"))
                 summary = _summarize_native_tool_call(tool_name, arguments)
-                lines.append(f"{tool_name} {summary}".strip())
+                formatted = _format_native_trace_line(tool_name, summary)
+                if formatted:
+                    lines.append(formatted)
                 tool_call_id = str(call.get("tool_call_id") or call.get("call_id") or call.get("id") or "").strip()
                 if tool_call_id:
                     tool_names_by_call_id[tool_call_id] = tool_name
@@ -7113,7 +7155,9 @@ def _load_hermes_native_session_trace_lines(path: Path) -> list[str]:
                 continue
             summary = _summarize_native_tool_result(tool_name, item.get("content"))
             if summary:
-                lines.append(f"{tool_name} {summary}".strip())
+                formatted = _format_native_trace_line(tool_name, summary)
+                if formatted:
+                    lines.append(formatted)
 
     return _truncate_recent_lines(lines, limit=120)
 
