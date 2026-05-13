@@ -166,6 +166,49 @@ class HermesWebUISmokeTests(unittest.TestCase):
             "Basado en mi investigación, aquí está lo que he verificado:\n\n1. Thinking Machines Lab existe.\n2. El blog post es real.",
         )
 
+    def test_parse_hermes_chat_result_prefers_quiet_markdown_after_session_id(self):
+        output = """
+┌─ Reasoning ──────────────────────────────────────────────────────────────────┐
+El usuario me pide devolver exactamente cuatro líneas.
+└──────────────────────────────────────────────────────────────────────────────┘
+
+session_id: 20260513_124953_76cd78
+**uno**
+## dos
+[tres](https://example.com)
+---
+        """.strip()
+
+        response, hermes_session_id = mod._parse_hermes_chat_result(output)
+
+        self.assertEqual(hermes_session_id, "20260513_124953_76cd78")
+        self.assertEqual(response, "**uno**\n## dos\n[tres](https://example.com)\n---")
+
+    def test_load_hermes_native_session_reply_uses_last_non_empty_assistant(self):
+        session_path = Path(self.tmpdir.name) / "session_20260513_130000_deadbe.json"
+        session_path.write_text(json.dumps({
+            "session_id": "20260513_130000_deadbe",
+            "messages": [
+                {"role": "assistant", "content": ""},
+                {"role": "tool", "content": "{\"ok\": true}"},
+                {"role": "assistant", "content": "**respuesta**\n## bloque"},
+            ],
+        }))
+
+        response, hermes_session_id = mod._load_hermes_native_session_reply(session_path)
+
+        self.assertEqual(hermes_session_id, "20260513_130000_deadbe")
+        self.assertEqual(response, "**respuesta**\n## bloque")
+
+    def test_find_updated_hermes_native_session_ignores_stale_unmatched_files(self):
+        stale_path = Path(self.tmpdir.name) / "session_20260513_074053_ff29d0.json"
+        stale_path.write_text("{}")
+        snapshot = mod._snapshot_hermes_native_sessions()
+
+        found = mod._find_updated_hermes_native_session(snapshot, "20260513_130500_newone")
+
+        self.assertIsNone(found)
+
     def test_service_control_success_semantics(self):
         def fake_run(returncode=0, stdout="ok", stderr=""):
             return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)

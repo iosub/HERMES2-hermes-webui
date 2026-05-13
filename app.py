@@ -6931,6 +6931,214 @@ def api_onboarding_get():
 # Chat endpoints (from V1 chat UI)
 # ===================================================================
 
+def _hermes_native_session_dirs() -> list[Path]:
+    candidates = []
+    request_root = CHAT_REQUEST_DIR.parents[1] if len(CHAT_REQUEST_DIR.parents) > 1 else None
+    for path in (request_root, APP_ROOT, Path.home(), _selected_hermes_home()):
+        if not path:
+            continue
+        resolved = Path(path)
+        if resolved.exists() and resolved not in candidates:
+            candidates.append(resolved)
+    return candidates
+
+
+def _snapshot_hermes_native_sessions() -> dict[str, tuple[int, int]]:
+    snapshot = {}
+    for base in _hermes_native_session_dirs():
+        for path in base.glob("session_*.json"):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            snapshot[str(path)] = (stat.st_mtime_ns, stat.st_size)
+    return snapshot
+
+
+def _hermes_native_session_file_candidates(hermes_session_id: str | None = None) -> list[Path]:
+    candidates = []
+    session_id = _clean_hermes_session_id(hermes_session_id)
+    for base in _hermes_native_session_dirs():
+        if session_id:
+            preferred = base / f"session_{session_id}.json"
+            if preferred.exists() and preferred not in candidates:
+                candidates.append(preferred)
+        for path in sorted(base.glob("session_*.json")):
+            if path not in candidates:
+                candidates.append(path)
+    return candidates
+
+
+def _find_updated_hermes_native_session(
+    before: dict[str, tuple[int, int]] | None,
+    hermes_session_id: str | None = None,
+) -> Path | None:
+    before = before or {}
+    session_id = _clean_hermes_session_id(hermes_session_id)
+    changed = []
+    preferred = []
+    for path in _hermes_native_session_file_candidates(hermes_session_id):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        current = (stat.st_mtime_ns, stat.st_size)
+        previous = before.get(str(path))
+        if previous != current:
+            changed.append((current[0], path))
+        if session_id and path.name == f"session_{session_id}.json":
+            preferred.append((current[0], path))
+    pool = preferred or changed
+    if not pool:
+        return None
+    pool.sort(key=lambda item: item[0], reverse=True)
+    return pool[0][1]
+
+
+def _load_hermes_native_session_reply(path: Path) -> tuple[str | None, str | None]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None, None
+    hermes_session_id = _clean_hermes_session_id(data.get("session_id") or path.stem.removeprefix("session_"))
+    messages = data.get("messages")
+    if not isinstance(messages, list):
+        return None, hermes_session_id
+    for item in reversed(messages):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("role") or "").strip().lower() != "assistant":
+            continue
+        content = item.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip(), hermes_session_id
+    return None, hermes_session_id
+
+
+def _trace_summary_text(value, limit: int = 160) -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _parse_trace_json(value) -> dict | list | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, (dict, list)) else None
+
+
+def _summarize_native_tool_call(tool_name: str, arguments) -> str:
+    payload = arguments if isinstance(arguments, dict) else {}
+    if tool_name in {"browser_navigate", "fetch_webpage"} and payload.get("url"):
+        return _trace_summary_text(payload.get("url"), 140)
+    if tool_name == "browser_click" and payload.get("ref"):
+        return f"ref {payload.get('ref')}"
+    if tool_name == "browser_type" and payload.get("text"):
+        return _trace_summary_text(payload.get("text"), 120)
+    if tool_name == "skill_view" and payload.get("name"):
+        return _trace_summary_text(payload.get("name"), 120)
+    if tool_name == "terminal" and payload.get("command"):
+        return _trace_summary_text(payload.get("command"), 140)
+    if payload.get("query"):
+        return _trace_summary_text(payload.get("query"), 140)
+    for key in ("path", "file_path", "name", "url"):
+        if payload.get(key):
+            return _trace_summary_text(payload.get(key), 140)
+    return ""
+
+
+def _summarize_native_tool_result(tool_name: str, content) -> str:
+    parsed = _parse_trace_json(content)
+    if isinstance(parsed, dict):
+        if parsed.get("error"):
+            return _trace_summary_text(parsed.get("error"), 140)
+        if tool_name in {"browser_navigate", "fetch_webpage"} and parsed.get("url"):
+            return _trace_summary_text(parsed.get("url"), 140)
+        if tool_name == "skill_view" and parsed.get("name"):
+            return _trace_summary_text(parsed.get("name"), 120)
+        if tool_name == "terminal":
+            exit_code = parsed.get("exit_code")
+            if exit_code not in (None, ""):
+                return f"exit_code={exit_code}"
+        for key in ("message", "title", "path"):
+            if parsed.get(key):
+                return _trace_summary_text(parsed.get(key), 140)
+    return _trace_summary_text(content, 140) if isinstance(content, str) else ""
+
+
+def _load_hermes_native_session_trace_lines(path: Path) -> list[str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    messages = data.get("messages")
+    if not isinstance(messages, list):
+        return []
+
+    lines = []
+    tool_names_by_call_id = {}
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        if role == "assistant":
+            tool_calls = item.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for call in tool_calls:
+                if not isinstance(call, dict):
+                    continue
+                function = call.get("function") or {}
+                tool_name = str(function.get("name") or "").strip()
+                if not tool_name:
+                    continue
+                arguments = _parse_trace_json(function.get("arguments"))
+                summary = _summarize_native_tool_call(tool_name, arguments)
+                lines.append(f"{tool_name} {summary}".strip())
+                tool_call_id = str(call.get("tool_call_id") or call.get("call_id") or call.get("id") or "").strip()
+                if tool_call_id:
+                    tool_names_by_call_id[tool_call_id] = tool_name
+        elif role == "tool":
+            tool_name = str(item.get("name") or "").strip()
+            tool_call_id = str(item.get("tool_call_id") or "").strip()
+            if not tool_name and tool_call_id:
+                tool_name = tool_names_by_call_id.get(tool_call_id, "")
+            if not tool_name:
+                continue
+            summary = _summarize_native_tool_result(tool_name, item.get("content"))
+            if summary:
+                lines.append(f"{tool_name} {summary}".strip())
+
+    return _truncate_recent_lines(lines, limit=120)
+
+
+def _debug_trace_lines_for_chat(request_id: str, hermes_session_id: str | None) -> list[str]:
+    native_path = _find_updated_hermes_native_session(None, hermes_session_id)
+    if native_path:
+        native_lines = _load_hermes_native_session_trace_lines(native_path)
+        if native_lines:
+            return native_lines
+    return _request_progress_lines(request_id)
+
+
+def _extract_cli_reply_after_session_marker(output: str) -> str:
+    matches = list(re.finditer(r"(?mi)^session_id:\s*\S+\s*$", output))
+    if not matches:
+        return ""
+    tail = output[matches[-1].end():]
+    tail = re.sub(r"(?mi)^Resume this session with:\s*$", "", tail)
+    tail = re.sub(r"(?mi)^\s*hermes\s+--resume\s+\S+\s*$", "", tail)
+    tail = re.sub(r"(?mi)^Session:\s*\S+\s*$", "", tail)
+    tail = re.sub(r"(?mi)^Duration:\s*.*$", "", tail)
+    tail = re.sub(r"(?mi)^Messages:\s*.*$", "", tail)
+    return tail.strip()
+
 def _clean_cli_output(output: str) -> str:
     """Extract the final Hermes reply from verbose CLI output while discarding trace noise."""
     lines = output.split('\n')
@@ -6960,6 +7168,10 @@ def _clean_cli_output(output: str) -> str:
 
     if latest_response:
         return latest_response
+
+    quiet_response = _extract_cli_reply_after_session_marker(output)
+    if quiet_response:
+        return quiet_response
 
     # Strip think blocks: matches <think>...</think> tags and everything between them
     output = re.sub(r'<think>.*?</think>', '', output, flags=re.DOTALL)
@@ -8518,7 +8730,7 @@ def _parse_hermes_chat_result(output: str) -> tuple[str, str | None]:
         if match and match.group(1):
             hermes_session_id = match.group(1)
             break
-    cleaned = re.sub(r"(?mi)^session_id:\s*\S+\s*$", "", output)
+    cleaned = output
     cleaned = re.sub(r"(?mi)^Resume this session with:\s*$", "", cleaned)
     cleaned = re.sub(r"(?mi)^\s*hermes\s+--resume\s+\S+\s*$", "", cleaned)
     cleaned = re.sub(r"(?m)^↻ Resumed session .*$", "", cleaned)
@@ -8538,7 +8750,8 @@ def _call_hermes_prompt(
         if state and state.get("cancel_requested_at"):
             _update_chat_request(request_id, status="cancelled")
             raise ChatRequestCancelled("Request cancelled before Hermes started")
-    cmd = [str(_selected_hermes_bin()), "chat"]
+    native_session_snapshot = _snapshot_hermes_native_sessions()
+    cmd = [str(_selected_hermes_bin()), "chat", "-Q"]
     if session.get("hermes_session_id"):
         cmd.extend(["--resume", session["hermes_session_id"]])
     cmd.extend(["-q", prompt])
@@ -8634,7 +8847,13 @@ def _call_hermes_prompt(
         import re as _re
         output = _re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', output)
         output = _re.sub(r'\x1b\].*?\x07', '', output)
-        return _parse_hermes_chat_result(output)
+        response_text, hermes_session_id = _parse_hermes_chat_result(output)
+        native_session_path = _find_updated_hermes_native_session(native_session_snapshot, hermes_session_id)
+        native_text = None
+        native_session_id = None
+        if native_session_path:
+            native_text, native_session_id = _load_hermes_native_session_reply(native_session_path)
+        return native_text or response_text, native_session_id or hermes_session_id
     except ChatRequestCancelled:
         raise
     except subprocess.TimeoutExpired:
@@ -9297,7 +9516,8 @@ def api_chat():
         return jsonify({"error": f"Unexpected chat error: {exc}", "request_id": request_id, "session_id": sid}), 500
     finally:
         if request_id:
-            debug_trace_lines = _request_progress_lines(request_id)
+            with _scoped_profile_override(sess.get("profile")):
+                debug_trace_lines = _debug_trace_lines_for_chat(request_id, sess.get("hermes_session_id"))
         _remove_chat_request(request_id)
     assistant_msg = {"role": "assistant", "content": response_text,
                      "timestamp": datetime.now().isoformat(),
