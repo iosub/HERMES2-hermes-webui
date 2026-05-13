@@ -5205,6 +5205,24 @@ function chatToggleProgressLog(trigger) {
     if (icon) icon.textContent = willExpand ? '−' : '+';
 }
 
+function chatToggleVirtudChecklist(trigger) {
+    const section = trigger?.closest('.chat-virtud-checklist');
+    if (!section) return;
+    const panel = section.querySelector('.chat-virtud-checklist-body');
+    const label = trigger.querySelector('.chat-progress-toggle-label');
+    const icon = trigger.querySelector('.chat-progress-toggle-icon');
+    const willExpand = section.classList.contains('is-collapsed');
+
+    section.classList.toggle('is-collapsed', !willExpand);
+    if (panel) {
+        panel.hidden = !willExpand;
+    }
+    trigger.setAttribute('aria-expanded', willExpand ? 'true' : 'false');
+    trigger.title = willExpand ? 'Hide virtue checklist' : 'Show virtue checklist';
+    if (label) label.textContent = willExpand ? 'Hide Virtus' : 'Show Virtus';
+    if (icon) icon.textContent = willExpand ? '−' : '+';
+}
+
 function chatToggleProgressGroup(trigger) {
     const group = trigger?.closest('.chat-progress-group');
     if (!group) return;
@@ -7626,8 +7644,21 @@ function chatRenderMd(text) {
     h = h.replace(
         /(?:<p>)?&lt;virtud-checklist&gt;(?:<\/p>)?([\s\S]*?)(?:<p>)?&lt;\/virtud-checklist&gt;(?:<\/p>)?/gi,
         function(_, inner) {
-            const body = String(inner || '').replace(/^(<br\s*\/?\s*>)+|(<br\s*\/?\s*>)+$/gi, '');
-            return '<details class="chat-virtud-checklist"><summary>Virtud checklist</summary><div class="chat-virtud-checklist-body">' + body + '</div></details>';
+            const body = String(inner || '')
+                .replace(/^(<br\s*\/?\s*>)+|(<br\s*\/?\s*>)+$/gi, '')
+                .replace(/<br\s*\/?\s*>\s*(?=<\/?(?:ul|ol|li)>)/gi, '')
+                .replace(/<\/li>\s*<br\s*\/?\s*>/gi, '</li>');
+            return '<div class="chat-virtud-checklist is-collapsed">'
+                + '<div class="chat-thinking-header">'
+                + '<span class="chat-thinking-icon"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span>'
+                + '<span class="chat-thinking-text">Virtud checklist</span>'
+                + '<button class="chat-progress-toggle" type="button" onclick="chatToggleVirtudChecklist(this)" aria-expanded="false" title="Show virtue checklist">'
+                + '<span class="chat-progress-toggle-label">Show Virtus</span>'
+                + '<span class="chat-progress-toggle-icon" aria-hidden="true">+</span>'
+                + '</button>'
+                + '</div>'
+                + '<div class="chat-virtud-checklist-body" hidden>' + body + '</div>'
+                + '</div>';
         }
     );
 

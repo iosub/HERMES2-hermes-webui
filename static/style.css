@@ -3731,33 +3731,38 @@ pre code {
 }
 
 .chat-virtud-checklist {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: 100%;
   margin: 12px 0 0;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.35);
-  overflow: hidden;
-}
-
-.chat-virtud-checklist summary {
-  cursor: pointer;
-  list-style: none;
-  padding: 10px 12px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  padding: 10px 14px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: 16px;
   color: var(--text-secondary);
 }
 
-.chat-virtud-checklist summary::-webkit-details-marker {
+.chat-virtud-checklist.is-collapsed .chat-virtud-checklist-body {
   display: none;
 }
 
 .chat-virtud-checklist-body {
-  padding: 0 12px 12px;
+  padding: 0 0 2px;
 }
 
-.chat-virtud-checklist[open] summary {
+.chat-virtud-checklist-body ul,
+.chat-virtud-checklist-body ol {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.chat-virtud-checklist-body li + li {
+  margin-top: 6px;
+}
+
+.chat-virtud-checklist:not(.is-collapsed) .chat-thinking-text {
   color: var(--text-primary);
 }
 
