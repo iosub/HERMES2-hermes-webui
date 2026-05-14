@@ -5490,159 +5490,17 @@ register_skill_routes(
     skill_request_paths=lambda requested: _skill_request_paths(requested),
     skill_apply_action=lambda requested, action: _skill_apply_action(requested, action),
     safe_skill_rel_path=lambda entry: _safe_skill_rel_path(entry),
+    normalize_skill_rel_path=lambda path: _normalize_skill_rel_path(path),
+    run_hermes=lambda *args, timeout=30: _run_hermes(*args, timeout=timeout),
+    combined_process_output=lambda result: _combined_process_output(result),
+    hermes_skill_install_failed=lambda result, combined_output: _hermes_skill_install_failed(result, combined_output),
+    install_skills_from_github_repo=lambda identifier: _install_skills_from_github_repo(identifier),
+    record_skill_install_source=lambda skill_paths, identifier, install_mode, catalog_source="": _record_skill_install_source(skill_paths, identifier=identifier, install_mode=install_mode, catalog_source=catalog_source),
+    match_skill_paths_for_identifier=lambda identifier, skills: _match_skill_paths_for_identifier(identifier, skills),
+    starter_pack_skill_group=lambda item_id: _starter_pack_skill_group(item_id),
+    starter_pack_install_candidates=lambda group: _starter_pack_install_candidates(group),
+    chat_runtime_status=lambda: _chat_runtime_status(),
 )
-
-
-@app.route("/api/skills/install", methods=["POST"])
-@require_token
-def api_skill_install():
-    try:
-        data = request.get_json(force=True) or {}
-        identifier = str(data.get("identifier") or "").strip()
-        if not identifier:
-            return jsonify({"ok": False, "error": "identifier is required"}), 400
-
-        before_paths = {
-            _normalize_skill_rel_path(skill.get("path") or "")
-            for skill in _discover_skill_entries()
-            if _normalize_skill_rel_path(skill.get("path") or "")
-        }
-        result = _run_hermes("skills", "install", identifier, "--yes", timeout=300)
-        combined_output = _combined_process_output(result)
-        fallback = None
-        if _hermes_skill_install_failed(result, combined_output):
-            fallback = _install_skills_from_github_repo(identifier)
-            if not fallback:
-                message = combined_output or f"Hermes skills install exited with status {result.returncode}"
-                return jsonify({"ok": False, "error": message}), 502
-
-        skills = _discover_skill_entries()
-        after_paths = {
-            _normalize_skill_rel_path(skill.get("path") or "")
-            for skill in skills
-            if _normalize_skill_rel_path(skill.get("path") or "")
-        }
-        installed_skill_paths = sorted(after_paths - before_paths)
-        already_present_paths = []
-        annotated_skill_paths = []
-
-        if fallback:
-            installed_skill_paths = list(fallback.get("installed_paths") or [])
-            already_present_paths = list(fallback.get("skipped_paths") or [])
-            annotated_skill_paths = list(dict.fromkeys(installed_skill_paths + already_present_paths))
-        else:
-            if installed_skill_paths:
-                annotated_skill_paths = _record_skill_install_source(
-                    installed_skill_paths,
-                    identifier=identifier,
-                    install_mode="hermes",
-                )
-            else:
-                already_present_paths = _match_skill_paths_for_identifier(identifier, skills)
-                if already_present_paths:
-                    annotated_skill_paths = _record_skill_install_source(
-                        already_present_paths,
-                        identifier=identifier,
-                        install_mode="hermes",
-                    )
-
-        return jsonify({
-            "ok": True,
-            "identifier": identifier,
-            "output": combined_output,
-            "install_mode": (fallback or {}).get("mode", "hermes"),
-            "fallback": fallback,
-            "installed_skill_paths": installed_skill_paths,
-            "already_present_paths": already_present_paths,
-            "annotated_skill_paths": annotated_skill_paths,
-            "skills": skills,
-        })
-    except subprocess.TimeoutExpired:
-        return jsonify({"ok": False, "error": "Hermes skills install timed out"}), 504
-    except RuntimeError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/starter-pack/<item_id>/install", methods=["POST"])
-@require_token
-def api_starter_pack_install(item_id):
-    try:
-        group = _starter_pack_skill_group(item_id)
-        if not group:
-            return jsonify({"ok": False, "error": "Starter-pack item not found"}), 404
-
-        candidates = _starter_pack_install_candidates(group)
-        if not candidates:
-            return jsonify({"ok": False, "error": "This starter-pack item does not support installation"}), 400
-
-        requested_identifier = str((request.get_json(silent=True) or {}).get("identifier") or "").strip()
-        candidate_map = {candidate["identifier"]: candidate for candidate in candidates}
-        if requested_identifier:
-            if requested_identifier not in candidate_map:
-                return jsonify({"ok": False, "error": "Unsupported starter-pack install target"}), 400
-            chosen = candidate_map[requested_identifier]
-        else:
-            chosen = next((candidate for candidate in candidates if candidate.get("recommended")), candidates[0])
-
-        before_paths = {
-            _normalize_skill_rel_path(skill.get("path") or "")
-            for skill in _discover_skill_entries()
-            if _normalize_skill_rel_path(skill.get("path") or "")
-        }
-        result = _run_hermes("skills", "install", chosen["identifier"], "--yes", timeout=300)
-        combined_output = _combined_process_output(result)
-        if _hermes_skill_install_failed(result, combined_output):
-            message = combined_output or f"Hermes skills install exited with status {result.returncode}"
-            return jsonify({"ok": False, "error": message}), 502
-
-        after_skills = _discover_skill_entries()
-        after_paths = {
-            _normalize_skill_rel_path(skill.get("path") or "")
-            for skill in after_skills
-            if _normalize_skill_rel_path(skill.get("path") or "")
-        }
-        installed_skill_paths = sorted(after_paths - before_paths)
-        already_present_paths = []
-        annotated_skill_paths = []
-        if installed_skill_paths:
-            annotated_skill_paths = _record_skill_install_source(
-                installed_skill_paths,
-                identifier=chosen["identifier"],
-                install_mode="hermes",
-                catalog_source=chosen.get("source") or "",
-            )
-        else:
-            already_present_paths = _match_skill_paths_for_identifier(chosen["identifier"], after_skills)
-            if already_present_paths:
-                annotated_skill_paths = _record_skill_install_source(
-                    already_present_paths,
-                    identifier=chosen["identifier"],
-                    install_mode="hermes",
-                    catalog_source=chosen.get("source") or "",
-                )
-
-        runtime = _chat_runtime_status()
-        item = next(
-            (entry for entry in (runtime.get("starter_pack", {}).get("items") or []) if entry.get("id") == group.get("id")),
-            None,
-        )
-        return jsonify({
-            "ok": True,
-            "installed": True,
-            "candidate": chosen,
-            "item": item,
-            "output": combined_output,
-            "installed_skill_paths": installed_skill_paths,
-            "already_present_paths": already_present_paths,
-            "annotated_skill_paths": annotated_skill_paths,
-            "setup_notes": [str(note).strip() for note in (group.get("setup_notes") or []) if str(note).strip()],
-        })
-    except subprocess.TimeoutExpired:
-        return jsonify({"ok": False, "error": "Hermes skills install timed out"}), 504
-    except Exception as exc:
-        return _http_error(str(exc))
 
 
 # ===================================================================
