@@ -66,6 +66,7 @@ from webui_app.chat_transport import plan_chat_request as _plan_chat_request_imp
 from webui_app.chat_transport import validated_transport_preference as _validated_transport_preference_impl
 from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
 from webui_app.config_manager import ConfigManager as _BaseConfigManager
+from webui_app import provider_service as _provider_service
 from webui_app.routes.agents import register_agent_routes
 from webui_app.routes.capabilities import register_capability_routes
 from webui_app.routes.chat import register_chat_routes
@@ -2218,433 +2219,177 @@ def _preserve_masked_secret_updates(current, update, parent_key: str = ""):
 
 
 def _normalized_model_config() -> dict:
-    raw = cfg.get_raw()
-    model_cfg = raw.get("model", {}) or {}
-    auxiliary_cfg = raw.get("auxiliary", {}) or {}
-
-    if isinstance(model_cfg, str):
-        normalized = {"default_model": model_cfg.strip()}
-    elif isinstance(model_cfg, dict):
-        normalized = copy.deepcopy(model_cfg)
-    else:
-        normalized = {}
-
-    model_cfg = normalized
-    if not isinstance(auxiliary_cfg, dict):
-        auxiliary_cfg = {}
-
-    if "default_model" not in normalized and model_cfg.get("default"):
-        normalized["default_model"] = model_cfg.get("default")
-    if "default_provider" not in normalized and model_cfg.get("provider"):
-        normalized["default_provider"] = model_cfg.get("provider")
-    for aux_key in AUXILIARY_MODEL_KEYS:
-        if aux_key not in normalized and aux_key in auxiliary_cfg:
-            normalized[aux_key] = copy.deepcopy(auxiliary_cfg.get(aux_key))
-    return normalized
+    return _provider_service.normalized_model_config(
+        cfg_get_raw=lambda: cfg.get_raw(),
+        auxiliary_model_keys=AUXILIARY_MODEL_KEYS,
+    )
 
 
 def _provider_display_name(provider_type: str) -> str:
-    normalized = str(provider_type or "").strip().lower()
-    return PROVIDER_TYPE_LABELS.get(normalized, normalized or "Custom")
+    return _provider_service.provider_display_name(
+        provider_type,
+        provider_type_labels=PROVIDER_TYPE_LABELS,
+    )
 
 
 def _infer_provider_type(name: str = "", base_url: str = "") -> str:
-    haystack = f"{name} {base_url}".lower()
-    if "openrouter" in haystack:
-        return "openrouter"
-    if "api.openai.com" in haystack or re.search(r"\bopenai\b", haystack):
-        return "openai"
-    if "azure" in haystack:
-        return "azure"
-    if "anthropic" in haystack or "claude" in haystack:
-        return "anthropic"
-    if "groq" in haystack:
-        return "groq"
-    if "google" in haystack or "gemini" in haystack:
-        return "google"
-    if "mistral" in haystack:
-        return "mistral"
-    if "together" in haystack:
-        return "together"
-    if "fireworks" in haystack:
-        return "fireworks"
-    if "deepseek" in haystack:
-        return "deepseek"
-    if "cohere" in haystack:
-        return "cohere"
-    return "auto"
+    return _provider_service.infer_provider_type(name=name, base_url=base_url, re_module=re)
 
 
 def _normalize_provider_type(value: str = "", *, name: str = "", base_url: str = "") -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized in ("", "default", "custom", "generic", "local", "openai-compatible"):
-        return _infer_provider_type(name=name, base_url=base_url)
-    return normalized
+    return _provider_service.normalize_provider_type(
+        value,
+        name=name,
+        base_url=base_url,
+        infer_provider_type_fn=lambda name="", base_url="": _infer_provider_type(name=name, base_url=base_url),
+    )
 
 
 def _provider_default_base_url(provider: str = "") -> str:
-    normalized = _normalize_provider_type(provider)
-    return PROVIDER_DEFAULT_BASE_URLS.get(normalized, "")
+    return _provider_service.provider_default_base_url(
+        provider,
+        normalize_provider_type_fn=lambda value, name="", base_url="": _normalize_provider_type(value, name=name, base_url=base_url),
+        provider_default_base_urls=PROVIDER_DEFAULT_BASE_URLS,
+    )
 
 
 def _normalize_provider_profile(entry: dict | str | None) -> dict:
-    if isinstance(entry, str):
-        entry = {"name": entry}
-    elif not isinstance(entry, dict):
-        entry = {}
-
-    normalized = copy.deepcopy(entry)
-    normalized["name"] = str(normalized.get("name") or "").strip()
-    normalized["base_url"] = str(normalized.get("base_url") or "").strip()
-    normalized["model"] = str(normalized.get("model") or "").strip()
-    normalized["provider"] = _normalize_provider_type(
-        normalized.get("provider", ""),
-        name=normalized.get("name", ""),
-        base_url=normalized.get("base_url", ""),
+    return _provider_service.normalize_provider_profile(
+        entry,
+        normalize_provider_type_fn=lambda value, name="", base_url="": _normalize_provider_type(value, name=name, base_url=base_url),
+        provider_default_base_url_fn=lambda provider="": _provider_default_base_url(provider),
     )
-    if not normalized["base_url"]:
-        normalized["base_url"] = _provider_default_base_url(normalized.get("provider", ""))
-    api_key = normalized.get("api_key")
-    normalized["api_key"] = str(api_key or "").strip() if api_key is not None else ""
-    normalized["implicit"] = bool(normalized.get("implicit"))
-    return normalized
 
 
 def _custom_provider_profiles(raw: dict | None = None) -> list[dict]:
     raw = raw if raw is not None else cfg.get_raw()
-    return [_normalize_provider_profile(item) for item in (raw.get("custom_providers", []) or [])]
+    return _provider_service.custom_provider_profiles(
+        raw=raw,
+        normalize_provider_profile_fn=lambda entry: _normalize_provider_profile(entry),
+    )
 
 
 def _raw_role_profile_candidate(role: str, *, model_cfg: dict | None = None, raw: dict | None = None) -> dict | None:
     raw = raw if raw is not None else cfg.get_raw()
     model_cfg = model_cfg if model_cfg is not None else _normalized_model_config()
-    if role == "primary":
-        explicit_profile = str(model_cfg.get("default_profile") or "").strip()
-        declared_provider = str(model_cfg.get("default_provider") or "").strip()
-        provider = _normalize_provider_type(declared_provider)
-        model = str(model_cfg.get("default_model") or "").strip()
-        base_url = str(model_cfg.get("base_url") or _provider_default_base_url(provider) or "").strip()
-        api_key = str(model_cfg.get("api_key") or "").strip()
-        routing_provider = _role_routing_provider("primary", model_cfg=model_cfg)
-    elif role == "fallback":
-        explicit_profile = str(model_cfg.get("fallback_profile") or "").strip()
-        declared_provider = str(model_cfg.get("fallback_provider") or "").strip()
-        provider = _normalize_provider_type(declared_provider)
-        model = str(model_cfg.get("fallback_model") or "").strip()
-        base_url = str(model_cfg.get("fallback_base_url") or _provider_default_base_url(provider) or "").strip()
-        api_key = str(model_cfg.get("fallback_api_key") or "").strip()
-        routing_provider = _role_routing_provider("fallback", model_cfg=model_cfg)
-    elif role == "vision":
-        vision_cfg = model_cfg.get("vision")
-        if isinstance(vision_cfg, str):
-            explicit_profile = ""
-            declared_provider = str(model_cfg.get("default_provider") or "").strip()
-            provider = _normalize_provider_type(declared_provider)
-            model = vision_cfg.strip()
-            base_url = str(model_cfg.get("base_url") or _provider_default_base_url(provider) or "").strip()
-            api_key = str(model_cfg.get("api_key") or "").strip()
-            routing_provider = ""
-        elif isinstance(vision_cfg, dict):
-            explicit_profile = str(vision_cfg.get("profile") or "").strip()
-            declared_provider = str(vision_cfg.get("provider") or "").strip()
-            provider = _normalize_provider_type(declared_provider, base_url=vision_cfg.get("base_url", ""))
-            model = str(vision_cfg.get("model") or "").strip()
-            base_url = str(vision_cfg.get("base_url") or _provider_default_base_url(provider) or "").strip()
-            api_key = str(vision_cfg.get("api_key") or "").strip()
-            routing_provider = _role_routing_provider("vision", model_cfg=model_cfg)
-        else:
-            return None
-    else:
-        return None
-
-    if not any((explicit_profile, provider, model, base_url, api_key)):
-        return None
-    if not explicit_profile and provider in ("", "auto") and not any((model, base_url, api_key)):
-        return None
-    name = explicit_profile or declared_provider or provider or role
-    return _normalize_provider_profile({
-        "name": name,
-        "provider": provider,
-        "base_url": base_url,
-        "model": model,
-        "api_key": api_key,
-        "routing_provider": routing_provider,
-        "implicit": True,
-        "source_role": role,
-    })
+    return _provider_service.raw_role_profile_candidate(
+        role,
+        model_cfg=model_cfg,
+        raw=raw,
+        normalize_provider_type_fn=lambda value, name="", base_url="": _normalize_provider_type(value, name=name, base_url=base_url),
+        provider_default_base_url_fn=lambda provider="": _provider_default_base_url(provider),
+        role_routing_provider_fn=lambda current_role, model_cfg=None: _role_routing_provider(current_role, model_cfg=model_cfg),
+        normalize_provider_profile_fn=lambda entry: _normalize_provider_profile(entry),
+    )
 
 
 def _available_provider_profiles(raw: dict | None = None, model_cfg: dict | None = None) -> list[dict]:
     raw = raw if raw is not None else cfg.get_raw()
     model_cfg = model_cfg if model_cfg is not None else _normalized_model_config()
-    profiles = []
-    by_name: dict[str, dict] = {}
-
-    def add_profile(profile: dict | None):
-        if not profile:
-            return
-        normalized = _normalize_provider_profile(profile)
-        name = normalized.get("name", "")
-        if not name:
-            return
-        existing = by_name.get(name)
-        if existing:
-            same_target = (
-                existing.get("provider") == normalized.get("provider")
-                and existing.get("base_url") == normalized.get("base_url")
-            )
-            if same_target:
-                if not existing.get("model") and normalized.get("model"):
-                    existing["model"] = normalized["model"]
-                return
-            suffix_name = f"{name}-{normalized.get('source_role') or 'profile'}"
-            normalized["name"] = suffix_name
-            name = suffix_name
-            if name in by_name:
-                return
-        by_name[name] = normalized
-        profiles.append(normalized)
-
-    for profile in _custom_provider_profiles(raw):
-        add_profile(profile)
-    for role in MODEL_ROLE_LABELS:
-        candidate = _raw_role_profile_candidate(role, model_cfg=model_cfg, raw=raw)
-        explicit_name = candidate.get("name", "") if candidate else ""
-        if explicit_name and explicit_name in by_name:
-            continue
-        add_profile(candidate)
-    return profiles
+    return _provider_service.available_provider_profiles(
+        raw=raw,
+        model_cfg=model_cfg,
+        custom_provider_profiles_fn=lambda raw=None: _custom_provider_profiles(raw),
+        raw_role_profile_candidate_fn=lambda role, model_cfg=None, raw=None: _raw_role_profile_candidate(role, model_cfg=model_cfg, raw=raw),
+        model_role_labels=MODEL_ROLE_LABELS,
+        normalize_provider_profile_fn=lambda entry: _normalize_provider_profile(entry),
+    )
 
 
 def _get_provider_profile(name: str, raw: dict | None = None) -> dict | None:
-    name = str(name or "").strip()
-    if not name:
-        return None
-    for profile in _available_provider_profiles(raw):
-        if profile.get("name") == name:
-            return profile
-    return None
+    raw = raw if raw is not None else cfg.get_raw()
+    return _provider_service.get_provider_profile(
+        name,
+        available_provider_profiles_fn=lambda raw=None: _available_provider_profiles(raw),
+        raw=raw,
+    )
 
 
 def _role_linked_profile_name(role: str, *, model_cfg: dict | None = None, raw: dict | None = None) -> str:
     raw = raw if raw is not None else cfg.get_raw()
     model_cfg = model_cfg if model_cfg is not None else _normalized_model_config()
-    profile_names = {item.get("name") for item in _custom_provider_profiles(raw)}
-
-    if role == "primary":
-        explicit = str(model_cfg.get("default_profile") or "").strip()
-        fallback = str(model_cfg.get("default_provider") or "").strip()
-    elif role == "fallback":
-        explicit = str(model_cfg.get("fallback_profile") or "").strip()
-        fallback = str(model_cfg.get("fallback_provider") or "").strip()
-    elif role == "vision":
-        vision_cfg = model_cfg.get("vision")
-        explicit = str(vision_cfg.get("profile") or "").strip() if isinstance(vision_cfg, dict) else ""
-        fallback = str(vision_cfg.get("provider") or "").strip() if isinstance(vision_cfg, dict) else ""
-    else:
-        return ""
-
-    if explicit:
-        return explicit
-    if fallback in profile_names:
-        return fallback
-    candidate = _raw_role_profile_candidate(role, model_cfg=model_cfg, raw=raw)
-    if candidate:
-        return candidate.get("name", "")
-    return ""
+    return _provider_service.role_linked_profile_name(
+        role,
+        model_cfg=model_cfg,
+        raw=raw,
+        custom_provider_profiles_fn=lambda raw=None: _custom_provider_profiles(raw),
+        raw_role_profile_candidate_fn=lambda current_role, model_cfg=None, raw=None: _raw_role_profile_candidate(current_role, model_cfg=model_cfg, raw=raw),
+    )
 
 
 def _provider_usage_map(raw: dict | None = None, model_cfg: dict | None = None) -> dict[str, list[str]]:
     raw = raw if raw is not None else cfg.get_raw()
     model_cfg = model_cfg if model_cfg is not None else _normalized_model_config()
-    usage: dict[str, list[str]] = {}
-    for role, label in MODEL_ROLE_LABELS.items():
-        profile_name = _role_linked_profile_name(role, model_cfg=model_cfg, raw=raw)
-        if not profile_name:
-            continue
-        usage.setdefault(profile_name, []).append(label)
-    return usage
+    return _provider_service.provider_usage_map(
+        raw=raw,
+        model_cfg=model_cfg,
+        model_role_labels=MODEL_ROLE_LABELS,
+        role_linked_profile_name_fn=lambda role, model_cfg=None, raw=None: _role_linked_profile_name(role, model_cfg=model_cfg, raw=raw),
+    )
 
 
 def _role_routing_provider(role: str, *, model_cfg: dict | None = None) -> str:
     model_cfg = model_cfg if model_cfg is not None else _normalized_model_config()
-    if role == "primary":
-        return str(model_cfg.get("routing_provider") or "").strip()
-    if role == "fallback":
-        return str(model_cfg.get("fallback_routing_provider") or "").strip()
-    if role == "vision":
-        vision_cfg = model_cfg.get("vision")
-        if isinstance(vision_cfg, dict):
-            return str(vision_cfg.get("routing_provider") or "").strip()
-    return ""
+    return _provider_service.role_routing_provider(role, model_cfg=model_cfg)
 
 
 def _resolve_role_target(role: str) -> dict:
     raw = cfg.get_raw()
     model_cfg = _normalized_model_config()
-    default_provider = _normalize_provider_type(
-        model_cfg.get("default_provider", ""),
-        base_url=model_cfg.get("base_url", ""),
+    return _provider_service.resolve_role_target(
+        role,
+        raw=raw,
+        model_cfg=model_cfg,
+        normalize_provider_type_fn=lambda value, name="", base_url="": _normalize_provider_type(value, name=name, base_url=base_url),
+        provider_default_base_url_fn=lambda provider="": _provider_default_base_url(provider),
+        role_linked_profile_name_fn=lambda current_role, model_cfg=None, raw=None: _role_linked_profile_name(current_role, model_cfg=model_cfg, raw=raw),
+        profile_api_gateway_url_fn=lambda: _profile_api_gateway_url(),
+        effective_hermes_api_url_fn=lambda default="": _effective_hermes_api_url(default),
+        default_hermes_api_url=DEFAULT_HERMES_API_URL,
+        role_routing_provider_fn=lambda current_role, model_cfg=None: _role_routing_provider(current_role, model_cfg=model_cfg),
+        get_provider_profile_fn=lambda name, raw=None: _get_provider_profile(name, raw),
+        resolve_runtime_template_fn=lambda value: _resolve_runtime_template(value),
+        resolved_target_api_key_fn=lambda target: _resolved_target_api_key(target),
     )
-    # The web UI is a gateway *client* — resolve the gateway URL from the
-    # active profile's API_SERVER_PORT (handles multi-gateway setups like
-    # default:8642 / leire:8644).  Falls back to model.base_url only when
-    # no gateway port is configured for the profile.
-    _gateway_url = _profile_api_gateway_url()
-    default_target = {
-        "base_url": (_gateway_url or model_cfg.get("base_url") or _provider_default_base_url(default_provider) or _effective_hermes_api_url("") or DEFAULT_HERMES_API_URL).strip(),
-        "api_key": str(model_cfg.get("api_key") or "").strip(),
-        "model": str(model_cfg.get("default_model") or "").strip(),
-        "provider": default_provider,
-        "profile": _role_linked_profile_name("primary", model_cfg=model_cfg, raw=raw),
-        "routing_provider": _role_routing_provider("primary", model_cfg=model_cfg),
-    }
-
-    primary_profile = _get_provider_profile(default_target.get("profile"), raw)
-    if primary_profile:
-        default_target["provider"] = primary_profile.get("provider") or default_target["provider"]
-        # Only apply primary_profile base_url when no gateway URL was resolved
-        # — the web UI must route through the local gateway, not the upstream LLM.
-        if not _gateway_url:
-            default_target["base_url"] = primary_profile.get("base_url") or default_target["base_url"]
-        if primary_profile.get("api_key"):
-            default_target["api_key"] = primary_profile.get("api_key")
-        if not default_target["model"]:
-            default_target["model"] = primary_profile.get("model") or default_target["model"]
-    default_target["base_url"] = _resolve_runtime_template(default_target.get("base_url") or "").strip()
-    default_target["api_key"] = _resolved_target_api_key(default_target)
-
-    if role == "primary":
-        return default_target
-
-    if role == "fallback":
-        fallback_provider = _normalize_provider_type(
-            model_cfg.get("fallback_provider", ""),
-            base_url=model_cfg.get("fallback_base_url", ""),
-        )
-        fallback_target = {
-            "base_url": str(model_cfg.get("fallback_base_url") or _provider_default_base_url(fallback_provider) or "").strip(),
-            "api_key": str(model_cfg.get("fallback_api_key") or "").strip(),
-            "model": str(model_cfg.get("fallback_model") or "").strip(),
-            "provider": fallback_provider,
-            "profile": _role_linked_profile_name("fallback", model_cfg=model_cfg, raw=raw),
-            "routing_provider": _role_routing_provider("fallback", model_cfg=model_cfg),
-        }
-        fallback_profile = _get_provider_profile(fallback_target.get("profile"), raw)
-        if fallback_profile:
-            fallback_target["provider"] = fallback_profile.get("provider") or fallback_target["provider"]
-            fallback_target["base_url"] = fallback_profile.get("base_url") or fallback_target["base_url"]
-            if fallback_profile.get("api_key"):
-                fallback_target["api_key"] = fallback_profile.get("api_key")
-            if not fallback_target["model"]:
-                fallback_target["model"] = fallback_profile.get("model") or fallback_target["model"]
-        fallback_target["base_url"] = _resolve_runtime_template(fallback_target.get("base_url") or "").strip()
-        fallback_target["api_key"] = _resolved_target_api_key(fallback_target)
-        return fallback_target
-
-    if role == "vision":
-        merged = dict(default_target)
-        vision_cfg = model_cfg.get("vision")
-        if isinstance(vision_cfg, str) and vision_cfg.strip():
-            merged["model"] = vision_cfg.strip()
-            merged["profile"] = ""
-            merged["routing_provider"] = ""
-            merged["api_key"] = _resolved_target_api_key(merged)
-            return merged
-        if isinstance(vision_cfg, dict):
-            merged["profile"] = _role_linked_profile_name("vision", model_cfg=model_cfg, raw=raw)
-            merged["routing_provider"] = _role_routing_provider("vision", model_cfg=model_cfg)
-            vision_profile = _get_provider_profile(merged.get("profile"), raw)
-            if vision_profile:
-                merged["provider"] = vision_profile.get("provider") or merged["provider"]
-                merged["base_url"] = vision_profile.get("base_url") or merged["base_url"]
-                if vision_profile.get("api_key"):
-                    merged["api_key"] = vision_profile.get("api_key")
-            for key in ("base_url", "api_key", "model", "provider"):
-                if isinstance(vision_cfg.get(key), str) and vision_cfg.get(key).strip():
-                    merged[key] = vision_cfg.get(key).strip()
-            merged["base_url"] = _resolve_runtime_template(merged.get("base_url") or "").strip()
-            merged["provider"] = _normalize_provider_type(
-                merged.get("provider", ""),
-                base_url=merged.get("base_url", ""),
-            )
-            merged["api_key"] = _resolved_target_api_key(merged)
-        return merged
-
-    raise ValueError(f"Unknown model role: {role}")
 
 
 def _model_role_enabled(role: str, target: dict | None = None) -> bool:
-    if role == "primary":
-        return True
-    target = target if target is not None else _resolve_role_target(role)
-    return bool(str(target.get("model") or "").strip())
+    return _provider_service.model_role_enabled(
+        role,
+        target=target,
+        resolve_role_target_fn=lambda current_role: _resolve_role_target(current_role),
+    )
 
 
 def _model_role_info(role: str) -> dict:
-    target = _resolve_role_target(role)
-    linked_profile = str(target.get("profile") or "").strip()
-    return {
-        "role": role,
-        "label": MODEL_ROLE_LABELS.get(role, role.title()),
-        "profile": linked_profile,
-        "provider": str(target.get("provider") or "").strip(),
-        "provider_label": _provider_display_name(target.get("provider", "")),
-        "model": str(target.get("model") or "").strip(),
-        "base_url": str(target.get("base_url") or "").strip(),
-        "routing_provider": str(target.get("routing_provider") or "").strip(),
-        "enabled": _model_role_enabled(role, target=target),
-        "supports_live_discovery": str(target.get("provider") or "").strip().lower() == "openrouter",
-    }
+    return _provider_service.model_role_info(
+        role,
+        resolve_role_target_fn=lambda current_role: _resolve_role_target(current_role),
+        model_role_labels=MODEL_ROLE_LABELS,
+        provider_display_name_fn=lambda provider_type: _provider_display_name(provider_type),
+        model_role_enabled_fn=lambda current_role, target=None: _model_role_enabled(current_role, target=target),
+    )
 
 
 def _profile_payload_for_role(profile_name: str, model_name: str, routing_provider: str = "") -> dict:
-    profile = _get_provider_profile(profile_name)
-    if not profile:
-        raise ChatBackendError(f"Provider profile '{profile_name}' was not found", status_code=404)
-    return {
-        "profile": profile.get("name", ""),
-        "provider": profile.get("provider", ""),
-        "base_url": profile.get("base_url", ""),
-        "api_key": profile.get("api_key", ""),
-        "model": str(model_name or "").strip(),
-        "routing_provider": str(routing_provider or "").strip(),
-    }
+    return _provider_service.profile_payload_for_role(
+        profile_name,
+        model_name,
+        routing_provider,
+        get_provider_profile_fn=lambda name: _get_provider_profile(name),
+        chat_backend_error_cls=ChatBackendError,
+    )
 
 
 def _sync_linked_provider_roles(profile_name: str, profile: dict) -> None:
-    raw = cfg.get_raw()
-    model_cfg = _normalized_model_config()
-    model_updates = {}
-    if _role_linked_profile_name("primary", model_cfg=model_cfg, raw=raw) == profile_name:
-        model_updates.update({
-            "default_profile": profile_name,
-            "default_provider": profile.get("provider", ""),
-            "base_url": profile.get("base_url", ""),
-            "api_key": profile.get("api_key", ""),
-        })
-    if _role_linked_profile_name("fallback", model_cfg=model_cfg, raw=raw) == profile_name:
-        model_updates.update({
-            "fallback_profile": profile_name,
-            "fallback_provider": profile.get("provider", ""),
-            "fallback_base_url": profile.get("base_url", ""),
-            "fallback_api_key": profile.get("api_key", ""),
-        })
-    if model_updates:
-        cfg.update("model", model_updates)
-
-    vision_cfg = model_cfg.get("vision")
-    if _role_linked_profile_name("vision", model_cfg=model_cfg, raw=raw) == profile_name:
-        cfg.update("auxiliary", {
-            "vision": {
-                "profile": profile_name,
-                "provider": profile.get("provider", ""),
-                "base_url": profile.get("base_url", ""),
-                "api_key": profile.get("api_key", ""),
-                "model": str((vision_cfg or {}).get("model") or "").strip() if isinstance(vision_cfg, dict) else "",
-                "routing_provider": str((vision_cfg or {}).get("routing_provider") or "").strip() if isinstance(vision_cfg, dict) else "",
-            }
-        })
+    _provider_service.sync_linked_provider_roles(
+        profile_name,
+        profile,
+        cfg_get_raw=lambda: cfg.get_raw(),
+        normalized_model_config_fn=lambda: _normalized_model_config(),
+        role_linked_profile_name_fn=lambda role, model_cfg=None, raw=None: _role_linked_profile_name(role, model_cfg=model_cfg, raw=raw),
+        cfg_update=lambda section, data: cfg.update(section, data),
+    )
 
 
 def _classify_env_key(key: str) -> str:

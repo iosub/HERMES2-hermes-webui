@@ -114,6 +114,13 @@ Manual validation routine for each test step:
 - [x] Extract the SPA catch-all route.
 - [x] Validate frontend route behavior after this phase.
 
+### Phase 9: Extract Shared Provider Service Helpers
+
+- [x] Extract provider profile normalization helpers.
+- [x] Extract model role target resolution helpers.
+- [x] Extract linked-provider synchronization helpers.
+- [x] Validate provider and model-role smoke tests after this phase.
+
 ### Completion Criteria
 
 - [ ] Reduce app.py to a thin bootstrap and compatibility layer.
