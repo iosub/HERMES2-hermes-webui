@@ -71,6 +71,7 @@ from webui_app.routes.chat import register_chat_routes
 from webui_app.routes.config import register_config_routes
 from webui_app.routes.env import register_env_routes
 from webui_app.routes.model_roles import register_model_role_routes
+from webui_app.routes.operations import register_operations_routes
 from webui_app.routes.providers import register_provider_routes
 from webui_app.routes.skills import register_skill_routes
 from webui_app.request_hooks import register_request_hooks
@@ -5510,116 +5511,46 @@ register_chat_routes(
     },
 )
 
+register_operations_routes(
+    app,
+    require_token=require_token,
+    http_error=lambda message, code=500: _http_error(message, code),
+    deps={
+        "integration_entries": lambda raw=None: _integration_entries(raw),
+        "cfg_get_raw": lambda: cfg.get_raw(),
+        "cfg_get": lambda key: cfg.get(key),
+        "cfg_set": lambda key, value: cfg.set(key, value),
+        "preserve_masked_secret_updates": lambda current, data: _preserve_masked_secret_updates(current, data),
+        "integration_section_labels": INTEGRATION_SECTION_LABELS,
+        "sessions_dir": lambda: SESSIONS_DIR,
+        "log_file_keys": {
+            "agent": ["logs/agent.log"],
+            "gateway": ["logs/gateway.log", "gateway.log"],
+            "errors": ["logs/errors.log"],
+        },
+        "resolve_log_path": lambda key: _resolve_log_path(key),
+        "read_log_file": lambda path, lines=200: _read_log_file(path, lines),
+        "selected_hermes_home": lambda: _selected_hermes_home(),
+        "crontab_available": lambda: _crontab_available(),
+        "load_cron_jobs": lambda: _load_cron_jobs(),
+        "validate_cron_job_payload": lambda payload: _validate_cron_job_payload(payload),
+        "write_cron_jobs": lambda jobs: _write_cron_jobs(jobs),
+        "sync_cron_jobs_to_system": lambda jobs: _sync_cron_jobs_to_system(jobs),
+        "chat_backend_error": ChatBackendError,
+        "run_hermes": lambda *args, timeout=30: _run_hermes(*args, timeout=timeout),
+        "selected_hermes_bin": lambda: _selected_hermes_bin(),
+        "selected_gateway_log_path": lambda: _selected_gateway_log_path(),
+        "gateway_status": lambda: _gateway_status(),
+        "selected_hermes_home_for_service": lambda: _selected_hermes_home(),
+        "time_module": lambda: time,
+        "popen": lambda args, **kwargs: subprocess.Popen(args, **kwargs),
+        "timeout_expired": subprocess.TimeoutExpired,
+        "normalized_model_config": lambda: _normalized_model_config(),
+        "env_path": lambda: ENV_PATH,
+        "secret_patterns": _SECRET_PATTERNS,
+    },
+)
 
-# ===================================================================
-# 23–24. Channels
-# ===================================================================
-
-@app.route("/api/channels", methods=["GET"])
-@require_token
-def api_channels_get():
-    try:
-        integrations = _integration_entries()
-        return jsonify({"channels": integrations, "integrations": integrations})
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/channels/<name>", methods=["PUT"])
-@require_token
-def api_channels_update(name):
-    try:
-        data = request.get_json(force=True)
-        raw = cfg.get_raw()
-        channels_cfg = raw.get("channels", {})
-        if not isinstance(data, dict):
-            return jsonify({"ok": False, "error": "Integration config must be a JSON object"}), 400
-
-        if name in channels_cfg and isinstance(channels_cfg.get(name), dict):
-            current = channels_cfg.get(name, {})
-            channels_cfg[name] = _preserve_masked_secret_updates(current, data)
-            cfg.set("channels", channels_cfg)
-            return jsonify({"ok": True})
-
-        if name in INTEGRATION_SECTION_LABELS and isinstance(raw.get(name), dict):
-            current = raw.get(name, {})
-            cfg.set(name, _preserve_masked_secret_updates(current, data))
-            return jsonify({"ok": True})
-
-        return jsonify({"ok": False, "error": f"Integration '{name}' not found"}), 404
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-# ===================================================================
-# 25–26. Sessions
-# ===================================================================
-
-@app.route("/api/sessions", methods=["GET"])
-@require_token
-def api_sessions_get():
-    """Return a list of recent chat sessions for the session selector."""
-    try:
-        import glob
-        sessions = []
-        if SESSIONS_DIR.is_dir():
-            files = sorted(glob.glob(str(SESSIONS_DIR / "*.json")), key=os.path.getmtime, reverse=True)[:50]
-            for f in files:
-                name = os.path.splitext(os.path.basename(f))[0]
-                sessions.append({"id": name, "title": name})
-        return jsonify({"sessions": sessions})
-    except Exception as exc:
-        return jsonify({"sessions": []})
-
-
-@app.route("/api/sessions/config", methods=["GET"])
-@require_token
-def api_sessions_config_get():
-    try:
-        return jsonify(cfg.get("session_reset") or {})
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/sessions/config", methods=["PUT"])
-@require_token
-def api_sessions_config_put():
-    try:
-        data = request.get_json(force=True)
-        cfg.set("session_reset", data)
-        return jsonify({"ok": True})
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-# ===================================================================
-# 27–28. Hooks / Webhooks
-# ===================================================================
-
-@app.route("/api/hooks", methods=["GET"])
-@require_token
-def api_hooks_get():
-    try:
-        hooks = cfg.get("hooks")
-        return jsonify({"config": hooks if isinstance(hooks, dict) else {}})
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/hooks", methods=["PUT"])
-@require_token
-def api_hooks_put():
-    try:
-        data = request.get_json(force=True)
-        cfg.set("hooks", data)
-        return jsonify({"ok": True})
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-# ===================================================================
-# 29. Logs
-# ===================================================================
 
 # Allowed log file keys mapped to candidate relative paths (security: no arbitrary paths)
 # _selected_hermes_home() already resolves the active profile
@@ -5642,305 +5573,6 @@ def _resolve_log_path(key: str) -> "Path | None":
             return p
     # Return primary candidate even if it doesn't exist yet
     return home / _LOG_FILE_KEYS[key][0]
-
-
-@app.route("/api/logs")
-@require_token
-def api_logs_get():
-    try:
-        lines = request.args.get("lines", 200, type=int)
-        lines = max(10, min(lines, 2000))
-        file_key = request.args.get("file", "").strip().lower()
-
-        log_text = ""
-
-        if file_key and file_key in _LOG_FILE_KEYS:
-            # Read a specific log file by key
-            p = _resolve_log_path(file_key)
-            if p and p.exists():
-                log_text = _read_log_file(p, lines) or ""
-        else:
-            # Auto-detect: return first available log
-            log_candidates = [
-                _selected_hermes_home() / "logs" / "agent.log",
-                _selected_hermes_home() / "logs" / "gateway.log",
-                _selected_hermes_home() / "logs" / "errors.log",
-                _selected_hermes_home() / "gateway.log",
-            ]
-            for lc in log_candidates:
-                content = _read_log_file(lc, lines)
-                if content:
-                    log_text = content
-                    break
-
-        return jsonify({
-            "logs": log_text,
-            "source": "log_files",
-            "source_detail": "Tail of Hermes log files under ~/.hermes/logs when present.",
-        })
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/logs/clear", methods=["POST"])
-@require_token
-def api_logs_clear():
-    try:
-        body = request.get_json(silent=True) or {}
-        file_key = (body.get("file") or "").strip().lower()
-        if file_key not in _LOG_FILE_KEYS:
-            return jsonify({"error": "Invalid log file key. Allowed: " + ", ".join(_LOG_FILE_KEYS)}), 400
-        p = _resolve_log_path(file_key)
-        if p is None:
-            return jsonify({"error": "Could not resolve log path"}), 400
-        if p.exists():
-            p.write_text("", encoding="utf-8")
-        return jsonify({"ok": True, "file": file_key})
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/cron/jobs", methods=["GET"])
-@require_token
-def api_cron_jobs():
-    try:
-        if not _crontab_available():
-            return jsonify({"available": False, "jobs": [], "error": "crontab is not installed"}), 501
-        jobs = sorted(_load_cron_jobs().values(), key=lambda job: job.get("updated", ""), reverse=True)
-        return jsonify({"available": True, "jobs": jobs})
-    except ChatBackendError as exc:
-        return jsonify({"error": str(exc)}), exc.status_code
-
-
-@app.route("/api/cron/jobs", methods=["POST"])
-@require_token
-def api_cron_jobs_create():
-    try:
-        payload, errors = _validate_cron_job_payload(request.get_json() or {})
-        if errors:
-            return jsonify({"error": "Invalid cron job", "details": errors}), 400
-        jobs = _load_cron_jobs()
-        now = datetime.now().isoformat()
-        job_id = str(uuid.uuid4())[:8]
-        jobs[job_id] = {
-            "id": job_id,
-            "name": payload["name"],
-            "schedule": payload["schedule"],
-            "command": payload["command"],
-            "enabled": payload["enabled"],
-            "created": now,
-            "updated": now,
-        }
-        _write_cron_jobs(jobs)
-        _sync_cron_jobs_to_system(jobs)
-        return jsonify({"ok": True, "job": jobs[job_id]})
-    except ChatBackendError as exc:
-        return jsonify({"error": str(exc)}), exc.status_code
-
-
-@app.route("/api/cron/jobs/<job_id>", methods=["PUT"])
-@require_token
-def api_cron_job_update(job_id):
-    try:
-        jobs = _load_cron_jobs()
-        job = jobs.get(job_id)
-        if not job:
-            return jsonify({"error": "Cron job not found"}), 404
-        payload, errors = _validate_cron_job_payload(request.get_json() or {})
-        if errors:
-            return jsonify({"error": "Invalid cron job", "details": errors}), 400
-        job.update(payload)
-        job["updated"] = datetime.now().isoformat()
-        jobs[job_id] = job
-        _write_cron_jobs(jobs)
-        _sync_cron_jobs_to_system(jobs)
-        return jsonify({"ok": True, "job": job})
-    except ChatBackendError as exc:
-        return jsonify({"error": str(exc)}), exc.status_code
-
-
-@app.route("/api/cron/jobs/<job_id>", methods=["DELETE"])
-@require_token
-def api_cron_job_delete(job_id):
-    try:
-        jobs = _load_cron_jobs()
-        if job_id not in jobs:
-            return jsonify({"error": "Cron job not found"}), 404
-        jobs.pop(job_id, None)
-        _write_cron_jobs(jobs)
-        _sync_cron_jobs_to_system(jobs)
-        return jsonify({"ok": True})
-    except ChatBackendError as exc:
-        return jsonify({"error": str(exc)}), exc.status_code
-
-
-# ===================================================================
-# 30. Tools
-# ===================================================================
-
-@app.route("/api/tools", methods=["GET"])
-@require_token
-def api_tools_get():
-    try:
-        tools = []
-        total_enabled = 0
-        total_disabled = 0
-
-        try:
-            r = _run_hermes("tools", "list", timeout=15)
-            output = r.stdout if r.returncode == 0 else r.stderr
-        except Exception:
-            output = ""
-
-        if output:
-            for line in output.strip().splitlines():
-                line = line.strip()
-                if not line or line.startswith("-") or line.startswith("="):
-                    continue
-                # Try to parse "NAME  STATUS  Description" patterns
-                parts = line.split(None, 2)
-                if len(parts) >= 2:
-                    tool_name = parts[0]
-                    status = parts[1].lower()
-                    desc = parts[2] if len(parts) > 2 else ""
-                    is_enabled = status in ("enabled", "active", "on", "✓", "yes")
-                    tools.append({
-                        "name": tool_name,
-                        "status": "enabled" if is_enabled else "disabled",
-                        "description": desc,
-                    })
-                    if is_enabled:
-                        total_enabled += 1
-                    else:
-                        total_disabled += 1
-
-        return jsonify({
-            "tools": tools,
-            "total_enabled": total_enabled,
-            "total_disabled": total_disabled,
-            "source": "parsed_cli_output",
-            "source_detail": "Parsed from `hermes tools list` text output.",
-        })
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-# ===================================================================
-# 31. Service control
-# ===================================================================
-
-@app.route("/api/service/<action>", methods=["POST"])
-@require_token
-def api_service_action(action):
-    try:
-        action = action.lower()
-
-        # start uses `hermes gateway run &` (background) instead of `gateway start`
-        # because `gateway start` requires systemd which may not be set up in WSL
-        if action == "start":
-            import subprocess
-            bin_path = _selected_hermes_bin()
-            env = {**os.environ, "HERMES_HOME": str(_selected_hermes_home())}
-            log_path = _selected_gateway_log_path()
-            log_path.parent.mkdir(exist_ok=True)
-            # Kill any existing gateway process first
-            _run_hermes("gateway", "stop", timeout=10)
-            time.sleep(1)
-            with open(log_path, "a") as lf:
-                proc = subprocess.Popen(
-                    [str(bin_path), "gateway", "run"],
-                    env=env, stdout=lf, stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                )
-            time.sleep(3)
-            running = _gateway_status()["running"]
-            return jsonify({"ok": running, "output": "Gateway started", "gateway_running": running})
-
-        cmd_map = {
-            "stop": ["gateway", "stop"],
-            "restart": ["gateway", "stop"],
-            "doctor": ["doctor"],
-        }
-        if action not in cmd_map:
-            return jsonify({"ok": False, "error": f"Unknown action: {action}"}), 400
-
-        r = _run_hermes(*cmd_map[action], timeout=30)
-        output = (r.stdout + "\n" + r.stderr).strip()
-        running_after = _gateway_status()["running"]
-        ok = r.returncode == 0
-
-        if action == "restart":
-            # After stop, start in background
-            import subprocess
-            bin_path = _selected_hermes_bin()
-            env = {**os.environ, "HERMES_HOME": str(_selected_hermes_home())}
-            log_path = _selected_gateway_log_path()
-            log_path.parent.mkdir(exist_ok=True)
-            time.sleep(1)
-            with open(log_path, "a") as lf:
-                subprocess.Popen(
-                    [str(bin_path), "gateway", "run"],
-                    env=env, stdout=lf, stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                )
-            time.sleep(3)
-            running_after = _gateway_status()["running"]
-            output = "Restarted (running: " + str(running_after) + ")"
-            ok = running_after
-        elif action == "stop":
-            ok = not running_after
-        elif action == "doctor":
-            ok = r.returncode == 0
-
-        return jsonify({"ok": ok, "output": output, "returncode": r.returncode, "gateway_running": running_after})
-    except subprocess.TimeoutExpired:
-        return jsonify({"ok": False, "error": "Command timed out", "gateway_running": _gateway_status()["running"]}), 500
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-# ===================================================================
-# 33. Onboarding check
-# ===================================================================
-
-@app.route("/api/onboarding", methods=["GET"])
-@require_token
-def api_onboarding_get():
-    try:
-        raw = cfg.get_raw()
-        env_vars = dotenv_values(str(ENV_PATH)) if ENV_PATH.exists() else {}
-        missing = []
-
-        # Check for API key in env
-        has_api_key = any(
-            v for k, v in env_vars.items() if v and _SECRET_PATTERNS.search(k)
-        )
-        if not has_api_key:
-            # Also check config model section
-            model_cfg = _normalized_model_config()
-            if not model_cfg.get("api_key"):
-                missing.append("api_key")
-
-        # Check default provider is set
-        model_cfg = _normalized_model_config()
-        if not model_cfg.get("default_provider"):
-            missing.append("default_provider")
-
-        # Check default model is set
-        if not model_cfg.get("default_model"):
-            missing.append("default_model")
-
-        # Check at least one messaging integration is configured
-        integrations = _integration_entries(raw)
-        if not any(item.get("configured") for item in integrations):
-            missing.append("channel")
-
-        return jsonify({
-            "complete": len(missing) == 0,
-            "missing": missing,
-        })
-    except Exception as exc:
-        return _http_error(str(exc))
 
 
 # ===================================================================

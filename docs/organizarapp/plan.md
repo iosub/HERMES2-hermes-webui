@@ -97,6 +97,18 @@ Manual validation routine for each test step:
 - [x] Extract chat status route.
 - [x] Validate smoke tests after this phase.
 
+### Phase 7: Extract Administrative Operations Routes
+
+- [x] Extract channels routes.
+- [x] Extract session list and session reset config routes.
+- [x] Extract hooks routes.
+- [x] Extract log routes.
+- [x] Extract cron job routes.
+- [x] Extract tools route.
+- [x] Extract service control route.
+- [x] Extract onboarding route.
+- [x] Validate smoke tests after this phase.
+
 ### Completion Criteria
 
 - [ ] Reduce app.py to a thin bootstrap and compatibility layer.
