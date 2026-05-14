@@ -136,6 +136,37 @@ Manual validation routine for each test step:
 - [x] Extract integration capability apply helper.
 - [x] Validate integration capability smoke tests after this phase.
 
+### Phase 12: Extract Agent Preset Capability Helpers
+
+- [x] Extract agent preset role normalization helpers.
+- [x] Extract agent preset draft normalization helper.
+- [x] Extract agent preset preview helper.
+- [x] Extract agent preset apply helper.
+- [x] Validate agent preset capability smoke tests after this phase.
+
+### Phase 13: Extract Skill Capability Helpers
+
+- [x] Extract skill capability credential and command normalization helpers.
+- [x] Extract skill capability draft normalization helper.
+- [x] Extract skill capability markdown and frontmatter rendering helpers.
+- [x] Extract skill capability preview helper.
+- [x] Extract skill capability apply helper.
+- [x] Validate skill capability smoke tests after this phase.
+
+### Phase 14: Extract Skill Setup and Runtime Helpers
+
+- [x] Extract shared skill discovery and setup-readiness helpers.
+- [x] Extract skill starter-pack and runtime status helpers.
+- [x] Extract skill filesystem enable, disable, and remove helpers.
+- [x] Validate skill setup, runtime, and bulk-action smoke tests after this phase.
+
+### Phase 15: Extract Vision Sidecar Helpers
+
+- [x] Extract sidecar payload parsing and formatting helpers.
+- [x] Extract vision sidecar runtime execution helper.
+- [x] Extract CLI prompt composition with sidecar context.
+- [x] Validate sidecar payload, reanalysis, and CLI continuity smoke tests after this phase.
+
 ### Completion Criteria
 
 - [ ] Reduce app.py to a thin bootstrap and compatibility layer.
