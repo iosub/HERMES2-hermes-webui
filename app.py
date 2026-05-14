@@ -78,6 +78,7 @@ from webui_app import sidecar_runtime_service as _sidecar_runtime_service
 from webui_app import native_session_service as _native_session_service
 from webui_app import native_trace_service as _native_trace_service
 from webui_app import chat_http_service as _chat_http_service
+from webui_app import chat_attachment_service as _chat_attachment_service
 from webui_app.routes.agents import register_agent_routes
 from webui_app.routes.capabilities import register_capability_routes
 from webui_app.routes.chat import register_chat_routes
@@ -4507,46 +4508,26 @@ TEXT_MIME_TYPES = {
 
 
 def _file_mime_type(path: Path) -> str:
-    mime, _ = mimetypes.guess_type(str(path))
-    return (mime or "").lower()
+    return _chat_attachment_service.file_mime_type(path)
 
 
 def _is_text_attachment(path: Path) -> bool:
-    if path.suffix.lower() in TEXT_EXTENSIONS:
-        return True
-    mime = _file_mime_type(path)
-    if mime.startswith("text/") or mime in TEXT_MIME_TYPES:
-        return True
-    try:
-        sample = path.read_bytes()[:4096]
-    except Exception:
-        return False
-    if not sample:
-        return True
-    if b"\x00" in sample:
-        return False
-    try:
-        sample.decode("utf-8")
-        return True
-    except UnicodeDecodeError:
-        return False
+    return _chat_attachment_service.is_text_attachment(
+        path,
+        text_extensions=TEXT_EXTENSIONS,
+        text_mime_types=TEXT_MIME_TYPES,
+        file_mime_type_fn=lambda value: _file_mime_type(value),
+    )
 
 
 def _validate_attachment_selection(files: list[Path], image_support: bool) -> list[str]:
-    errors = []
-    for f in files or []:
-        suffix = f.suffix.lower()
-        if suffix in IMAGE_EXTENSIONS:
-            if not image_support:
-                errors.append(f"{f.name} is an image, but the configured Hermes vision sidecar is not ready")
-            continue
-        if suffix in AUDIO_EXTENSIONS:
-            errors.append(f"{f.name} is audio, and audio uploads are not supported in Hermes chat")
-            continue
-        if _is_text_attachment(f):
-            continue
-        errors.append(f"{f.name} is a binary file type Hermes chat cannot read")
-    return errors
+    return _chat_attachment_service.validate_attachment_selection(
+        files,
+        image_support,
+        image_extensions=IMAGE_EXTENSIONS,
+        audio_extensions=AUDIO_EXTENSIONS,
+        is_text_attachment_fn=lambda path: _is_text_attachment(path),
+    )
 
 
 def _attachment_display_name(path: Path, display_names: dict | None = None) -> str:
@@ -4554,34 +4535,15 @@ def _attachment_display_name(path: Path, display_names: dict | None = None) -> s
 
 
 def _summarize_attachments(files: list[Path], image_support: bool, display_names: dict | None = None) -> dict:
-    text_blocks = []
-    image_files = []
-    unsupported = []
-    for f in files or []:
-        display_name = _attachment_display_name(f, display_names)
-        suffix = f.suffix.lower()
-        if suffix in IMAGE_EXTENSIONS:
-            if image_support:
-                image_files.append(f)
-            else:
-                unsupported.append(f"{display_name} (image attachments require a ready Hermes vision sidecar)")
-            continue
-        if suffix in AUDIO_EXTENSIONS:
-            unsupported.append(f"{display_name} (audio attachments are not supported in Hermes chat)")
-            continue
-        if _is_text_attachment(f):
-            try:
-                content = f.read_text(encoding="utf-8", errors="replace")
-                text_blocks.append(f"File: {display_name}\n```\n{content}\n```")
-            except Exception:
-                unsupported.append(f"{display_name} (could not read text content)")
-            continue
-        unsupported.append(f"{display_name} (binary attachments cannot be read as text in this chat mode)")
-    return {
-        "text_blocks": text_blocks,
-        "image_files": image_files,
-        "unsupported": unsupported,
-    }
+    return _chat_attachment_service.summarize_attachments(
+        files,
+        image_support,
+        display_names=display_names,
+        attachment_display_name_fn=lambda path, names=None: _attachment_display_name(path, names),
+        image_extensions=IMAGE_EXTENSIONS,
+        audio_extensions=AUDIO_EXTENSIONS,
+        is_text_attachment_fn=lambda path: _is_text_attachment(path),
+    )
 
 
 def _compose_message_with_attachments(
@@ -4590,41 +4552,41 @@ def _compose_message_with_attachments(
     image_support: bool,
     display_names: dict | None = None,
 ) -> tuple[str, list[Path]]:
-    summary = _summarize_attachments(files, image_support=image_support, display_names=display_names)
-    sections = list(summary["text_blocks"])
-    if message:
-        sections.append(f"User message: {message}")
-    if summary["unsupported"]:
-        notes = "\n".join(f"- {note}" for note in summary["unsupported"])
-        sections.append(f"Attachment notes:\n{notes}")
-    if not sections:
-        sections.append(message or "User attached files without an additional text message.")
-    return "\n\n".join(sections), summary["image_files"]
+    return _chat_attachment_service.compose_message_with_attachments(
+        message,
+        files,
+        image_support,
+        display_names=display_names,
+        summarize_attachments_fn=lambda file_list, image_support=False, display_names=None: _summarize_attachments(
+            file_list,
+            image_support=image_support,
+            display_names=display_names,
+        ),
+    )
 
 
 def _session_has_image_history(session: dict) -> bool:
-    for message in session.get("messages", []):
-        for file_name in message.get("files", []) or []:
-            if Path(file_name).suffix.lower() in IMAGE_EXTENSIONS:
-                return True
-    return False
+    return _chat_attachment_service.session_has_image_history(
+        session,
+        image_extensions=IMAGE_EXTENSIONS,
+        path_class=Path,
+    )
 
 
 def _messages_for_active_segment(session: dict) -> list[dict]:
-    messages = session.get("messages") or []
-    active_segment = _active_chat_segment(session) or {}
-    start_message_index = int(active_segment.get("start_message_index") or 0)
-    if start_message_index <= 0:
-        return messages
-    return messages[start_message_index:]
+    return _chat_attachment_service.messages_for_active_segment(
+        session,
+        active_chat_segment_fn=lambda value: _active_chat_segment(value),
+    )
 
 
 def _active_segment_has_image_history(session: dict) -> bool:
-    for message in _messages_for_active_segment(session):
-        for file_name in message.get("files", []) or []:
-            if Path(file_name).suffix.lower() in IMAGE_EXTENSIONS:
-                return True
-    return False
+    return _chat_attachment_service.active_segment_has_image_history(
+        session,
+        messages_for_active_segment_fn=lambda value: _messages_for_active_segment(value),
+        image_extensions=IMAGE_EXTENSIONS,
+        path_class=Path,
+    )
 
 
 def _build_attachment_refs(files: list[Path], display_names: dict | None = None) -> list[dict]:
@@ -4640,51 +4602,29 @@ def _build_attachment_refs(files: list[Path], display_names: dict | None = None)
 
 
 def _latest_user_turn(session: dict) -> dict | None:
-    for message in reversed(session.get("messages", [])):
-        if isinstance(message, dict) and message.get("role") == "user":
-            return message
-    return None
+    return _chat_attachment_service.latest_user_turn(session)
 
 
 def _latest_sidecar_asset_group(session: dict) -> list[dict]:
-    asset_ids = set()
-    for message in reversed(session.get("messages", [])):
-        if not isinstance(message, dict) or message.get("role") != "user":
-            continue
-        sidecar = message.get("sidecar_vision") or {}
-        asset_ids = set(_clean_string_list(sidecar.get("asset_ids")))
-        if asset_ids:
-            break
-    if not asset_ids:
-        return []
-    assets = []
-    for asset in session.get("vision_assets", []) or []:
-        if isinstance(asset, dict) and asset.get("id") in asset_ids:
-            assets.append(copy.deepcopy(asset))
-    return assets
+    return _chat_attachment_service.latest_sidecar_asset_group(
+        session,
+        clean_string_list_fn=lambda value: _clean_string_list(value),
+    )
 
 
 def _latest_turn_used_sidecar_vision(session: dict) -> bool:
-    latest_user = _latest_user_turn(session)
-    return bool((latest_user or {}).get("sidecar_vision", {}).get("used"))
+    return _chat_attachment_service.latest_turn_used_sidecar_vision(
+        session,
+        latest_user_turn_fn=lambda value: _latest_user_turn(value),
+    )
 
 
 def _latest_turn_sidecar_asset_names(session: dict) -> list[str]:
-    latest_user = _latest_user_turn(session)
-    if not latest_user:
-        return []
-    sidecar = latest_user.get("sidecar_vision") or {}
-    asset_names = []
-    asset_map = {
-        asset.get("id"): asset for asset in session.get("vision_assets", []) or []
-        if isinstance(asset, dict) and asset.get("id")
-    }
-    for asset_id in _clean_string_list(sidecar.get("asset_ids")):
-        asset = asset_map.get(asset_id) or {}
-        label = str(asset.get("display_name") or "").strip()
-        if label:
-            asset_names.append(label)
-    return asset_names
+    return _chat_attachment_service.latest_turn_sidecar_asset_names(
+        session,
+        latest_user_turn_fn=lambda value: _latest_user_turn(value),
+        clean_string_list_fn=lambda value: _clean_string_list(value),
+    )
 
 
 def _chat_session_meta(session: dict) -> dict:
@@ -4720,52 +4660,14 @@ def _chat_session_meta(session: dict) -> dict:
 
 
 def _format_chat_context_block(session: dict) -> str:
-    context = _effective_session_context(session)
-    folder_title = context.get("folder_title") or ""
-    workspace_roots = context.get("workspace_roots") or []
-    source_docs = context.get("source_docs") or []
-    if not any((folder_title, workspace_roots, source_docs)):
-        return ""
-
-    sections = ["Chat workspace context:"]
-    if folder_title:
-        sections.append(f"Folder: {folder_title}")
-    if workspace_roots:
-        sections.append("Workspace roots:\n" + "\n".join(f"- {root}" for root in workspace_roots))
-    if source_docs:
-        sections.append("Pinned source docs:\n" + "\n".join(f"- {doc}" for doc in source_docs))
-
-    doc_sections = []
-    notes = []
-    total_bytes = 0
-    for source_doc in source_docs:
-        path = Path(source_doc)
-        if not path.exists():
-            notes.append(f"{source_doc} (missing)")
-            continue
-        if not _is_text_attachment(path):
-            notes.append(f"{source_doc} (not a readable text file)")
-            continue
-        try:
-            raw_bytes = path.read_bytes()
-        except Exception as exc:
-            notes.append(f"{source_doc} (could not be read: {exc})")
-            continue
-        remaining = CHAT_CONTEXT_SOURCE_DOC_TOTAL_LIMIT - total_bytes
-        if remaining <= 0:
-            notes.append(f"{source_doc} (skipped because the source-doc context limit was reached)")
-            continue
-        snippet = raw_bytes[:min(CHAT_CONTEXT_SOURCE_DOC_LIMIT, remaining)]
-        total_bytes += len(snippet)
-        text = snippet.decode("utf-8", errors="replace")
-        if len(snippet) < len(raw_bytes):
-            notes.append(f"{source_doc} (truncated to {len(snippet)} bytes for chat context)")
-        doc_sections.append(f"Source doc: {source_doc}\n```\n{text}\n```")
-
-    sections.extend(doc_sections)
-    if notes:
-        sections.append("Source doc notes:\n" + "\n".join(f"- {note}" for note in notes))
-    return "\n\n".join(sections)
+    return _chat_attachment_service.format_chat_context_block(
+        session,
+        effective_session_context_fn=lambda value: _effective_session_context(value),
+        path_class=Path,
+        is_text_attachment_fn=lambda path: _is_text_attachment(path),
+        chat_context_source_doc_limit=CHAT_CONTEXT_SOURCE_DOC_LIMIT,
+        chat_context_source_doc_total_limit=CHAT_CONTEXT_SOURCE_DOC_TOTAL_LIMIT,
+    )
 
 
 def _compose_chat_turn_payload(
@@ -4775,15 +4677,20 @@ def _compose_chat_turn_payload(
     image_support: bool,
     display_names: dict | None = None,
 ) -> tuple[str, list[Path]]:
-    attachment_text, image_files = _compose_message_with_attachments(
+    return _chat_attachment_service.compose_chat_turn_payload(
+        session,
         message,
         files,
-        image_support=image_support,
+        image_support,
         display_names=display_names,
+        compose_message_with_attachments_fn=lambda message_text, file_list, image_support=False, display_names=None: _compose_message_with_attachments(
+            message_text,
+            file_list,
+            image_support=image_support,
+            display_names=display_names,
+        ),
+        format_chat_context_block_fn=lambda value: _format_chat_context_block(value),
     )
-    context_block = _format_chat_context_block(session)
-    sections = [section for section in (context_block, attachment_text) if section]
-    return "\n\n".join(sections), image_files
 
 
 def _integration_config_is_configured(value) -> bool:
