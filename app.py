@@ -54,6 +54,8 @@ from webui_app.chat_persistence import write_request_control as _write_request_c
 from webui_app.chat_persistence import write_all_folders as _write_all_folders_impl
 from webui_app.chat_persistence import write_folder as _write_folder_impl
 from webui_app.chat_persistence import write_session as _write_session_impl
+from webui_app.chat_transport import plan_chat_request as _plan_chat_request_impl
+from webui_app.chat_transport import validated_transport_preference as _validated_transport_preference_impl
 from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
 from webui_app.routes.agents import register_agent_routes
 from webui_app.routes.capabilities import register_capability_routes
@@ -7202,16 +7204,14 @@ def _chat_runtime_status(raw: dict | None = None, *, skills: list[dict] | None =
 
 
 def _validated_transport_preference(value) -> tuple[str | None, str]:
-    normalized = _normalize_transport_preference(value)
-    if normalized != CHAT_TRANSPORT_API:
-        return normalized, ""
-
-    runtime = _chat_runtime_status()
-    if runtime.get("requires_cli"):
-        return CHAT_TRANSPORT_CLI, runtime.get("cli_reason") or "Hermes CLI is required right now."
-    if not _check_api_server():
-        return CHAT_TRANSPORT_CLI, "API replay is unavailable right now, so Hermes CLI will be used."
-    return normalized, ""
+    return _validated_transport_preference_impl(
+        value,
+        normalize_transport_preference=_normalize_transport_preference,
+        chat_runtime_status=_chat_runtime_status,
+        check_api_server=_check_api_server,
+        chat_transport_api=CHAT_TRANSPORT_API,
+        chat_transport_cli=CHAT_TRANSPORT_CLI,
+    )
 
 
 def _vision_reanalysis_requested(message: str, session: dict) -> bool:
@@ -7681,39 +7681,18 @@ def _compose_cli_prompt_with_sidecar(
 
 
 def _plan_chat_request(session: dict, files: list[Path]) -> dict:
-    normalized = _normalize_chat_session(copy.deepcopy(session))
-    transport_preference = _normalize_transport_preference(normalized.get("transport_preference"))
-    has_image_files = any(f.suffix.lower() in IMAGE_EXTENSIONS for f in files or [])
-    image_support, image_reason = _image_attachment_support_status()
-    api_server_enabled = _check_api_server()
-    runtime = _chat_runtime_status()
-    notice = normalized.get("transport_notice") or ""
-
-    if runtime.get("requires_cli"):
-        transport = CHAT_TRANSPORT_CLI
-        notice = runtime.get("cli_reason") or notice
-    elif transport_preference == CHAT_TRANSPORT_API and api_server_enabled:
-        transport = CHAT_TRANSPORT_API
-    elif transport_preference == CHAT_TRANSPORT_API:
-        transport = CHAT_TRANSPORT_CLI
-        notice = "API replay is unavailable right now, so Hermes CLI will be used."
-    elif transport_preference == CHAT_TRANSPORT_CLI:
-        transport = CHAT_TRANSPORT_CLI
-    else:
-        transport = CHAT_TRANSPORT_API if api_server_enabled else CHAT_TRANSPORT_CLI
-        if transport == CHAT_TRANSPORT_CLI and transport_preference is None and runtime.get("cli_reason"):
-            notice = runtime.get("cli_reason")
-
-    return {
-        "transport": transport,
-        "cancel_supported": transport == CHAT_TRANSPORT_CLI,
-        "image_support": image_support,
-        "image_reason": image_reason,
-        "api_server_enabled": api_server_enabled,
-        "transport_notice": notice,
-        "use_sidecar_vision": transport == CHAT_TRANSPORT_CLI and has_image_files,
-        "runtime": runtime,
-    }
+    return _plan_chat_request_impl(
+        copy.deepcopy(session),
+        files,
+        normalize_chat_session=_normalize_chat_session,
+        normalize_transport_preference=_normalize_transport_preference,
+        image_extensions=IMAGE_EXTENSIONS,
+        image_attachment_support_status=_image_attachment_support_status,
+        check_api_server=_check_api_server,
+        chat_runtime_status=_chat_runtime_status,
+        chat_transport_api=CHAT_TRANSPORT_API,
+        chat_transport_cli=CHAT_TRANSPORT_CLI,
+    )
 
 
 def _parse_hermes_chat_result(output: str) -> tuple[str, str | None]:

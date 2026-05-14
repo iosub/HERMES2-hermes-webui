@@ -87,7 +87,7 @@ Manual validation routine for each test step:
 
 ### Phase 6: Extract Chat Runtime and Routes
 
-- [ ] Extract chat transport selection logic.
+- [x] Extract chat transport selection logic.
 - [ ] Extract CLI and API dispatch helpers.
 - [ ] Extract cancellation flow helpers.
 - [ ] Extract upload endpoints.
