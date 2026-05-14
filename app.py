@@ -54,6 +54,7 @@ from webui_app.chat_persistence import write_request_control as _write_request_c
 from webui_app.chat_persistence import write_all_folders as _write_all_folders_impl
 from webui_app.chat_persistence import write_folder as _write_folder_impl
 from webui_app.chat_persistence import write_session as _write_session_impl
+from webui_app.chat_dispatch import call_api_server as _call_api_server_impl
 from webui_app.chat_transport import plan_chat_request as _plan_chat_request_impl
 from webui_app.chat_transport import validated_transport_preference as _validated_transport_preference_impl
 from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
@@ -7868,73 +7869,24 @@ def _call_api_server(
     file_display_names: dict | None = None,
 ) -> str:
     """Call Hermes via its OpenAI-compatible API server. Handles image files as base64."""
-    import base64
-
-    msgs = list(messages)
-    use_vision_target = prefer_vision
-    if files and msgs and msgs[-1].get("role") == "user":
-        text_content, image_files = _compose_chat_turn_payload(
-            session,
-            msgs[-1].get("content", "") or "",
-            files,
-            image_support=True,
-            display_names=file_display_names,
-        )
-        if image_files:
-            use_vision_target = True
-            img_content = []
-            if text_content:
-                img_content.append({"type": "text", "text": text_content})
-            for img in image_files:
-                try:
-                    with open(img, "rb") as f:
-                        b64 = base64.b64encode(f.read()).decode("utf-8")
-                    ext = img.suffix.lower().replace(".", "")
-                    img_content.append({"type": "image_url", "image_url": {"url": f"data:image/{ext};base64,{b64}"}})
-                except Exception:
-                    pass
-            if img_content:
-                msgs[-1] = {"role": "user", "content": img_content}
-        else:
-            msgs[-1] = {"role": "user", "content": text_content}
-    elif msgs and msgs[-1].get("role") == "user":
-        text_content, _ = _compose_chat_turn_payload(
-            session,
-            msgs[-1].get("content", "") or "",
-            [],
-            image_support=False,
-            display_names=file_display_names,
-        )
-        msgs[-1] = {"role": "user", "content": text_content}
-    target = _resolve_api_target(prefer_vision=use_vision_target)
-    try:
-        return _chat_completion_request(target, msgs)
-    except ChatBackendError as exc:
-        if use_vision_target or not _chat_backend_error_is_retryable(exc):
-            raise
-        fallback_target = _resolve_fallback_api_target()
-        if (
-            not _model_role_enabled("fallback", target=fallback_target)
-            or _targets_equivalent(target, fallback_target)
-        ):
-            raise
-        try:
-            return _chat_completion_request(fallback_target, msgs)
-        except ChatBackendError as fallback_exc:
-            primary_detail = _chat_backend_error_detail(exc) or str(exc)
-            fallback_detail = _chat_backend_error_detail(fallback_exc) or str(fallback_exc)
-            raise ChatBackendError(
-                "Primary chat model failed"
-                f" ({target.get('model') or 'primary'}): {primary_detail}. "
-                "Fallback chat model also failed"
-                f" ({fallback_target.get('model') or 'fallback'}): {fallback_detail}",
-                status_code=max(
-                    int(getattr(exc, "status_code", 502) or 502),
-                    int(getattr(fallback_exc, "status_code", 502) or 502),
-                ),
-            ) from fallback_exc
-    except Exception as exc:
-        raise ChatBackendError(f"API server error: {exc}") from exc
+    return _call_api_server_impl(
+        session,
+        messages,
+        session_id,
+        files=files,
+        prefer_vision=prefer_vision,
+        file_display_names=file_display_names,
+        compose_chat_turn_payload=_compose_chat_turn_payload,
+        resolve_api_target=_resolve_api_target,
+        chat_completion_request=_chat_completion_request,
+        chat_backend_error=ChatBackendError,
+        chat_backend_error_is_retryable=_chat_backend_error_is_retryable,
+        resolve_fallback_api_target=_resolve_fallback_api_target,
+        model_role_enabled=_model_role_enabled,
+        targets_equivalent=_targets_equivalent,
+        chat_backend_error_detail=_chat_backend_error_detail,
+        image_extensions=IMAGE_EXTENSIONS,
+    )
 
 
 def _provider_env_api_key(provider: str | None) -> str:
