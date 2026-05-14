@@ -35,6 +35,8 @@ from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 from webui_app.chat_persistence import chat_data_lock as _chat_data_lock_impl
 from webui_app.chat_persistence import delete_folder as _delete_folder_impl
+from webui_app.chat_persistence import attachment_display_name as _attachment_display_name_impl
+from webui_app.chat_persistence import build_attachment_refs as _build_attachment_refs_impl
 from webui_app.chat_persistence import chat_session_path as _chat_session_path_impl
 from webui_app.chat_persistence import delete_session_from_disk as _delete_session_from_disk_impl
 from webui_app.chat_persistence import folders_from_file as _folders_from_file_impl
@@ -47,6 +49,7 @@ from webui_app.chat_persistence import request_control_path as _request_control_
 from webui_app.chat_persistence import request_output_path as _request_output_path_impl
 from webui_app.chat_persistence import load_session as _load_session_impl
 from webui_app.chat_persistence import session_from_file as _session_from_file_impl
+from webui_app.chat_persistence import update_session_vision_assets as _update_session_vision_assets_impl
 from webui_app.chat_persistence import write_request_control as _write_request_control_impl
 from webui_app.chat_persistence import write_all_folders as _write_all_folders_impl
 from webui_app.chat_persistence import write_folder as _write_folder_impl
@@ -6304,11 +6307,7 @@ def _validate_attachment_selection(files: list[Path], image_support: bool) -> li
 
 
 def _attachment_display_name(path: Path, display_names: dict | None = None) -> str:
-    if display_names:
-        display_name = display_names.get(path.name)
-        if isinstance(display_name, str) and display_name.strip():
-            return display_name.strip()
-    return path.name
+    return _attachment_display_name_impl(path, display_names=display_names)
 
 
 def _summarize_attachments(files: list[Path], image_support: bool, display_names: dict | None = None) -> dict:
@@ -6386,17 +6385,15 @@ def _active_segment_has_image_history(session: dict) -> bool:
 
 
 def _build_attachment_refs(files: list[Path], display_names: dict | None = None) -> list[dict]:
-    refs = []
-    for path in files or []:
-        suffix = path.suffix.lower()
-        kind = "image" if suffix in IMAGE_EXTENSIONS else "audio" if suffix in AUDIO_EXTENSIONS else "text" if _is_text_attachment(path) else "binary"
-        refs.append({
-            "stored_as": path.name,
-            "display_name": _attachment_display_name(path, display_names),
-            "kind": kind,
-            "mime_type": _file_mime_type(path),
-        })
-    return refs
+    return _build_attachment_refs_impl(
+        files,
+        display_names=display_names,
+        image_extensions=IMAGE_EXTENSIONS,
+        audio_extensions=AUDIO_EXTENSIONS,
+        is_text_attachment=_is_text_attachment,
+        file_mime_type=_file_mime_type,
+        attachment_display_name_fn=_attachment_display_name,
+    )
 
 
 def _latest_user_turn(session: dict) -> dict | None:
@@ -7440,46 +7437,16 @@ def _update_session_vision_assets(
     focus_message: str,
     target: dict,
 ) -> list[str]:
-    assets = session.setdefault("vision_assets", [])
-    now = datetime.now().isoformat()
-    asset_ids = []
-    existing_by_stored_as = {
-        asset.get("stored_as"): asset for asset in assets
-        if isinstance(asset, dict) and asset.get("stored_as")
-    }
-    per_image_results = parsed_payload.get("images") or []
-    for idx, image_file in enumerate(image_files):
-        stored_as = image_file.name
-        asset = existing_by_stored_as.get(stored_as)
-        if not asset:
-            asset = {
-                "id": f"vis-{uuid.uuid4().hex[:10]}",
-                "stored_as": stored_as,
-                "display_name": image_file.name,
-                "mime_type": _file_mime_type(image_file),
-                "created_at": now,
-                "source_message_index": source_message_index,
-                "source_message_timestamp": source_message_timestamp,
-            }
-            assets.append(asset)
-            existing_by_stored_as[stored_as] = asset
-        image_result = per_image_results[idx] if idx < len(per_image_results) else {}
-        asset["display_name"] = str(image_result.get("label") or asset.get("display_name") or image_file.name).strip() or image_file.name
-        asset["mime_type"] = _file_mime_type(image_file)
-        asset["source_message_index"] = source_message_index
-        asset["source_message_timestamp"] = source_message_timestamp
-        asset["last_analysis"] = {
-            "summary": str(image_result.get("summary") or parsed_payload.get("overall_summary") or "").strip(),
-            "raw_text": str(parsed_payload.get("raw_text") or "").strip(),
-            "focus": focus_message.strip(),
-            "analyzed_at": now,
-            "model": str(target.get("model") or "").strip(),
-            "provider": str(target.get("provider") or "").strip(),
-        }
-        asset_ids.append(asset["id"])
-        if idx < len(per_image_results):
-            per_image_results[idx]["asset_id"] = asset["id"]
-    return asset_ids
+    return _update_session_vision_assets_impl(
+        session,
+        image_files,
+        parsed_payload,
+        source_message_index=source_message_index,
+        source_message_timestamp=source_message_timestamp,
+        focus_message=focus_message,
+        target=target,
+        file_mime_type=_file_mime_type,
+    )
 
 
 def _chat_backend_error_detail(exc: Exception) -> str:

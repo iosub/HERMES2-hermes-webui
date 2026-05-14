@@ -82,7 +82,7 @@ Manual validation routine for each test step:
 - [x] Extract chat session file load and write helpers.
 - [x] Extract folder persistence helpers.
 - [x] Extract request control persistence helpers.
-- [ ] Extract attachment metadata helpers.
+- [x] Extract attachment metadata helpers.
 - [ ] Validate smoke tests after this phase.
 
 ### Phase 6: Extract Chat Runtime and Routes
