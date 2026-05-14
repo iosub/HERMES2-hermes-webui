@@ -35,6 +35,7 @@ from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
 from webui_app.request_hooks import register_request_hooks
+from webui_app.routes.system import register_system_routes
 
 # ---------------------------------------------------------------------------
 # Logging Setup
@@ -5191,137 +5192,24 @@ def _http_error(msg: str, status: int = 500):
     return jsonify(payload), status
 
 
-# ===================================================================
-# 1. Health
-# ===================================================================
-
-@app.route("/api/health")
-@require_token
-def api_health():
-    try:
-        # Primary truth: Hermes CLI status
-        gs = _gateway_status()
-        # Fallback PID scan only if CLI didn't return a PID (for debug/missing CLI info)
-        pid = gs["pid"]
-        if pid is None:
-            pid = _find_gateway_pid()
-        version = "unknown"
-        try:
-            r = _run_hermes("--version", timeout=5)
-            if r.returncode == 0:
-                version = r.stdout.strip() or r.stderr.strip()
-        except Exception:
-            pass
-        return jsonify({
-            "status": "running" if gs["running"] else "stopped",
-            "gateway_pid": pid,
-            "gateway_running": gs["running"],
-            "version": version,
-            "hermes_home": str(_selected_hermes_home()),
-            "hermes_bin": str(_selected_hermes_bin()),
-            "profile": _selected_hermes_profile_name(),
-        })
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-# ===================================================================
-# 2. System info
-# ===================================================================
-
-@app.route("/api/system")
-@require_token
-def api_system():
-    try:
-        import platform
-        disk = shutil.disk_usage(str(Path.home()))
-        uptime = 0
-        try:
-            with open("/proc/uptime") as fh:
-                uptime = float(fh.read().split()[0])
-        except Exception:
-            pass
-        return jsonify({
-            "python_version": platform.python_version(),
-            "os_info": f"{platform.system()} {platform.release()} ({platform.machine()})",
-            "disk_free": disk.free,
-            "uptime": uptime,
-        })
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/hermes/update-status")
-@require_token
-def api_hermes_update_status():
-    try:
-        refresh = str(request.args.get("refresh") or "").strip().lower() in {"1", "true", "yes", "on"}
-        return jsonify(_build_hermes_update_payload(force_refresh=refresh))
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/hermes/update-check", methods=["POST"])
-@require_token
-def api_hermes_update_check():
-    try:
-        return jsonify(_build_hermes_update_payload(force_refresh=True))
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/hermes/update", methods=["POST"])
-@require_token
-def api_hermes_update():
-    try:
-        data = request.get_json(silent=True) or {}
-        if not data.get("confirm"):
-            return jsonify({"ok": False, "error": "Update confirmation required."}), 400
-
-        current = _build_hermes_update_payload(force_refresh=True)
-        if not current.get("can_update"):
-            return jsonify({
-                "ok": False,
-                "error": current.get("manual_reason") or "In-app Hermes updating is not supported for this install.",
-                "manual_command": current.get("manual_command") or "",
-                "status": current,
-            }), 409
-
-        runtime = _runtime_snapshot()
-        if runtime.get("status") == "update_in_progress":
-            return jsonify({
-                "ok": True,
-                "message": runtime.get("summary") or "Hermes update already in progress.",
-                "status": _build_hermes_update_payload(force_refresh=False),
-            }), 202
-
-        _invalidate_hermes_update_cache(Path(current["project_root"]) if current.get("project_root") else None)
-        _set_update_runtime(
-            status="update_in_progress",
-            started_at=_utc_now_z(),
-            finished_at="",
-            returncode=None,
-            error="",
-            summary=f"Starting Hermes update for {current.get('installed_version', {}).get('display') or 'the installed version'}...",
-            logs=[],
-            install_key=current.get("install_key") or "",
-            installed_version_before=(current.get("installed_version") or {}).get("display") or "",
-            installed_version_after="",
-        )
-        worker = threading.Thread(
-            target=_run_hermes_update_worker,
-            args=(current,),
-            daemon=True,
-            name="hermes-update-worker",
-        )
-        worker.start()
-        return jsonify({
-            "ok": True,
-            "message": "Hermes update started.",
-            "status": _build_hermes_update_payload(force_refresh=False),
-        }), 202
-    except Exception as exc:
-        return _http_error(str(exc))
+register_system_routes(
+    app,
+    require_token=require_token,
+    http_error=_http_error,
+    gateway_status=lambda: _gateway_status(),
+    find_gateway_pid=lambda: _find_gateway_pid(),
+    run_hermes=lambda *args, **kwargs: _run_hermes(*args, **kwargs),
+    selected_hermes_home=lambda: _selected_hermes_home(),
+    selected_hermes_bin=lambda: _selected_hermes_bin(),
+    selected_hermes_profile_name=lambda: _selected_hermes_profile_name(),
+    build_hermes_update_payload=lambda *args, **kwargs: _build_hermes_update_payload(*args, **kwargs),
+    runtime_snapshot=lambda: _runtime_snapshot(),
+    invalidate_hermes_update_cache=lambda repo_dir=None: _invalidate_hermes_update_cache(repo_dir),
+    set_update_runtime=lambda **updates: _set_update_runtime(**updates),
+    utc_now_z=lambda: _utc_now_z(),
+    run_hermes_update_worker=lambda install_snapshot: _run_hermes_update_worker(install_snapshot),
+    threading_module=lambda: threading,
+)
 
 
 # ===================================================================

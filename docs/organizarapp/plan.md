@@ -53,7 +53,7 @@ Manual validation routine for each test step:
 - [x] Extract request lifecycle hooks.
 - [x] Extract shared request error handlers.
 - [x] Extract rate limiting helpers.
-- [ ] Extract health and system routes.
+- [x] Extract health and system routes.
 - [ ] Validate smoke tests after this phase.
 
 ### Phase 3: Extract Configuration Domain
