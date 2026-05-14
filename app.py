@@ -77,6 +77,7 @@ from webui_app import sidecar_payload_service as _sidecar_payload_service
 from webui_app import sidecar_runtime_service as _sidecar_runtime_service
 from webui_app import native_session_service as _native_session_service
 from webui_app import native_trace_service as _native_trace_service
+from webui_app import chat_http_service as _chat_http_service
 from webui_app.routes.agents import register_agent_routes
 from webui_app.routes.capabilities import register_capability_routes
 from webui_app.routes.chat import register_chat_routes
@@ -5398,212 +5399,75 @@ def _resolve_fallback_api_target() -> dict:
 
 
 def _api_target_missing_credentials(target: dict | None) -> bool:
-    import urllib.parse
-
-    target = target or {}
-    base_url = str(target.get("base_url") or "").strip()
-    if not base_url:
-        return False
-    parsed = urllib.parse.urlparse(base_url)
-    hostname = (parsed.hostname or "").strip().lower()
-    if hostname in {"", "localhost", "127.0.0.1", "::1"}:
-        return False
-    return not bool(_resolved_target_api_key(target))
+    return _chat_http_service.api_target_missing_credentials(
+        target,
+        resolved_target_api_key_fn=lambda value: _resolved_target_api_key(value),
+    )
 
 
 def _openrouter_model_supports_images(target: dict, timeout: int = 3) -> tuple[bool | None, str]:
-    import urllib.request
-
-    if (target.get("provider") or "").strip().lower() != "openrouter":
-        return None, ""
-    model_id = (target.get("model") or "").strip()
-    if not model_id:
-        return None, ""
-
-    req = urllib.request.Request(
-        _build_openai_api_url(target.get("base_url") or "", "models"),
-        headers=_api_server_headers(target.get("api_key"), target.get("provider")),
-        method="GET",
+    return _chat_http_service.openrouter_model_supports_images(
+        target,
+        timeout=timeout,
+        build_openai_api_url_fn=lambda base_url, path: _build_openai_api_url(base_url, path),
+        api_server_headers_fn=lambda api_key=None, provider=None: _api_server_headers(api_key, provider),
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
-    except Exception as exc:
-        return None, f"Could not verify image support for {model_id}: {exc}"
-
-    for item in payload.get("data", []) or []:
-        if item.get("id") != model_id:
-            continue
-        architecture = item.get("architecture") or {}
-        input_modalities = architecture.get("input_modalities") or []
-        if "image" in input_modalities:
-            return True, ""
-        modality = str(architecture.get("modality") or "")
-        if "image" in modality.lower():
-            return True, ""
-        return False, f"The configured OpenRouter model {model_id} does not advertise image input support"
-
-    return None, f"Could not find model metadata for {model_id} on OpenRouter"
 
 
 def _openrouter_fetch_json(path: str, timeout: int = 10) -> dict:
-    import urllib.request
-
-    req = urllib.request.Request(
-        _build_openai_api_url("https://openrouter.ai/api/v1", path),
-        headers={"User-Agent": "hermes-web-ui"},
-        method="GET",
+    return _chat_http_service.openrouter_fetch_json(
+        path,
+        timeout=timeout,
+        build_openai_api_url_fn=lambda base_url, route: _build_openai_api_url(base_url, route),
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode())
 
 
 def _openrouter_discovery_models(*, vision_only: bool = False, timeout: int = 10) -> list[dict]:
-    payload = _openrouter_fetch_json("models", timeout=timeout)
-    models = []
-    for item in payload.get("data", []) or []:
-        model_id = str(item.get("id") or "").strip()
-        if not model_id:
-            continue
-        architecture = item.get("architecture") or {}
-        input_modalities = architecture.get("input_modalities") or []
-        modality = str(architecture.get("modality") or "")
-        supports_image = "image" in input_modalities or "image" in modality.lower()
-        if vision_only and not supports_image:
-            continue
-        models.append({
-            "id": model_id,
-            "name": str(item.get("name") or model_id).strip(),
-            "description": str(item.get("description") or "").strip(),
-            "supports_image": supports_image,
-            "input_modalities": input_modalities,
-        })
-    return sorted(models, key=lambda item: item.get("id", ""))
+    return _chat_http_service.openrouter_discovery_models(
+        vision_only=vision_only,
+        timeout=timeout,
+        openrouter_fetch_json_fn=lambda path, timeout=10: _openrouter_fetch_json(path, timeout=timeout),
+    )
 
 
 def _openrouter_discovery_endpoints(model_id: str, timeout: int = 10) -> list[dict]:
-    import urllib.parse
-
-    # OpenRouter expects slash-delimited model ids in the path here.
-    encoded_model = urllib.parse.quote(str(model_id or "").strip(), safe="/")
-    payload = _openrouter_fetch_json(f"models/{encoded_model}/endpoints", timeout=timeout)
-    data = payload.get("data", payload) if isinstance(payload, dict) else payload
-    endpoints = data.get("endpoints", []) if isinstance(data, dict) else []
-    normalized = []
-    for endpoint in endpoints or []:
-        normalized.append({
-            "provider_name": str(endpoint.get("provider_name") or endpoint.get("name") or "").strip(),
-            "tag": str(endpoint.get("tag") or "").strip(),
-            "status": endpoint.get("status"),
-            "uptime_last_30m": endpoint.get("uptime_last_30m"),
-            "context_length": endpoint.get("context_length"),
-        })
-    return normalized
+    return _chat_http_service.openrouter_discovery_endpoints(
+        model_id,
+        timeout=timeout,
+        openrouter_fetch_json_fn=lambda path, timeout=10: _openrouter_fetch_json(path, timeout=timeout),
+    )
 
 
 def _summarize_upstream_error_detail(raw_body: str, fallback: str = "") -> str:
-    detail = (raw_body or "").strip()
-    if not detail:
-        return fallback or "upstream request failed"
-    try:
-        payload = json.loads(detail)
-    except Exception:
-        return detail
-
-    if isinstance(payload, dict):
-        error_payload = payload.get("error", payload)
-        if isinstance(error_payload, dict):
-            metadata = error_payload.get("metadata") if isinstance(error_payload.get("metadata"), dict) else {}
-            metadata_raw = str(metadata.get("raw") or "").strip()
-            message = str(error_payload.get("message") or "").strip()
-            code = str(error_payload.get("code") or "").strip()
-            if metadata_raw:
-                return metadata_raw
-            if message and code and message.lower() != code.lower():
-                return f"{message} ({code})"
-            if message:
-                return message
-            if code:
-                return code
-        message = payload.get("message")
-        if isinstance(message, str) and message.strip():
-            return message.strip()
-    return detail
+    return _chat_http_service.summarize_upstream_error_detail(raw_body, fallback)
 
 
 def _estimate_base64_decoded_size(payload: str) -> int:
-    cleaned = "".join(str(payload).split())
-    if not cleaned:
-        return 0
-    if len(cleaned) % 4 != 0:
-        raise ValueError("Invalid base64 length")
-    padding = len(cleaned) - len(cleaned.rstrip("="))
-    return (len(cleaned) * 3) // 4 - padding
+    return _chat_http_service.estimate_base64_decoded_size(payload)
 
 
 def _save_upload_stream(file_storage, destination: Path) -> int:
-    temp_path = destination.with_name(f".{destination.name}.part")
-    total = 0
-    stream = getattr(file_storage, "stream", file_storage)
-    if hasattr(stream, "seek"):
-        stream.seek(0)
-    try:
-        with temp_path.open("wb") as handle:
-            while True:
-                chunk = stream.read(UPLOAD_STREAM_CHUNK_SIZE)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > MAX_UPLOAD_SIZE:
-                    raise RequestEntityTooLarge()
-                handle.write(chunk)
-        temp_path.replace(destination)
-        return total
-    except Exception:
-        temp_path.unlink(missing_ok=True)
-        raise
+    return _chat_http_service.save_upload_stream(
+        file_storage,
+        destination,
+        upload_stream_chunk_size=UPLOAD_STREAM_CHUNK_SIZE,
+        max_upload_size=MAX_UPLOAD_SIZE,
+        request_entity_too_large=RequestEntityTooLarge,
+    )
 
 
 def _build_openai_api_url(base_url: str, path: str) -> str:
-    base = (base_url or "").rstrip("/")
-    clean_path = path.lstrip("/")
-    if base.endswith("/v1"):
-        return f"{base}/{clean_path}"
-    return f"{base}/v1/{clean_path}"
+    return _chat_http_service.build_openai_api_url(base_url, path)
 
 
 def _api_server_probe(timeout: int = 3, prefer_vision: bool = False) -> tuple[bool, str, dict | None]:
-    import urllib.request
-    import urllib.error
-
-    target = _resolve_api_target(prefer_vision=prefer_vision)
-    base_url = (target.get("base_url") or "").strip()
-    if not base_url:
-        return False, "API base URL is not configured", None
-
-    headers = _api_server_headers(target.get("api_key"), target.get("provider"))
-    probes = [
-        ("health", f"{base_url.rstrip('/')}/health"),
-        ("models", _build_openai_api_url(base_url, "models")),
-    ]
-    last_error = "API endpoint did not respond"
-
-    for probe_name, url in probes:
-        req = urllib.request.Request(url, headers=headers, method="GET")
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                if 200 <= resp.status < 300:
-                    return True, "", {"probe": probe_name, "url": url, "status": resp.status}
-                last_error = f"{probe_name} probe returned HTTP {resp.status}"
-        except urllib.error.HTTPError as exc:
-            if probe_name == "health" and exc.code == 404:
-                last_error = "health probe returned HTTP 404"
-                continue
-            last_error = f"{probe_name} probe returned HTTP {exc.code}"
-        except Exception as exc:
-            last_error = f"{probe_name} probe failed: {exc}"
-
-    return False, last_error, None
+    return _chat_http_service.api_server_probe(
+        timeout=timeout,
+        prefer_vision=prefer_vision,
+        resolve_api_target_fn=lambda prefer_vision=False: _resolve_api_target(prefer_vision=prefer_vision),
+        api_server_headers_fn=lambda api_key=None, provider=None: _api_server_headers(api_key, provider),
+        build_openai_api_url_fn=lambda base_url, path: _build_openai_api_url(base_url, path),
+    )
 
 
 def _check_api_server() -> bool:
@@ -5620,36 +5484,21 @@ def _api_server_healthcheck(timeout: int = 3) -> bool:
 
 
 def _vision_configured() -> tuple[bool, str]:
-    model_cfg = _normalized_model_config()
-    vision_cfg = model_cfg.get("vision")
-    if isinstance(vision_cfg, str):
-        if vision_cfg.strip():
-            return True, ""
-    elif isinstance(vision_cfg, dict):
-        provider = (vision_cfg.get("provider") or "").strip()
-        model = (vision_cfg.get("model") or "").strip()
-        base_url = (vision_cfg.get("base_url") or "").strip()
-        if model or base_url or (provider and provider.lower() != "auto"):
-            return True, ""
-    return False, "Hermes vision is not configured"
+    return _chat_http_service.vision_configured(
+        normalized_model_config_fn=lambda: _normalized_model_config(),
+    )
 
 
 def _image_attachment_support_status() -> tuple[bool, str]:
-    vision_ready, vision_reason = _vision_configured()
-    if not vision_ready:
-        return False, vision_reason
-    target = _resolve_api_target(prefer_vision=True)
-    if _api_target_missing_credentials(target):
-        api_url = target.get("base_url") or _effective_hermes_api_url(DEFAULT_HERMES_API_URL)
-        return False, f"Vision API key is missing for remote endpoint {api_url}"
-    api_ok, api_reason, _ = _api_server_probe(timeout=2, prefer_vision=True)
-    if api_ok:
-        image_model_ok, image_model_reason = _openrouter_model_supports_images(target, timeout=3)
-        if image_model_ok is False:
-            return False, image_model_reason
-        return True, ""
-    api_url = target.get("base_url") or _effective_hermes_api_url(DEFAULT_HERMES_API_URL)
-    return False, f"OpenAI-compatible vision sidecar API is not reachable at {api_url} ({api_reason})"
+    return _chat_http_service.image_attachment_support_status(
+        vision_configured_fn=lambda: _vision_configured(),
+        resolve_api_target_fn=lambda prefer_vision=False: _resolve_api_target(prefer_vision=prefer_vision),
+        api_target_missing_credentials_fn=lambda target: _api_target_missing_credentials(target),
+        effective_hermes_api_url_fn=lambda default_url: _effective_hermes_api_url(default_url),
+        default_hermes_api_url=DEFAULT_HERMES_API_URL,
+        api_server_probe_fn=lambda timeout=3, prefer_vision=False: _api_server_probe(timeout=timeout, prefer_vision=prefer_vision),
+        openrouter_model_supports_images_fn=lambda target, timeout=3: _openrouter_model_supports_images(target, timeout=timeout),
+    )
 
 
 def _get_or_create_chat_session(session_id=None, profile_name=None):
