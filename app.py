@@ -72,6 +72,8 @@ from webui_app import capability_integration_service as _capability_integration_
 from webui_app import capability_skill_service as _capability_skill_service
 from webui_app import skill_setup_service as _skill_setup_service
 from webui_app import skill_runtime_service as _skill_runtime_service
+from webui_app import skill_filesystem_service as _skill_filesystem_service
+from webui_app import sidecar_payload_service as _sidecar_payload_service
 from webui_app.routes.agents import register_agent_routes
 from webui_app.routes.capabilities import register_capability_routes
 from webui_app.routes.chat import register_chat_routes
@@ -5073,108 +5075,35 @@ def _skill_absolute_path(skill: dict) -> Path | None:
 
 
 def _safe_skill_rel_path(value: str | Path) -> str:
-    text = _normalize_skill_rel_path(value)
-    if not text:
-        return ""
-    parts = []
-    for part in PurePosixPath(text).parts:
-        if part in ("", "."):
-            continue
-        if part == "..":
-            return ""
-        parts.append(part)
-    return "/".join(parts)
+    return _skill_filesystem_service.safe_skill_rel_path(
+        value,
+        normalize_skill_rel_path_fn=lambda item: _normalize_skill_rel_path(item),
+        pure_posix_path_class=PurePosixPath,
+    )
 
 
 def _skill_request_paths(requested: str | Path) -> dict:
-    requested_rel = _safe_skill_rel_path(requested)
-    if not requested_rel:
-        return {}
-
-    requested_parts = requested_rel.split("/")
-    base_name = requested_parts[-1]
-    while base_name.endswith(".disabled"):
-        base_name = base_name[:-9]
-    if not base_name:
-        return {}
-
-    base_rel = "/".join(requested_parts[:-1] + [base_name])
-    base_path = SKILLS_DIR / base_rel
-    disabled_rel = base_rel + ".disabled"
-    disabled_path = SKILLS_DIR / disabled_rel
-
-    variants = []
-    seen = set()
-    for rel in (requested_rel, base_rel, disabled_rel):
-        if rel and rel not in seen:
-            variants.append(SKILLS_DIR / rel)
-            seen.add(rel)
-
-    parent_dir = base_path.parent
-    if parent_dir.exists():
-        disabled_prefix = base_path.name + ".disabled"
-        for sibling in sorted(parent_dir.iterdir(), key=lambda item: item.name):
-            if not sibling.is_dir() or not sibling.name.startswith(disabled_prefix):
-                continue
-            sibling_rel = _safe_skill_rel_path(sibling.relative_to(SKILLS_DIR))
-            if sibling_rel and sibling_rel not in seen:
-                variants.append(sibling)
-                seen.add(sibling_rel)
-
-    return {
-        "requested_rel": requested_rel,
-        "base_rel": base_rel,
-        "disabled_rel": disabled_rel,
-        "base_path": base_path,
-        "disabled_path": disabled_path,
-        "variants": variants,
-    }
+    return _skill_filesystem_service.skill_request_paths(
+        requested,
+        safe_skill_rel_path_fn=lambda value: _safe_skill_rel_path(value),
+        skills_dir=SKILLS_DIR,
+    )
 
 
 def _replace_skill_dir(src: Path, dst: Path) -> None:
-    if dst.exists() and dst != src:
-        shutil.rmtree(dst)
-    shutil.move(str(src), str(dst))
+    _skill_filesystem_service.replace_skill_dir(src, dst, shutil_module=shutil)
 
 
 def _skill_apply_action(requested: str | Path, action: str) -> dict:
-    info = _skill_request_paths(requested)
-    if not info:
-        return {"found": False, "error": "Skill path is required"}
-
-    base_path = info["base_path"]
-    disabled_path = info["disabled_path"]
-    existing_variants = [path for path in info["variants"] if path.exists()]
-    action_name = str(action or "").strip().lower()
-
-    if action_name == "enable":
-        if base_path.exists():
-            return {"found": True, "changed": False, "enabled": True, "path": info["base_rel"]}
-        candidate = next((path for path in existing_variants if path != base_path), None)
-        if not candidate:
-            return {"found": False, "error": f"Skill '{requested}' not found"}
-        _replace_skill_dir(candidate, base_path)
-        return {"found": True, "changed": True, "enabled": True, "path": info["base_rel"]}
-
-    if action_name == "disable":
-        if base_path.exists():
-            _replace_skill_dir(base_path, disabled_path)
-            return {"found": True, "changed": True, "enabled": False, "path": info["disabled_rel"]}
-        candidate = next((path for path in existing_variants if path != base_path), None)
-        if candidate:
-            candidate_rel = _safe_skill_rel_path(candidate.relative_to(SKILLS_DIR))
-            return {"found": True, "changed": False, "enabled": False, "path": candidate_rel}
-        return {"found": False, "error": f"Skill '{requested}' not found"}
-
-    if action_name == "remove":
-        target = base_path if base_path.exists() else next(iter(existing_variants), None)
-        if not target:
-            return {"found": False, "error": f"Skill '{requested}' not found"}
-        removed_rel = _safe_skill_rel_path(target.relative_to(SKILLS_DIR))
-        shutil.rmtree(target)
-        return {"found": True, "changed": True, "removed": True, "path": removed_rel}
-
-    return {"found": False, "error": f"Unsupported action '{action}'"}
+    return _skill_filesystem_service.skill_apply_action(
+        requested,
+        action,
+        skill_request_paths_fn=lambda value: _skill_request_paths(value),
+        replace_skill_dir_fn=lambda src, dst: _replace_skill_dir(src, dst),
+        safe_skill_rel_path_fn=lambda value: _safe_skill_rel_path(value),
+        skills_dir=SKILLS_DIR,
+        shutil_module=shutil,
+    )
 
 
 def _skill_wants_integration_setup(skill: dict, env_blockers: list[dict]) -> bool:
@@ -5296,202 +5225,43 @@ def _vision_asset_disk_path(asset: dict) -> Path | None:
 
 
 def _strip_json_fence(text: str) -> str:
-    stripped = str(text or "").strip()
-    if stripped.startswith("```"):
-        stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
-        stripped = re.sub(r"\s*```$", "", stripped)
-    return stripped.strip()
+    return _sidecar_payload_service.strip_json_fence(text)
 
 
 def _coerce_sidecar_string_list(value) -> list[str]:
-    if isinstance(value, list):
-        items = value
-    elif isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return []
-        if text.startswith("[") and text.endswith("]"):
-            try:
-                decoded = json.loads(text)
-            except Exception:
-                decoded = None
-            if isinstance(decoded, list):
-                items = decoded
-            else:
-                items = [part.strip() for part in re.split(r"(?:\r?\n|;\s*)", text) if part.strip()]
-        else:
-            items = [part.strip() for part in re.split(r"(?:\r?\n|;\s*)", text) if part.strip()]
-            if not items:
-                items = [text]
-    else:
-        return []
-    normalized = []
-    seen = set()
-    for item in items:
-        text = str(item or "").strip()
-        text = re.sub(r"^[\-\*\u2022]+\s*", "", text)
-        text = re.sub(r"^\d+[\.\)]\s*", "", text)
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        normalized.append(text)
-    return normalized
+    return _sidecar_payload_service.coerce_sidecar_string_list(value)
 
 
 def _find_json_object_candidates(text: str) -> list[str]:
-    raw = str(text or "")
-    candidates = []
-    seen = set()
-
-    def add(candidate: str):
-        snippet = str(candidate or "").strip()
-        if not snippet or snippet in seen:
-            return
-        seen.add(snippet)
-        candidates.append(snippet)
-
-    add(_strip_json_fence(raw))
-    for match in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", raw, re.IGNORECASE):
-        add(match.group(1))
-
-    depth = 0
-    start = None
-    in_string = False
-    escape = False
-    for idx, ch in enumerate(raw):
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-            continue
-        if ch == "{":
-            if depth == 0:
-                start = idx
-            depth += 1
-        elif ch == "}" and depth > 0:
-            depth -= 1
-            if depth == 0 and start is not None:
-                add(raw[start:idx + 1])
-                start = None
-
-    candidates.sort(key=len, reverse=True)
-    return candidates
+    return _sidecar_payload_service.find_json_object_candidates(
+        text,
+        strip_json_fence_fn=_strip_json_fence,
+    )
 
 
 def _looks_like_sidecar_payload(payload: dict) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    keys = set(payload.keys())
-    return bool({"overall_summary", "images", "follow_up_hints", "visible_text", "details"} & keys)
+    return _sidecar_payload_service.looks_like_sidecar_payload(payload)
 
 
 def _extract_sidecar_json_payload(raw_text: str) -> dict | None:
-    for candidate in _find_json_object_candidates(raw_text):
-        try:
-            payload = json.loads(candidate)
-        except Exception:
-            continue
-        if _looks_like_sidecar_payload(payload):
-            return payload
-        if isinstance(payload, dict):
-            for value in payload.values():
-                if _looks_like_sidecar_payload(value):
-                    return value
-            return payload
-    return None
+    return _sidecar_payload_service.extract_sidecar_json_payload(
+        raw_text,
+        find_json_object_candidates_fn=_find_json_object_candidates,
+        looks_like_sidecar_payload_fn=_looks_like_sidecar_payload,
+    )
 
 
 def _parse_sidecar_payload(raw_text: str, image_labels: list[str]) -> dict:
-    raw_text = str(raw_text or "").strip()
-    fallback = {
-        "overall_summary": raw_text,
-        "images": [],
-        "follow_up_hints": [],
-        "raw_text": raw_text,
-    }
-    if not raw_text:
-        return fallback
-    payload = _extract_sidecar_json_payload(raw_text)
-    if not payload:
-        return fallback
-    images = payload.get("images")
-    normalized_images = []
-    overall_summary = str(payload.get("overall_summary") or "").strip()
-    if isinstance(images, list):
-        for idx, item in enumerate(images):
-            if not isinstance(item, dict):
-                continue
-            label = str(item.get("label") or "").strip()
-            if not label:
-                label = image_labels[idx] if idx < len(image_labels) else f"Image {idx + 1}"
-            summary = str(item.get("summary") or "").strip()
-            if not summary:
-                summary = overall_summary
-            normalized_images.append({
-                "label": label,
-                "summary": summary,
-                "visible_text": _coerce_sidecar_string_list(item.get("visible_text")),
-                "details": _coerce_sidecar_string_list(item.get("details")),
-                "follow_up_hints": _coerce_sidecar_string_list(item.get("follow_up_hints")),
-            })
-    if not overall_summary and normalized_images:
-        overall_summary = normalized_images[0].get("summary") or ""
-    if image_labels and not normalized_images:
-        top_level_visible_text = _coerce_sidecar_string_list(payload.get("visible_text"))
-        top_level_details = _coerce_sidecar_string_list(payload.get("details"))
-        top_level_hints = _coerce_sidecar_string_list(payload.get("follow_up_hints"))
-        for idx, label in enumerate(image_labels):
-            normalized_images.append({
-                "label": label,
-                "summary": overall_summary if idx == 0 else "",
-                "visible_text": top_level_visible_text if idx == 0 else [],
-                "details": top_level_details if idx == 0 else [],
-                "follow_up_hints": top_level_hints if idx == 0 else [],
-            })
-    return {
-        "overall_summary": overall_summary,
-        "images": normalized_images,
-        "follow_up_hints": _coerce_sidecar_string_list(payload.get("follow_up_hints")),
-        "raw_text": raw_text,
-    }
+    return _sidecar_payload_service.parse_sidecar_payload(
+        raw_text,
+        image_labels,
+        extract_sidecar_json_payload_fn=_extract_sidecar_json_payload,
+        coerce_sidecar_string_list_fn=_coerce_sidecar_string_list,
+    )
 
 
 def _format_sidecar_context_block(sidecar_result: dict) -> str:
-    if not sidecar_result:
-        return ""
-    lines = ["Vision sidecar analysis:"]
-    if sidecar_result.get("reanalysis"):
-        lines.append("This analysis refreshes an earlier screenshot because the user referred back to it.")
-    overall_summary = str(sidecar_result.get("overall_summary") or "").strip()
-    if overall_summary:
-        lines.append(f"Overall summary: {overall_summary}")
-    image_results = sidecar_result.get("images") or []
-    for idx, item in enumerate(image_results, start=1):
-        label = str(item.get("label") or f"Image {idx}").strip()
-        asset_id = str(item.get("asset_id") or "").strip()
-        lines.append(f"{label}{f' [{asset_id}]' if asset_id else ''}:")
-        summary = str(item.get("summary") or "").strip()
-        if summary:
-            lines.append(f"- Summary: {summary}")
-        visible_text = [str(value).strip() for value in (item.get("visible_text") or []) if str(value).strip()]
-        if visible_text:
-            lines.append("- Visible text:")
-            lines.extend(f"  - {value}" for value in visible_text)
-        details = [str(value).strip() for value in (item.get("details") or []) if str(value).strip()]
-        if details:
-            lines.append("- Details:")
-            lines.extend(f"  - {value}" for value in details)
-        follow_up_hints = [str(value).strip() for value in (item.get("follow_up_hints") or []) if str(value).strip()]
-        if follow_up_hints:
-            lines.append("- Follow-up hints:")
-            lines.extend(f"  - {value}" for value in follow_up_hints)
-    return "\n".join(lines)
+    return _sidecar_payload_service.format_sidecar_context_block(sidecar_result)
 
 
 def _update_session_vision_assets(
