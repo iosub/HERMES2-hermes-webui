@@ -67,6 +67,7 @@ from webui_app.chat_transport import validated_transport_preference as _validate
 from webui_app.auth import build_rate_limit, build_require_token, current_webui_token as _current_webui_token_impl, load_session_tokens as _load_session_tokens_impl, register_auth_routes, register_session_token as _register_session_token_impl, remove_session_token as _remove_session_token_impl, save_session_tokens as _save_session_tokens_impl, verify_session_cookie as _verify_session_cookie_impl
 from webui_app.config_manager import ConfigManager as _BaseConfigManager
 from webui_app import provider_service as _provider_service
+from webui_app import capability_agent_preset_service as _capability_agent_preset_service
 from webui_app import capability_integration_service as _capability_integration_service
 from webui_app.routes.agents import register_agent_routes
 from webui_app.routes.capabilities import register_capability_routes
@@ -2736,290 +2737,76 @@ def _apply_integration_capability(data: dict | None, preview_token: str) -> tupl
 
 
 def _normalize_agent_preset_role(role: str, payload, profile_names: set[str]) -> tuple[dict, list[str]]:
-    data = payload if isinstance(payload, dict) else {}
-    profile = str(data.get("profile") or "").strip()
-    model = str(data.get("model") or "").strip()
-    routing_provider = str(data.get("routing_provider") or "").strip()
-    enabled = role == "primary" or bool(data.get("enabled")) or bool(profile or model or routing_provider)
-    normalized = {
-        "enabled": enabled,
-        "profile": profile,
-        "model": model,
-        "routing_provider": routing_provider,
-    }
-    errors = []
-    if enabled and not profile:
-        errors.append(f"{MODEL_ROLE_LABELS.get(role, role.title())} requires a provider profile")
-    if enabled and not model:
-        errors.append(f"{MODEL_ROLE_LABELS.get(role, role.title())} requires a model")
-    if profile and profile not in profile_names:
-        errors.append(f"{MODEL_ROLE_LABELS.get(role, role.title())} profile '{profile}' was not found")
-    return normalized, errors
+    return _capability_agent_preset_service.normalize_agent_preset_role(
+        role,
+        payload,
+        profile_names,
+        model_role_labels=MODEL_ROLE_LABELS,
+    )
 
 
 def _render_agent_preset_fragment(name: str, personality: dict) -> str:
-    fragment = {
-        "agent": {
-            "personalities": {
-                name: personality,
-            }
-        }
-    }
-    return yaml.safe_dump(
-        fragment,
-        default_flow_style=False,
-        sort_keys=False,
-        allow_unicode=True,
-    ).strip() + "\n"
+    return _capability_agent_preset_service.render_agent_preset_fragment(
+        name,
+        personality,
+        yaml_module=yaml,
+    )
 
 
 def _normalize_agent_preset_draft(data: dict | None) -> tuple[dict, list[str]]:
-    payload = data if isinstance(data, dict) else {}
-    raw = cfg.get_raw()
-    profile_names = {
-        str(profile.get("name") or "").strip()
-        for profile in _available_provider_profiles(raw)
-        if str(profile.get("name") or "").strip()
-    }
-    skill_map = {
-        str(skill.get("path") or "").strip(): skill
-        for skill in _discover_skill_entries()
-        if str(skill.get("path") or "").strip()
-    }
-    integration_names = {
-        str(item.get("name") or "").strip()
-        for item in _capability_integration_options(raw)
-        if str(item.get("name") or "").strip()
-    }
-
-    name = str(payload.get("name") or "").strip()
-    description = str(payload.get("description") or "").strip()
-    system_prompt = str(payload.get("system_prompt") or payload.get("prompt") or "").strip()
-    reasoning_effort = str(payload.get("reasoning_effort") or "").strip().lower()
-    max_turns_raw = payload.get("max_turns")
-    max_turns = None
-    if max_turns_raw not in (None, "", False):
-        try:
-            max_turns = int(max_turns_raw)
-        except (TypeError, ValueError):
-            max_turns = "invalid"
-
-    roles = {}
-    errors = []
-    role_payload = payload.get("roles") if isinstance(payload.get("roles"), dict) else {}
-    for role in MODEL_ROLE_LABELS:
-        normalized_role, role_errors = _normalize_agent_preset_role(role, role_payload.get(role), profile_names)
-        roles[role] = normalized_role
-        errors.extend(role_errors)
-
-    skills = []
-    seen_skills = set()
-    for value in payload.get("skills") if isinstance(payload.get("skills"), list) else []:
-        path = str(value or "").strip()
-        if not path or path in seen_skills:
-            continue
-        seen_skills.add(path)
-        if path not in skill_map:
-            errors.append(f"Selected skill '{path}' was not found")
-            continue
-        skills.append(path)
-
-    integrations = []
-    seen_integrations = set()
-    for value in payload.get("integrations") if isinstance(payload.get("integrations"), list) else []:
-        name_value = str(value or "").strip()
-        if not name_value or name_value in seen_integrations:
-            continue
-        seen_integrations.add(name_value)
-        if name_value not in integration_names:
-            errors.append(f"Selected integration '{name_value}' was not found")
-            continue
-        integrations.append(name_value)
-
-    normalized = {
-        "name": name[:120].rstrip(),
-        "description": description[:400].rstrip(),
-        "system_prompt": system_prompt[:12000].rstrip(),
-        "roles": roles,
-        "skills": skills,
-        "integrations": integrations,
-        "reasoning_effort": reasoning_effort,
-        "max_turns": max_turns,
-    }
-    if not normalized["name"]:
-        errors.append("Preset name is required")
-    if normalized["max_turns"] == "invalid" or (isinstance(normalized["max_turns"], int) and normalized["max_turns"] <= 0):
-        errors.append("Max turns must be a positive integer")
-    if normalized["reasoning_effort"] and normalized["reasoning_effort"] not in AGENT_REASONING_EFFORT_OPTIONS:
-        errors.append("Reasoning effort must be one of none, low, medium, high, xhigh, or minimal")
-    return normalized, errors
+    return _capability_agent_preset_service.normalize_agent_preset_draft(
+        data,
+        cfg_get_raw=lambda: cfg.get_raw(),
+        available_provider_profiles_fn=lambda raw: _available_provider_profiles(raw),
+        discover_skill_entries_fn=lambda: _discover_skill_entries(),
+        capability_integration_options_fn=lambda raw: _capability_integration_options(raw),
+        normalize_agent_preset_role_fn=lambda role, payload, profile_names: _normalize_agent_preset_role(role, payload, profile_names),
+        model_role_labels=MODEL_ROLE_LABELS,
+        agent_reasoning_effort_options=AGENT_REASONING_EFFORT_OPTIONS,
+    )
 
 
 def _agent_preset_conflicts(name: str, raw: dict | None = None) -> list[str]:
-    personalities, _ = _agent_personality_entries(raw)
-    if str(name or "").strip() in personalities:
-        return [str(CONFIG_PATH)]
-    return []
+    return _capability_agent_preset_service.agent_preset_conflicts(
+        name,
+        agent_personality_entries_fn=lambda value=None: _agent_personality_entries(value),
+        config_path=CONFIG_PATH,
+        raw=raw,
+    )
 
 
 def _agent_preset_personality_manifest(draft: dict) -> dict:
-    metadata = {
-        "hermes_web_ui": {
-            "capability_type": "agent_preset",
-            "schema_version": 1,
-            "created_via": "hermes-web-ui",
-            "model_roles": copy.deepcopy(draft.get("roles") or {}),
-            "skills": list(draft.get("skills") or []),
-            "integrations": list(draft.get("integrations") or []),
-            "agent_defaults": {},
-        }
-    }
-    if draft.get("reasoning_effort"):
-        metadata["hermes_web_ui"]["agent_defaults"]["reasoning_effort"] = draft["reasoning_effort"]
-    if isinstance(draft.get("max_turns"), int):
-        metadata["hermes_web_ui"]["agent_defaults"]["max_turns"] = draft["max_turns"]
-    if not metadata["hermes_web_ui"]["agent_defaults"]:
-        metadata["hermes_web_ui"].pop("agent_defaults", None)
-    personality = {
-        "description": draft.get("description") or f"{draft.get('name') or 'Preset'} created in Hermes Web UI.",
-        "system_prompt": draft.get("system_prompt") or draft.get("description") or f"You are the {draft.get('name') or 'agent preset'} preset.",
-        "metadata": metadata,
-    }
-    return personality
+    return _capability_agent_preset_service.agent_preset_personality_manifest(draft)
 
 
 def _preview_agent_preset_capability(data: dict | None) -> tuple[dict, int]:
-    draft, errors = _normalize_agent_preset_draft(data)
-    if errors:
-        return {"ok": False, "error": "; ".join(errors)}, 400
-
-    raw = cfg.get_raw()
-    personalities, storage = _agent_personality_entries(raw)
-    skill_map = {
-        str(skill.get("path") or "").strip(): skill
-        for skill in _discover_skill_entries()
-        if str(skill.get("path") or "").strip()
-    }
-    integration_map = {
-        str(item.get("name") or "").strip(): item
-        for item in _capability_integration_options(raw)
-        if str(item.get("name") or "").strip()
-    }
-
-    conflicts = _agent_preset_conflicts(draft["name"], raw=raw)
-    warnings = []
-    if conflicts:
-        existing_source = storage.get(draft["name"], "agent")
-        warnings.append(f"A preset or personality already exists with this name in {existing_source}.")
-
-    skill_details = []
-    for path in draft.get("skills") or []:
-        skill = skill_map.get(path) or {}
-        if not skill.get("enabled"):
-            warnings.append(f"Skill '{path}' is currently disabled.")
-        elif not ((skill.get("setup") or {}).get("ready", True)):
-            warnings.append(f"Skill '{path}' still needs setup.")
-        skill_details.append({
-            "path": path,
-            "name": skill.get("name") or path,
-            "enabled": bool(skill.get("enabled")),
-            "ready": bool((skill.get("setup") or {}).get("ready", True)),
-        })
-
-    integration_details = []
-    for name in draft.get("integrations") or []:
-        item = integration_map.get(name) or {}
-        if not item.get("configured"):
-            warnings.append(f"Integration '{name}' is not configured yet.")
-        integration_details.append({
-            "name": name,
-            "label": item.get("label") or name,
-            "configured": bool(item.get("configured")),
-        })
-
-    personality = _agent_preset_personality_manifest(draft)
-    writes = [{
-        "kind": "file",
-        "path": str(CONFIG_PATH),
-        "action": "update",
-        "label": f"Save preset {draft['name']} under agent.personalities",
-        "content": _render_agent_preset_fragment(draft["name"], personality),
-    }]
-    preview_payload = {
-        "draft": draft,
-        "personality": personality,
-        "writes": writes,
-        "conflicts": conflicts,
-    }
-    preview_token = _capability_preview_token("agent_preset", preview_payload)
-    return {
-        "ok": True,
-        "type": "agent_preset",
-        "phase": "Phase 3",
-        "preview_token": preview_token,
-        "can_apply": not conflicts,
-        "draft": draft,
-        "summary": {
-            "name": draft.get("name") or "Agent Preset",
-            "target_dir": str(CONFIG_PATH),
-            "skill_count": len(draft.get("skills") or []),
-            "integration_count": len(draft.get("integrations") or []),
-            "enabled_role_count": len([role for role, entry in (draft.get("roles") or {}).items() if entry.get("enabled")]),
-            "conflict_count": len(conflicts),
-        },
-        "warnings": warnings,
-        "conflicts": conflicts,
-        "writes": writes,
-        "manifest": {
-            "personality": personality,
-            "skills": skill_details,
-            "integrations": integration_details,
-            "storage_path": f"agent.personalities.{draft['name']}",
-            "existing_personality": copy.deepcopy(personalities.get(draft["name"])) if draft["name"] in personalities else None,
-        },
-    }, 200
+    return _capability_agent_preset_service.preview_agent_preset_capability(
+        data,
+        normalize_agent_preset_draft_fn=lambda value: _normalize_agent_preset_draft(value),
+        cfg_get_raw=lambda: cfg.get_raw(),
+        agent_personality_entries_fn=lambda value=None: _agent_personality_entries(value),
+        discover_skill_entries_fn=lambda: _discover_skill_entries(),
+        capability_integration_options_fn=lambda raw: _capability_integration_options(raw),
+        agent_preset_conflicts_fn=lambda name, raw=None: _agent_preset_conflicts(name, raw=raw),
+        agent_preset_personality_manifest_fn=lambda draft: _agent_preset_personality_manifest(draft),
+        config_path=CONFIG_PATH,
+        render_agent_preset_fragment_fn=lambda name, personality: _render_agent_preset_fragment(name, personality),
+        capability_preview_token_fn=lambda capability_type, payload: _capability_preview_token(capability_type, payload),
+    )
 
 
 def _apply_agent_preset_capability(data: dict | None, preview_token: str) -> tuple[dict, int]:
-    preview, status = _preview_agent_preset_capability(data)
-    if status != 200:
-        return preview, status
-    if not preview_token or preview_token != preview.get("preview_token"):
-        return {"ok": False, "error": "Preview has changed. Refresh the draft preview before approval."}, 409
-    if not preview.get("can_apply"):
-        return {"ok": False, "error": "A preset or personality already exists with this name."}, 409
-
-    draft = preview.get("draft") or {}
-    personality = copy.deepcopy(((preview.get("manifest") or {}).get("personality")) or {})
-    config_before = CONFIG_PATH.read_text(encoding="utf-8") if CONFIG_PATH.exists() else None
-    try:
-        raw = cfg.get_raw()
-        agent_cfg = raw.get("agent", {})
-        if not isinstance(agent_cfg, dict):
-            agent_cfg = {}
-        personalities = agent_cfg.get("personalities", {})
-        if not isinstance(personalities, dict):
-            personalities = {}
-        personalities[str(draft.get("name") or "")] = personality
-        agent_cfg["personalities"] = personalities
-        cfg.set("agent", agent_cfg)
-    except Exception:
-        _restore_text_file(CONFIG_PATH, config_before)
-        cfg.load()
-        raise
-
-    cfg.load()
-    merged, _ = _agent_personality_entries()
-    return {
-        "ok": True,
-        "type": "agent_preset",
-        "created": {
-            "name": draft.get("name") or "Agent Preset",
-            "target_dir": str(CONFIG_PATH),
-            "files": [str(CONFIG_PATH)],
-            "personality": copy.deepcopy(merged.get(str(draft.get("name") or ""))),
-        },
-    }, 200
+    return _capability_agent_preset_service.apply_agent_preset_capability(
+        data,
+        preview_token,
+        preview_agent_preset_capability_fn=lambda value: _preview_agent_preset_capability(value),
+        config_path=CONFIG_PATH,
+        cfg_get_raw=lambda: cfg.get_raw(),
+        cfg_set=lambda section, value: cfg.set(section, value),
+        restore_text_file_fn=lambda path, previous_text: _restore_text_file(path, previous_text),
+        cfg_load=lambda: cfg.load(),
+        agent_personality_entries_fn=lambda value=None: _agent_personality_entries(value),
+    )
 
 
 def _normalize_skill_capability_draft(data: dict | None) -> tuple[dict, list[str]]:
