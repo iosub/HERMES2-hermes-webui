@@ -109,10 +109,15 @@ Manual validation routine for each test step:
 - [x] Extract onboarding route.
 - [x] Validate smoke tests after this phase.
 
+### Phase 8: Extract Frontend Routing
+
+- [x] Extract the SPA catch-all route.
+- [x] Validate frontend route behavior after this phase.
+
 ### Completion Criteria
 
 - [ ] Reduce app.py to a thin bootstrap and compatibility layer.
-- [ ] Organize routes by concern in dedicated modules.
+- [x] Organize routes by concern in dedicated modules.
 - [ ] Separate shared services from route registration.
 - [ ] Keep smoke tests passing.
 - [ ] Avoid unintended user-facing API changes.

@@ -70,6 +70,7 @@ from webui_app.routes.capabilities import register_capability_routes
 from webui_app.routes.chat import register_chat_routes
 from webui_app.routes.config import register_config_routes
 from webui_app.routes.env import register_env_routes
+from webui_app.routes.frontend import register_frontend_routes
 from webui_app.routes.model_roles import register_model_role_routes
 from webui_app.routes.operations import register_operations_routes
 from webui_app.routes.providers import register_provider_routes
@@ -5419,6 +5420,11 @@ register_operations_routes(
     },
 )
 
+register_frontend_routes(
+    app,
+    index_path=lambda: APP_ROOT / "templates" / "index.html",
+)
+
 
 # Allowed log file keys mapped to candidate relative paths (security: no arbitrary paths)
 # _selected_hermes_home() already resolves the active profile
@@ -7687,22 +7693,6 @@ def _rollback_failed_chat_turn(session: dict, session_id: str, user_msg: dict) -
         return
     session["updated"] = datetime.now().isoformat()
     _write_session(session)
-
-
-# ===================================================================
-# Static catch-all (serve index.html for SPA routing)
-# ===================================================================
-
-@app.route("/", defaults={"path": ""})
-@app.route("/<path:path>")
-def catch_all(path):
-    """Serve the React SPA index.html for non-API routes."""
-    if path.startswith("api/"):
-        return jsonify({"error": "Not found"}), 404
-    index = Path(__file__).parent / "templates" / "index.html"
-    if index.exists():
-        return index.read_text(encoding="utf-8")
-    return jsonify({"error": "Frontend not built yet"}), 404
 
 
 # ===================================================================
