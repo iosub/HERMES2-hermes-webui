@@ -55,6 +55,7 @@ from webui_app.chat_persistence import write_all_folders as _write_all_folders_i
 from webui_app.chat_persistence import write_folder as _write_folder_impl
 from webui_app.chat_persistence import write_session as _write_session_impl
 from webui_app.chat_dispatch import call_api_server as _call_api_server_impl
+from webui_app.chat_dispatch import call_hermes_direct as _call_hermes_direct_impl
 from webui_app.chat_transport import plan_chat_request as _plan_chat_request_impl
 from webui_app.chat_transport import validated_transport_preference as _validated_transport_preference_impl
 from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
@@ -7850,14 +7851,15 @@ def _call_hermes_direct(
     file_display_names: dict | None = None,
 ) -> tuple[str, str | None]:
     """Call Hermes via CLI subprocess (fallback when API server is unavailable)."""
-    prompt, _ = _compose_chat_turn_payload(
+    return _call_hermes_direct_impl(
         session,
         message,
-        files or [],
-        image_support=False,
-        display_names=file_display_names,
+        files=files,
+        request_id=request_id,
+        file_display_names=file_display_names,
+        compose_chat_turn_payload=_compose_chat_turn_payload,
+        call_hermes_prompt=_call_hermes_prompt,
     )
-    return _call_hermes_prompt(session, prompt, request_id=request_id)
 
 
 def _call_api_server(

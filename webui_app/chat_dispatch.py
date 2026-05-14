@@ -88,3 +88,23 @@ def call_api_server(
             ) from fallback_exc
     except Exception as exc:
         raise chat_backend_error(f"API server error: {exc}") from exc
+
+
+def call_hermes_direct(
+    session,
+    message,
+    *,
+    files=None,
+    request_id=None,
+    file_display_names=None,
+    compose_chat_turn_payload,
+    call_hermes_prompt,
+):
+    prompt, _ = compose_chat_turn_payload(
+        session,
+        message,
+        files or [],
+        image_support=False,
+        display_names=file_display_names,
+    )
+    return call_hermes_prompt(session, prompt, request_id=request_id)
