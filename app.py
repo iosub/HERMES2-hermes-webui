@@ -35,6 +35,7 @@ from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
 from webui_app.routes.config import register_config_routes
+from webui_app.routes.env import register_env_routes
 from webui_app.request_hooks import register_request_hooks
 from webui_app.routes.system import register_system_routes
 
@@ -5237,94 +5238,22 @@ register_config_routes(
 )
 
 
-# ===================================================================
-# 7–9. Environment variables
-# ===================================================================
-
-@app.route("/api/env", methods=["GET"])
-@require_token
-def api_env_get():
-    try:
-        env_path = _selected_env_path()
-        raw = dotenv_values(str(env_path)) if env_path.exists() else {}
-        masked = {k: _mask_value(k, v) for k, v in raw.items() if v is not None}
-        skills = _discover_skill_entries()
-        dynamic_presets = _skill_env_var_presets(skills)
-
-        groups: dict[str, list[str]] = {}
-        for k in masked:
-            g = _classify_env_key(k)
-            groups.setdefault(g, []).append(k)
-
-        metadata = {
-            k: dynamic_presets.get(k) or _env_var_metadata(k)
-            for k in masked
-        }
-        presets = _env_presets_by_group()
-        for key, meta in dynamic_presets.items():
-            group = meta.get("group") or _classify_env_key(key)
-            bucket = presets.setdefault(group, [])
-            if any(str(item.get("key") or "").strip() == key for item in bucket if isinstance(item, dict)):
-                continue
-            bucket.append(meta)
-        for values in presets.values():
-            values.sort(key=lambda item: str(item.get("label") or item.get("key") or "").casefold())
-        return jsonify({
-            "vars": masked,
-            "groups": groups,
-            "metadata": metadata,
-            "group_help": ENV_GROUP_HELP,
-            "presets": presets,
-        })
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/env", methods=["POST"])
-@require_token
-def api_env_set():
-    try:
-        data = request.get_json(force=True)
-        key, value = data.get("key"), data.get("value")
-        if not key:
-            return jsonify({"ok": False, "error": "key is required"}), 400
-        env_path = _selected_env_path()
-        env_path.parent.mkdir(parents=True, exist_ok=True)
-        _set_env_value(env_path, key, value or "")
-        return jsonify({"ok": True})
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/env/<key>", methods=["PUT"])
-@require_token
-def api_env_update(key):
-    try:
-        data = request.get_json(force=True)
-        value = data.get("value", "")
-        env_path = _selected_env_path()
-        current = dotenv_values(str(env_path)).get(key) if env_path.exists() else None
-        if (
-            isinstance(value, str)
-            and isinstance(current, str)
-            and current
-            and value == _mask_value(key, current)
-        ):
-            return jsonify({"ok": True})
-        _set_env_value(env_path, key, value)
-        return jsonify({"ok": True})
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/env/<key>", methods=["DELETE"])
-@require_token
-def api_env_delete(key):
-    try:
-        unset_key(str(_selected_env_path()), key)
-        return jsonify({"ok": True})
-    except Exception as exc:
-        return _http_error(str(exc))
+register_env_routes(
+    app,
+    require_token=require_token,
+    http_error=_http_error,
+    selected_env_path=lambda: _selected_env_path(),
+    dotenv_values_fn=dotenv_values,
+    mask_value=lambda key, value: _mask_value(key, value),
+    discover_skill_entries=lambda: _discover_skill_entries(),
+    skill_env_var_presets=lambda skills: _skill_env_var_presets(skills),
+    classify_env_key=lambda key: _classify_env_key(key),
+    env_var_metadata=lambda key: _env_var_metadata(key),
+    env_presets_by_group=lambda: _env_presets_by_group(),
+    env_group_help=ENV_GROUP_HELP,
+    set_env_value=lambda env_path, key, value: _set_env_value(env_path, key, value),
+    unset_key_fn=unset_key,
+)
 
 
 # ===================================================================

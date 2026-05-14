@@ -60,7 +60,7 @@ Manual validation routine for each test step:
 
 - [ ] Extract ConfigManager into a dedicated module.
 - [x] Extract config read and update endpoints.
-- [ ] Extract environment variable helpers and endpoints.
+- [x] Extract environment variable helpers and endpoints.
 - [x] Extract runtime profile selection helpers where safe.
 - [ ] Validate smoke tests after this phase.
 
