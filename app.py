@@ -34,11 +34,17 @@ import uuid
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 from webui_app.chat_persistence import chat_data_lock as _chat_data_lock_impl
+from webui_app.chat_persistence import delete_folder as _delete_folder_impl
 from webui_app.chat_persistence import chat_session_path as _chat_session_path_impl
 from webui_app.chat_persistence import delete_session_from_disk as _delete_session_from_disk_impl
+from webui_app.chat_persistence import folders_from_file as _folders_from_file_impl
+from webui_app.chat_persistence import load_all_folders as _load_all_folders_impl_folders
 from webui_app.chat_persistence import load_all_sessions as _load_all_sessions_impl
+from webui_app.chat_persistence import load_folder as _load_folder_impl
 from webui_app.chat_persistence import load_session as _load_session_impl
 from webui_app.chat_persistence import session_from_file as _session_from_file_impl
+from webui_app.chat_persistence import write_all_folders as _write_all_folders_impl
+from webui_app.chat_persistence import write_folder as _write_folder_impl
 from webui_app.chat_persistence import write_session as _write_session_impl
 from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
 from webui_app.routes.agents import register_agent_routes
@@ -1684,70 +1690,49 @@ def _normalize_chat_folder(folder: dict) -> dict:
 
 
 def _folders_from_file() -> dict:
-    if not CHAT_FOLDERS_PATH.exists():
-        return {}
-    data = json.loads(CHAT_FOLDERS_PATH.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        return {}
-    folders = {}
-    for key, value in data.items():
-        if not isinstance(value, dict):
-            continue
-        value = dict(value)
-        value.setdefault("id", key)
-        normalized = _normalize_chat_folder(value)
-        if normalized["id"]:
-            folders[normalized["id"]] = normalized
-    return folders
+    return _folders_from_file_impl(
+        chat_folders_path=lambda: CHAT_FOLDERS_PATH,
+        normalize_chat_folder=lambda folder: _normalize_chat_folder(folder),
+    )
 
 
 def _write_all_folders(folders: dict) -> dict:
-    serializable = {}
-    for folder_id, folder in (folders or {}).items():
-        normalized = _normalize_chat_folder(folder)
-        if normalized["id"]:
-            serializable[folder_id] = normalized
-    payload = json.dumps(serializable, ensure_ascii=False, indent=2)
-    tmp_path = CHAT_FOLDERS_PATH.with_suffix(CHAT_FOLDERS_PATH.suffix + ".tmp")
-    with _chat_data_lock():
-        tmp_path.write_text(payload, encoding="utf-8")
-        os.replace(tmp_path, CHAT_FOLDERS_PATH)
-    chat_folders.clear()
-    chat_folders.update(copy.deepcopy(serializable))
-    return copy.deepcopy(serializable)
+    return _write_all_folders_impl(
+        folders=folders,
+        normalize_chat_folder=lambda folder: _normalize_chat_folder(folder),
+        chat_folders_path=lambda: CHAT_FOLDERS_PATH,
+        chat_data_lock_fn=_chat_data_lock,
+        chat_folders=chat_folders,
+    )
 
 
 def _load_all_folders() -> dict:
-    with _chat_data_lock(shared=True):
-        folders = _folders_from_file()
-    chat_folders.clear()
-    chat_folders.update(copy.deepcopy(folders))
-    return copy.deepcopy(folders)
+    return _load_all_folders_impl_folders(
+        chat_data_lock_fn=_chat_data_lock,
+        folders_from_file_fn=_folders_from_file,
+        chat_folders=chat_folders,
+    )
 
 
 def _load_folder(folder_id: str) -> dict | None:
-    folder_id = str(folder_id or "").strip()
-    if not folder_id:
-        return None
-    folders = _load_all_folders()
-    return folders.get(folder_id)
+    return _load_folder_impl(folder_id, load_all_folders_fn=_load_all_folders)
 
 
 def _write_folder(folder: dict) -> dict:
-    folder = _normalize_chat_folder(folder)
-    folders = _load_all_folders()
-    folders[folder["id"]] = folder
-    return _write_all_folders(folders)[folder["id"]]
+    return _write_folder_impl(
+        folder,
+        normalize_chat_folder=lambda value: _normalize_chat_folder(value),
+        load_all_folders_fn=_load_all_folders,
+        write_all_folders_fn=_write_all_folders,
+    )
 
 
 def _delete_folder(folder_id: str) -> None:
-    folder_id = str(folder_id or "").strip()
-    if not folder_id:
-        return
-    folders = _load_all_folders()
-    if folder_id in folders:
-        folders.pop(folder_id, None)
-        _write_all_folders(folders)
+    _delete_folder_impl(
+        folder_id,
+        load_all_folders_fn=_load_all_folders,
+        write_all_folders_fn=_write_all_folders,
+    )
 
 
 def _crontab_available() -> bool:

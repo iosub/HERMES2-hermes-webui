@@ -109,3 +109,72 @@ def delete_session_from_disk(session_id, *, chat_sessions, chat_session_path_fn,
     with chat_data_lock_fn():
         if path.exists():
             path.unlink()
+
+
+def folders_from_file(*, chat_folders_path, normalize_chat_folder):
+    path = chat_folders_path()
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        return {}
+    folders = {}
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        entry = dict(value)
+        entry.setdefault("id", key)
+        normalized = normalize_chat_folder(entry)
+        if normalized["id"]:
+            folders[normalized["id"]] = normalized
+    return folders
+
+
+def write_all_folders(*, folders, normalize_chat_folder, chat_folders_path, chat_data_lock_fn, chat_folders):
+    serializable = {}
+    for folder_id, folder in (folders or {}).items():
+        normalized = normalize_chat_folder(folder)
+        if normalized["id"]:
+            serializable[folder_id] = normalized
+    payload = json.dumps(serializable, ensure_ascii=False, indent=2)
+    path = chat_folders_path()
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with chat_data_lock_fn():
+        tmp_path.write_text(payload, encoding="utf-8")
+        os.replace(tmp_path, path)
+    chat_folders.clear()
+    chat_folders.update(copy.deepcopy(serializable))
+    return copy.deepcopy(serializable)
+
+
+def load_all_folders(*, chat_data_lock_fn, folders_from_file_fn, chat_folders):
+    with chat_data_lock_fn(shared=True):
+        folders = folders_from_file_fn()
+    chat_folders.clear()
+    chat_folders.update(copy.deepcopy(folders))
+    return copy.deepcopy(folders)
+
+
+def load_folder(folder_id, *, load_all_folders_fn):
+    normalized_folder_id = str(folder_id or "").strip()
+    if not normalized_folder_id:
+        return None
+    folders = load_all_folders_fn()
+    return folders.get(normalized_folder_id)
+
+
+def write_folder(folder, *, normalize_chat_folder, load_all_folders_fn, write_all_folders_fn):
+    normalized = normalize_chat_folder(folder)
+    folders = load_all_folders_fn()
+    folders[normalized["id"]] = normalized
+    return write_all_folders_fn(folders)[normalized["id"]]
+
+
+def delete_folder(folder_id, *, load_all_folders_fn, write_all_folders_fn):
+    normalized_folder_id = str(folder_id or "").strip()
+    if not normalized_folder_id:
+        return
+    folders = load_all_folders_fn()
+    if normalized_folder_id in folders:
+        folders.pop(normalized_folder_id, None)
+        write_all_folders_fn(folders)
