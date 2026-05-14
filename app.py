@@ -65,6 +65,7 @@ from webui_app.chat_dispatch import update_chat_request as _update_chat_request_
 from webui_app.chat_transport import plan_chat_request as _plan_chat_request_impl
 from webui_app.chat_transport import validated_transport_preference as _validated_transport_preference_impl
 from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
+from webui_app.config_manager import ConfigManager as _BaseConfigManager
 from webui_app.routes.agents import register_agent_routes
 from webui_app.routes.capabilities import register_capability_routes
 from webui_app.routes.chat import register_chat_routes
@@ -2154,150 +2155,13 @@ _SECRET_PATTERNS = re.compile(r"(key|token|secret|password|apikey|api_key)", re.
 # ===================================================================
 # ConfigManager
 # ===================================================================
-class ConfigManager:
-    """Manages reading, writing, and merging the Hermes YAML config."""
-
+class ConfigManager(_BaseConfigManager):
     def __init__(self):
-        object.__setattr__(self, "_config", {})
-        object.__setattr__(self, "_config_mtime_ns", None)
-        object.__setattr__(self, "_manual_override", False)
-        object.__setattr__(self, "_setting_from_disk", False)
-        self.load()
-
-    def __setattr__(self, name, value):
-        object.__setattr__(self, name, value)
-        if name == "_config" and not getattr(self, "_setting_from_disk", False):
-            object.__setattr__(self, "_manual_override", True)
-            object.__setattr__(self, "_config_mtime_ns", self._config_file_mtime_ns())
-
-    def _config_file_mtime_ns(self):
-        config_path = _selected_config_path()
-        try:
-            return config_path.stat().st_mtime_ns
-        except FileNotFoundError:
-            return None
-        except OSError:
-            return None
-
-    def _replace_config_from_disk(self, data):
-        object.__setattr__(self, "_setting_from_disk", True)
-        try:
-            object.__setattr__(self, "_config", data)
-        finally:
-            object.__setattr__(self, "_setting_from_disk", False)
-        object.__setattr__(self, "_manual_override", False)
-        object.__setattr__(self, "_config_mtime_ns", self._config_file_mtime_ns())
-
-    def load_if_changed(self):
-        """Reload config.yaml only when the on-disk file changed."""
-        if self._manual_override:
-            return
-        current_mtime_ns = self._config_file_mtime_ns()
-        if current_mtime_ns != self._config_mtime_ns:
-            self.load()
-
-    # -- loading ----------------------------------------------------------
-    def load(self):
-        """Read config.yaml from disk (or return empty dict)."""
-        config_path = _selected_config_path()
-        if config_path.exists():
-            try:
-                with open(config_path, "r", encoding="utf-8") as fh:
-                    self._replace_config_from_disk(yaml.safe_load(fh) or {})
-            except Exception as exc:
-                self._replace_config_from_disk({})
-                print(f"[ConfigManager] Failed to load config: {exc}")
-        else:
-            self._replace_config_from_disk({})
-
-    # -- saving -----------------------------------------------------------
-    def save(self):
-        """Write config to disk, creating a timestamped backup first."""
-        config_path = _selected_config_path()
-        backup_dir = _selected_backup_dir()
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup = backup_dir / f"config_{ts}.yaml"
-        if config_path.exists():
-            shutil.copy2(config_path, backup)
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_path, "w", encoding="utf-8") as fh:
-            yaml.dump(
-                self._config,
-                fh,
-                default_flow_style=False,
-                sort_keys=False,
-                allow_unicode=True,
-            )
-        object.__setattr__(self, "_manual_override", False)
-        object.__setattr__(self, "_config_mtime_ns", self._config_file_mtime_ns())
-
-    # -- getters ----------------------------------------------------------
-    def get(self, section=None):
-        """Return full config or a single section (masked)."""
-        self.load_if_changed()
-        if section is None:
-            return self.mask_secrets(copy.deepcopy(self._config))
-        data = copy.deepcopy(self._config.get(section, {}))
-        if isinstance(data, dict):
-            return self.mask_secrets(data)
-        return data
-
-    def get_raw(self, section=None):
-        """Return config or section WITHOUT masking (internal use)."""
-        self.load_if_changed()
-        if section is None:
-            return copy.deepcopy(self._config)
-        return copy.deepcopy(self._config.get(section, {}))
-
-    # -- setters ----------------------------------------------------------
-    def set(self, section, data):
-        """Replace a section entirely and save."""
-        self._config[section] = data
-        self.save()
-
-    def update(self, section, data):
-        """Deep-merge *data* into *section* and save."""
-        current = self._config.get(section, {})
-        if isinstance(current, dict) and isinstance(data, dict):
-            self._config[section] = self.deep_merge(current, data)
-        else:
-            self._config[section] = data
-        self.save()
-
-    def delete_section(self, section):
-        """Remove a top-level key from config and save."""
-        self._config.pop(section, None)
-        self.save()
-
-    # -- helpers ----------------------------------------------------------
-    @staticmethod
-    def deep_merge(base: dict, update: dict) -> dict:
-        """Recursively merge *update* into *base*, returning a new dict."""
-        result = copy.deepcopy(base)
-        for key, value in update.items():
-            if (
-                key in result
-                and isinstance(result[key], dict)
-                and isinstance(value, dict)
-            ):
-                result[key] = ConfigManager.deep_merge(result[key], value)
-            else:
-                result[key] = copy.deepcopy(value)
-        return result
-
-    @staticmethod
-    def mask_secrets(data, parent_key=""):
-        """Recursively mask values whose key name hints at a secret."""
-        if isinstance(data, dict):
-            return {
-                k: ConfigManager.mask_secrets(v, k) for k, v in data.items()
-            }
-        if isinstance(data, list):
-            return [ConfigManager.mask_secrets(v, parent_key) for v in data]
-        if isinstance(data, str) and _SECRET_PATTERNS.search(parent_key) and len(data) > 4:
-            return "\u2022" * (len(data) - 4) + data[-4:]
-        return data
+        super().__init__(
+            config_path_getter=lambda: _selected_config_path(),
+            backup_dir_getter=lambda: _selected_backup_dir(),
+            secret_patterns=_SECRET_PATTERNS,
+        )
 
 
 # Global config manager instance
