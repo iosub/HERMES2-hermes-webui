@@ -67,6 +67,7 @@ from webui_app.chat_transport import validated_transport_preference as _validate
 from webui_app.auth import build_rate_limit, build_require_token, current_webui_token as _current_webui_token_impl, load_session_tokens as _load_session_tokens_impl, register_auth_routes, register_session_token as _register_session_token_impl, remove_session_token as _remove_session_token_impl, save_session_tokens as _save_session_tokens_impl, verify_session_cookie as _verify_session_cookie_impl
 from webui_app.config_manager import ConfigManager as _BaseConfigManager
 from webui_app import provider_service as _provider_service
+from webui_app import capability_integration_service as _capability_integration_service
 from webui_app.routes.agents import register_agent_routes
 from webui_app.routes.capabilities import register_capability_routes
 from webui_app.routes.chat import register_chat_routes
@@ -2617,32 +2618,13 @@ def _capability_catalog() -> dict:
 
 
 def _normalize_capability_env_var(entry) -> dict:
-    if isinstance(entry, str):
-        entry = {"key": entry}
-    if not isinstance(entry, dict):
-        return {}
-    raw_key = str(entry.get("key") or "").strip().upper()
-    key = re.sub(r"[^A-Z0-9_]", "_", raw_key).strip("_")
-    if not key:
-        return {}
-    base = _env_var_metadata(key)
-    group = str(entry.get("group") or base.get("group") or _classify_env_key(key)).strip()
-    if group not in ENV_GROUP_HELP:
-        group = _classify_env_key(key)
-    label = str(entry.get("label") or base.get("label") or key).strip() or key
-    description = str(entry.get("description") or base.get("description") or "").strip()
-    default_value = str(entry.get("default_value") or base.get("default_value") or "").strip()
-    secret = bool(entry.get("secret")) if "secret" in entry else bool(base.get("secret"))
-    recommended = bool(entry.get("recommended")) if "recommended" in entry else bool(base.get("recommended"))
-    return {
-        "key": key,
-        "group": group,
-        "label": label,
-        "description": description,
-        "default_value": default_value,
-        "secret": secret,
-        "recommended": recommended,
-    }
+    return _capability_integration_service.normalize_capability_env_var(
+        entry,
+        re_module=re,
+        env_var_metadata_fn=lambda key: _env_var_metadata(key),
+        classify_env_key_fn=lambda key: _classify_env_key(key),
+        env_group_help=ENV_GROUP_HELP,
+    )
 
 
 def _normalize_capability_credential_file(entry) -> dict:
@@ -2678,253 +2660,79 @@ def _normalize_capability_required_command(entry) -> dict:
 
 
 def _normalize_capability_env_assignment(entry) -> dict:
-    if isinstance(entry, str):
-        entry = {"key": entry}
-    if not isinstance(entry, dict):
-        return {}
-    normalized = _normalize_capability_env_var(entry)
-    if not normalized:
-        return {}
-    value = entry.get("value")
-    normalized["value"] = str(value) if value is not None else ""
-    return normalized
+    return _capability_integration_service.normalize_capability_env_assignment(
+        entry,
+        normalize_capability_env_var_fn=lambda value: _normalize_capability_env_var(value),
+    )
 
 
 def _restore_text_file(path: Path, previous_text: str | None) -> None:
-    if previous_text is None:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            return
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(previous_text, encoding="utf-8")
+    _capability_integration_service.restore_text_file(path, previous_text)
 
 
 def _normalize_integration_capability_draft(data: dict | None) -> tuple[dict, list[str]]:
-    payload = data if isinstance(data, dict) else {}
-    kind = str(payload.get("kind") or payload.get("name") or "").strip().lower()
-    config = payload.get("config")
-    if isinstance(config, str):
-        try:
-            config = json.loads(config)
-        except Exception:
-            config = {"__invalid_json__": True}
-    if config is None:
-        config = copy.deepcopy(INTEGRATION_CONFIG_TEMPLATES.get(kind) or {})
-    env_vars = []
-    seen_env_keys = set()
-    for entry in payload.get("env_vars") if isinstance(payload.get("env_vars"), list) else []:
-        normalized = _normalize_capability_env_assignment(entry)
-        key = normalized.get("key")
-        if not key or key in seen_env_keys:
-            continue
-        seen_env_keys.add(key)
-        env_vars.append(normalized)
-
-    normalized = {
-        "kind": kind,
-        "label": INTEGRATION_SECTION_LABELS.get(kind, kind.title()),
-        "config": copy.deepcopy(config) if isinstance(config, dict) else config,
-        "env_vars": env_vars,
-    }
-    errors = []
-    if kind not in INTEGRATION_SECTION_LABELS:
-        errors.append("Integration kind is required")
-    if not isinstance(config, dict) or config.get("__invalid_json__"):
-        errors.append("Integration config must be a JSON object")
-    return normalized, errors
+    return _capability_integration_service.normalize_integration_capability_draft(
+        data,
+        integration_config_templates=INTEGRATION_CONFIG_TEMPLATES,
+        integration_section_labels=INTEGRATION_SECTION_LABELS,
+        normalize_capability_env_assignment_fn=lambda entry: _normalize_capability_env_assignment(entry),
+    )
 
 
 def _integration_capability_conflicts(kind: str, raw: dict | None = None) -> list[str]:
-    raw = raw if raw is not None else cfg.get_raw()
-    current = raw.get(kind)
-    if isinstance(current, dict) and _integration_config_is_configured(current):
-        return [str(CONFIG_PATH)]
-    return []
+    if raw is not None:
+        current = raw.get(kind)
+        if isinstance(current, dict) and _integration_config_is_configured(current):
+            return [str(CONFIG_PATH)]
+        return []
+    return _capability_integration_service.integration_capability_conflicts(
+        kind,
+        cfg_get_raw=lambda: cfg.get_raw(),
+        integration_config_is_configured_fn=lambda value: _integration_config_is_configured(value),
+        config_path=CONFIG_PATH,
+    )
 
 
 def _integration_capability_readiness(draft: dict, env_values: dict[str, str] | None = None) -> dict:
-    env_values = env_values or {}
-    blockers = []
-    issues = []
-    for entry in draft.get("env_vars") or []:
-        key = entry.get("key") or ""
-        value = str(entry.get("value") or env_values.get(key) or "").strip()
-        if value:
-            continue
-        blockers.append({
-            "kind": "env_var",
-            "key": key,
-            "group": entry.get("group") or _classify_env_key(key),
-            "message": f"missing env var {key}",
-        })
-        issues.append(f"missing env var {key}")
-    if not _integration_config_is_configured(draft.get("config") or {}):
-        blockers.append({
-            "kind": "config",
-            "message": "integration config is still empty",
-        })
-        issues.append("integration config is still empty")
-    return {
-        "ready": not blockers,
-        "issues": issues,
-        "blockers": blockers,
-    }
+    return _capability_integration_service.integration_capability_readiness(
+        draft,
+        env_values=env_values,
+        classify_env_key_fn=lambda key: _classify_env_key(key),
+        integration_config_is_configured_fn=lambda value: _integration_config_is_configured(value),
+    )
 
 
 def _preview_integration_capability(data: dict | None) -> tuple[dict, int]:
-    draft, errors = _normalize_integration_capability_draft(data)
-    if errors:
-        return {"ok": False, "error": "; ".join(errors)}, 400
-
-    raw = cfg.get_raw()
-    env_values = dotenv_values(str(ENV_PATH)) if ENV_PATH.exists() else {}
-    current = raw.get(draft["kind"])
-    exists = isinstance(current, dict)
-    conflicts = _integration_capability_conflicts(draft["kind"], raw=raw)
-    readiness = _integration_capability_readiness(draft, env_values=env_values)
-
-    next_raw = copy.deepcopy(raw)
-    next_raw[draft["kind"]] = copy.deepcopy(draft["config"])
-    integration_entry = next(
-        (entry for entry in _integration_entries(next_raw) if entry.get("name") == draft["kind"]),
-        {
-            "name": draft["kind"],
-            "label": draft["label"],
-            "kind": "integration",
-            "configured": _integration_config_is_configured(draft["config"]),
-            "config": cfg.mask_secrets(copy.deepcopy(draft["config"])),
-            "source": "top_level",
-        },
+    return _capability_integration_service.preview_integration_capability(
+        data,
+        normalize_integration_capability_draft_fn=lambda value: _normalize_integration_capability_draft(value),
+        cfg_get_raw=lambda: cfg.get_raw(),
+        env_path=ENV_PATH,
+        dotenv_values_fn=dotenv_values,
+        integration_capability_conflicts_fn=lambda kind, raw=None: _integration_capability_conflicts(kind, raw=raw),
+        integration_capability_readiness_fn=lambda draft, env_values=None: _integration_capability_readiness(draft, env_values=env_values),
+        integration_entries_fn=lambda raw=None: _integration_entries(raw),
+        integration_config_is_configured_fn=lambda value: _integration_config_is_configured(value),
+        cfg_mask_secrets=lambda value: cfg.mask_secrets(value),
+        config_path=CONFIG_PATH,
+        mask_value_fn=lambda key, value: _mask_value(key, value),
+        capability_preview_token_fn=lambda capability_type, payload: _capability_preview_token(capability_type, payload),
     )
-    integration_entry["readiness"] = readiness
-
-    writes = [{
-        "kind": "file",
-        "path": str(CONFIG_PATH),
-        "action": "update" if exists else "create",
-        "label": f"Set {draft['label']} integration block",
-        "content": json.dumps(draft.get("config") or {}, indent=2, sort_keys=True),
-    }]
-    env_overrides = []
-    for entry in draft.get("env_vars") or []:
-        key = entry.get("key") or ""
-        value = str(entry.get("value") or "")
-        current_value = str(env_values.get(key) or "")
-        if value:
-            if current_value and current_value != value:
-                env_overrides.append(key)
-            writes.append({
-                "kind": "file",
-                "path": str(ENV_PATH),
-                "action": "update" if ENV_PATH.exists() else "create",
-                "label": f"Set env var {key}",
-                "key": key,
-                "content": _mask_value(key, value),
-            })
-
-    warnings = []
-    if conflicts:
-        warnings.append("This integration is already configured. Edit it from Apps & Integrations instead of creating it again.")
-    if not _integration_config_is_configured(draft.get("config") or {}):
-        warnings.append("The config block is still empty, so Apps & Integrations may continue to show it as Empty.")
-    for key in env_overrides:
-        warnings.append(f"{key} already exists in ~/.hermes/.env and will be overwritten.")
-    if exists and not conflicts:
-        warnings.append("This will fill an existing empty integration section in config.yaml.")
-
-    preview_payload = {
-        "draft": draft,
-        "integration": {
-            **integration_entry,
-            "config_raw": copy.deepcopy(draft["config"]),
-            "env_vars": [
-                {
-                    key: value
-                    for key, value in entry.items()
-                    if key != "value"
-                }
-                for entry in (draft.get("env_vars") or [])
-            ],
-            "readiness": readiness,
-        },
-        "writes": writes,
-        "conflicts": conflicts,
-    }
-    preview_token = _capability_preview_token("integration", preview_payload)
-    return {
-        "ok": True,
-        "type": "integration",
-        "phase": "Phase 2",
-        "preview_token": preview_token,
-        "can_apply": not conflicts,
-        "draft": draft,
-        "summary": {
-            "name": draft.get("label") or draft.get("kind") or "Integration",
-            "kind": draft.get("kind") or "",
-            "target_dir": str(CONFIG_PATH),
-            "env_var_count": len(draft.get("env_vars") or []),
-            "env_write_count": len([entry for entry in (draft.get("env_vars") or []) if str(entry.get("value") or "").strip()]),
-            "configured": bool(integration_entry.get("configured")),
-            "conflict_count": len(conflicts),
-        },
-        "warnings": warnings,
-        "conflicts": conflicts,
-        "writes": writes,
-        "manifest": {
-            "integration": {
-                key: value
-                for key, value in preview_payload["integration"].items()
-                if key != "config_raw"
-            },
-            "integration_config": copy.deepcopy(draft["config"]),
-        },
-    }, 200
 
 
 def _apply_integration_capability(data: dict | None, preview_token: str) -> tuple[dict, int]:
-    preview, status = _preview_integration_capability(data)
-    if status != 200:
-        return preview, status
-    if not preview_token or preview_token != preview.get("preview_token"):
-        return {"ok": False, "error": "Preview has changed. Refresh the draft preview before approval."}, 409
-    if not preview.get("can_apply"):
-        return {"ok": False, "error": "This integration is already configured. Edit it from Apps & Integrations instead."}, 409
-
-    draft = preview.get("draft") or {}
-    config_before = CONFIG_PATH.read_text(encoding="utf-8") if CONFIG_PATH.exists() else None
-    env_before = ENV_PATH.read_text(encoding="utf-8") if ENV_PATH.exists() else None
-    try:
-        for entry in draft.get("env_vars") or []:
-            value = str(entry.get("value") or "")
-            if not value:
-                continue
-            ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-            _set_env_value(ENV_PATH, entry.get("key") or "", value)
-        cfg.set(str(draft.get("kind") or ""), copy.deepcopy(draft.get("config") or {}))
-    except Exception:
-        _restore_text_file(ENV_PATH, env_before)
-        _restore_text_file(CONFIG_PATH, config_before)
-        cfg.load()
-        raise
-
-    cfg.load()
-    created = next(
-        (entry for entry in _integration_entries() if entry.get("name") == draft.get("kind")),
-        None,
+    return _capability_integration_service.apply_integration_capability(
+        data,
+        preview_token,
+        preview_integration_capability_fn=lambda value: _preview_integration_capability(value),
+        config_path=CONFIG_PATH,
+        env_path=ENV_PATH,
+        set_env_value_fn=lambda path, key, value: _set_env_value(path, key, value),
+        cfg_set=lambda section, value: cfg.set(section, value),
+        restore_text_file_fn=lambda path, previous_text: _restore_text_file(path, previous_text),
+        cfg_load=lambda: cfg.load(),
+        integration_entries_fn=lambda raw=None: _integration_entries(raw),
     )
-    return {
-        "ok": True,
-        "type": "integration",
-        "created": {
-            "name": draft.get("label") or draft.get("kind") or "Integration",
-            "kind": draft.get("kind") or "",
-            "target_dir": str(CONFIG_PATH),
-            "files": [str(CONFIG_PATH)] + ([str(ENV_PATH)] if any(str(item.get("value") or "").strip() for item in (draft.get("env_vars") or [])) else []),
-            "integration": created,
-        },
-    }, 200
 
 
 def _normalize_agent_preset_role(role: str, payload, profile_names: set[str]) -> tuple[dict, list[str]]:

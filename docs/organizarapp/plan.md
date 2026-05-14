@@ -41,7 +41,7 @@ Manual validation routine for each test step:
 - [x] Define the item-by-item workflow: implement, user test, commit, push.
 - [x] Define the browser-first validation routine: refresh, login, user validation, commit, push.
 - [x] Keep `hermes-webui.service` disabled for autostart so tests can control it manually.
-- [ ] Keep this checklist updated after each completed refactor step.
+- [x] Keep this checklist updated after each completed refactor step.
 
 ### Phase 1: Stabilize the Entry Point
 
@@ -127,6 +127,14 @@ Manual validation routine for each test step:
 - [x] Extract session token load and save helpers.
 - [x] Extract session cookie verification helper.
 - [x] Validate token and cookie auth flows after this phase.
+
+### Phase 11: Extract Integration Capability Helpers
+
+- [x] Extract capability env-var normalization helpers used by integration drafts.
+- [x] Extract integration capability draft normalization helper.
+- [x] Extract integration capability preview helper.
+- [x] Extract integration capability apply helper.
+- [x] Validate integration capability smoke tests after this phase.
 
 ### Completion Criteria
 
