@@ -33,6 +33,13 @@ from flask_cors import CORS
 import uuid
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 from werkzeug.utils import secure_filename
+from webui_app.chat_persistence import chat_data_lock as _chat_data_lock_impl
+from webui_app.chat_persistence import chat_session_path as _chat_session_path_impl
+from webui_app.chat_persistence import delete_session_from_disk as _delete_session_from_disk_impl
+from webui_app.chat_persistence import load_all_sessions as _load_all_sessions_impl
+from webui_app.chat_persistence import load_session as _load_session_impl
+from webui_app.chat_persistence import session_from_file as _session_from_file_impl
+from webui_app.chat_persistence import write_session as _write_session_impl
 from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
 from webui_app.routes.agents import register_agent_routes
 from webui_app.routes.capabilities import register_capability_routes
@@ -925,22 +932,12 @@ VISION_REFERENCE_HINT_RE = re.compile(
 @contextmanager
 def _chat_data_lock(shared: bool = False):
     """Serialize chat session file access across gunicorn workers."""
-    try:
-        import fcntl
-    except ImportError:
+    with _chat_data_lock_impl(lock_path=lambda: CHAT_DATA_LOCK, shared=shared):
         yield
-        return
-    CHAT_DATA_LOCK.touch(exist_ok=True)
-    with CHAT_DATA_LOCK.open("a+", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _chat_session_path(session_id: str) -> Path:
-    return CHAT_DATA_DIR / f"{secure_filename(session_id)}.json"
+    return _chat_session_path_impl(session_id, chat_data_dir=lambda: CHAT_DATA_DIR)
 
 
 def _normalize_transport_preference(value) -> str | None:
@@ -1626,66 +1623,52 @@ def _effective_session_context(session: dict) -> dict:
 
 
 def _session_from_file(path: Path):
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(data, dict) and data.get("id"):
-        return _normalize_chat_session(data)
-    raise ValueError(f"Invalid session payload in {path.name}")
+    return _session_from_file_impl(path, normalize_chat_session=lambda session: _normalize_chat_session(session))
 
 
 def _load_all_sessions():
     """Load all persisted chat sessions from disk into memory."""
-    loaded_sessions = {}
-    with _chat_data_lock(shared=True):
-        for f in sorted(CHAT_DATA_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-            if f == CHAT_FOLDERS_PATH:
-                continue
-            try:
-                data = _session_from_file(f)
-                loaded_sessions[data["id"]] = data
-            except Exception as exc:
-                logger.warning("Failed to load session file %s: %s", f.name, exc)
-    chat_sessions.clear()
-    chat_sessions.update(loaded_sessions)
-    return copy.deepcopy(loaded_sessions)
+    return _load_all_sessions_impl(
+        chat_data_lock_fn=_chat_data_lock,
+        chat_data_dir=lambda: CHAT_DATA_DIR,
+        chat_folders_path=lambda: CHAT_FOLDERS_PATH,
+        session_from_file_fn=_session_from_file,
+        chat_sessions=chat_sessions,
+        logger=logger,
+    )
 
 
 def _load_session(session_id):
     """Load a single persisted session from disk into the runtime cache."""
-    path = _chat_session_path(session_id)
-    with _chat_data_lock(shared=True):
-        if not path.exists():
-            chat_sessions.pop(session_id, None)
-            return None
-        try:
-            data = _session_from_file(path)
-        except Exception as exc:
-            logger.warning("Failed to load session file %s: %s", path.name, exc)
-            chat_sessions.pop(session_id, None)
-            return None
-    chat_sessions[session_id] = data
-    return copy.deepcopy(data)
+    return _load_session_impl(
+        session_id,
+        chat_session_path_fn=_chat_session_path,
+        chat_data_lock_fn=_chat_data_lock,
+        session_from_file_fn=_session_from_file,
+        chat_sessions=chat_sessions,
+        logger=logger,
+    )
 
 
 def _write_session(session):
     """Persist a single session atomically and refresh the runtime cache."""
-    session = _normalize_chat_session(session)
-    session_id = session["id"]
-    path = _chat_session_path(session_id)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    payload = json.dumps(session, ensure_ascii=False, indent=2)
-    with _chat_data_lock():
-        tmp_path.write_text(payload, encoding="utf-8")
-        os.replace(tmp_path, path)
-    chat_sessions[session_id] = copy.deepcopy(session)
+    _write_session_impl(
+        session,
+        normalize_chat_session=lambda value: _normalize_chat_session(value),
+        chat_session_path_fn=_chat_session_path,
+        chat_data_lock_fn=_chat_data_lock,
+        chat_sessions=chat_sessions,
+    )
 
 
 def _delete_session_from_disk(session_id):
     """Remove a session from memory and disk."""
-    chat_sessions.pop(session_id, None)
-    path = _chat_session_path(session_id)
-    with _chat_data_lock():
-        if path.exists():
-            path.unlink()
+    _delete_session_from_disk_impl(
+        session_id,
+        chat_sessions=chat_sessions,
+        chat_session_path_fn=_chat_session_path,
+        chat_data_lock_fn=_chat_data_lock,
+    )
 
 
 def _normalize_chat_folder(folder: dict) -> dict:
@@ -9054,6 +9037,9 @@ def api_chat_clear(session_id):
     session["messages"] = []
     session["updated"] = datetime.now().isoformat()
     session["hermes_session_id"] = None
+    for segment in session.get("segments") or []:
+        if isinstance(segment, dict):
+            segment["hermes_session_id"] = None
     session["transport_mode"] = None
     session["continuity_mode"] = None
     session["transport_notice"] = ""

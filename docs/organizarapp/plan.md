@@ -79,7 +79,7 @@ Manual validation routine for each test step:
 
 ### Phase 5: Isolate Chat Persistence First
 
-- [ ] Extract chat session file load and write helpers.
+- [x] Extract chat session file load and write helpers.
 - [ ] Extract folder persistence helpers.
 - [ ] Extract request control persistence helpers.
 - [ ] Extract attachment metadata helpers.
