@@ -70,6 +70,7 @@ from webui_app import provider_service as _provider_service
 from webui_app import capability_agent_preset_service as _capability_agent_preset_service
 from webui_app import capability_integration_service as _capability_integration_service
 from webui_app import capability_skill_service as _capability_skill_service
+from webui_app import skill_setup_service as _skill_setup_service
 from webui_app.routes.agents import register_agent_routes
 from webui_app.routes.capabilities import register_capability_routes
 from webui_app.routes.chat import register_chat_routes
@@ -5037,42 +5038,22 @@ def _integration_entries(raw: dict | None = None) -> list[dict]:
 
 
 def _discover_skill_entries() -> list[dict]:
-    skills = []
-    if not SKILLS_DIR.exists():
-        return skills
-
-    for root, dirs, files in os.walk(str(SKILLS_DIR)):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
-        if "SKILL.md" not in files:
-            continue
-        skill_md = Path(root) / "SKILL.md"
-        fm = _skill_frontmatter(skill_md)
-        rel_path = Path(root).relative_to(SKILLS_DIR)
-        dir_name = str(rel_path)
-        skill = {
-            "name": fm.get("name", rel_path.name),
-            "category": fm.get("category", ""),
-            "description": fm.get("description", ""),
-            "path": str(rel_path),
-            "enabled": not dir_name.endswith(".disabled"),
-            "frontmatter": fm,
-        }
-        skill["source"] = _read_skill_source_metadata(Path(root))
-        skill["setup"] = _skill_setup_readiness(skill)
-        skills.append(skill)
-    return skills
+    return _skill_setup_service.discover_skill_entries(
+        skills_dir=SKILLS_DIR,
+        os_module=os,
+        path_class=Path,
+        skill_frontmatter_fn=lambda path: _skill_frontmatter(path),
+        read_skill_source_metadata_fn=lambda path: _read_skill_source_metadata(path),
+        skill_setup_readiness_fn=lambda skill: _skill_setup_readiness(skill),
+    )
 
 
 def _configured_hook_keys(raw: dict | None = None) -> list[str]:
-    raw = raw if raw is not None else cfg.get_raw()
-    hooks_cfg = raw.get("hooks")
-    if not isinstance(hooks_cfg, dict):
-        return []
-    return [
-        str(key)
-        for key, value in hooks_cfg.items()
-        if _integration_config_is_configured(value)
-    ]
+    return _skill_setup_service.configured_hook_keys(
+        raw,
+        cfg_get_raw=lambda: cfg.get_raw(),
+        integration_config_is_configured_fn=lambda value: _integration_config_is_configured(value),
+    )
 
 
 def _skill_matches_terms(skill: dict, terms: tuple[str, ...]) -> bool:
@@ -5222,203 +5203,39 @@ def _skill_apply_action(requested: str | Path, action: str) -> dict:
 
 
 def _skill_wants_integration_setup(skill: dict, env_blockers: list[dict]) -> bool:
-    if any(str(blocker.get("group") or "").strip() == "Channel" for blocker in env_blockers):
-        return True
-    haystack = " ".join(
-        str(value or "").strip().lower()
-        for value in (
-            skill.get("name"),
-            skill.get("path"),
-            skill.get("category"),
-            ((skill.get("source") or {}).get("source_repo") if isinstance(skill.get("source"), dict) else ""),
-        )
-    )
-    return any(hint in haystack for hint in ("discord", "whatsapp", "slack", "telegram", "matrix", "webhook"))
+    return _skill_setup_service.skill_wants_integration_setup(skill, env_blockers)
 
 
 def _skill_setup_details(skill: dict) -> dict:
-    frontmatter = skill.get("frontmatter") if isinstance(skill.get("frontmatter"), dict) else {}
-    metadata = frontmatter.get("metadata") if isinstance(frontmatter.get("metadata"), dict) else {}
-    ui_setup = {}
-    if isinstance(metadata.get("hermes_web_ui"), dict):
-        ui_setup = metadata["hermes_web_ui"].get("setup") if isinstance(metadata["hermes_web_ui"].get("setup"), dict) else {}
-
-    env_vars = []
-    seen_env = set()
-    for entry in ui_setup.get("env_vars") if isinstance(ui_setup.get("env_vars"), list) else []:
-        normalized = _normalize_capability_env_var(entry)
-        key = normalized.get("key")
-        if not key or key in seen_env:
-            continue
-        seen_env.add(key)
-        env_vars.append(normalized)
-    prerequisites = frontmatter.get("prerequisites")
-    legacy_env_vars = _clean_string_list(prerequisites.get("env_vars")) if isinstance(prerequisites, dict) else []
-    for env_key in legacy_env_vars:
-        normalized = _normalize_capability_env_var(env_key)
-        key = normalized.get("key")
-        if not key or key in seen_env:
-            continue
-        seen_env.add(key)
-        env_vars.append(normalized)
-
-    credential_files = []
-    seen_paths = set()
-    for entry in ui_setup.get("credential_files") if isinstance(ui_setup.get("credential_files"), list) else []:
-        normalized = _normalize_capability_credential_file(entry)
-        rel_path = normalized.get("path")
-        if not rel_path or rel_path in seen_paths:
-            continue
-        seen_paths.add(rel_path)
-        credential_files.append(normalized)
-    required_files = frontmatter.get("required_credential_files")
-    if isinstance(required_files, list):
-        for entry in required_files:
-            normalized = _normalize_capability_credential_file(entry)
-            rel_path = normalized.get("path")
-            if not rel_path or rel_path in seen_paths:
-                continue
-            seen_paths.add(rel_path)
-            credential_files.append(normalized)
-
-    required_commands = []
-    seen_commands = set()
-    for entry in ui_setup.get("required_commands") if isinstance(ui_setup.get("required_commands"), list) else []:
-        normalized = _normalize_capability_required_command(entry)
-        name = normalized.get("name")
-        if not name or name in seen_commands:
-            continue
-        seen_commands.add(name)
-        required_commands.append(normalized)
-    openclaw_meta = metadata.get("openclaw") if isinstance(metadata.get("openclaw"), dict) else {}
-    legacy_bins = _clean_string_list(((openclaw_meta.get("requires") or {}).get("bins"))) if isinstance(openclaw_meta, dict) else []
-    for binary in legacy_bins:
-        normalized = _normalize_capability_required_command(binary)
-        name = normalized.get("name")
-        if not name or name in seen_commands:
-            continue
-        seen_commands.add(name)
-        required_commands.append(normalized)
-
-    return {
-        "env_vars": env_vars,
-        "credential_files": credential_files,
-        "required_commands": required_commands,
-    }
+    return _skill_setup_service.skill_setup_details(
+        skill,
+        normalize_capability_env_var_fn=lambda entry: _normalize_capability_env_var(entry),
+        clean_string_list_fn=lambda value: _clean_string_list(value),
+        normalize_capability_credential_file_fn=lambda entry: _normalize_capability_credential_file(entry),
+        normalize_capability_required_command_fn=lambda entry: _normalize_capability_required_command(entry),
+    )
 
 
 def _skill_setup_readiness(skill: dict) -> dict:
-    skill_dir = _skill_absolute_path(skill)
-    issues = []
-    blockers = []
-    actions = []
-    details = _skill_setup_details(skill)
-
-    for entry in details.get("credential_files") or []:
-        rel_path = str(entry.get("path") or "").strip()
-        if not rel_path or not skill_dir:
-            continue
-        target = (skill_dir / rel_path).resolve()
-        if not target.exists():
-            message = f"missing credential file {rel_path}"
-            issues.append(message)
-            blockers.append({
-                "kind": "credential_file",
-                "path": rel_path,
-                "label": str(entry.get("label") or Path(rel_path).name).strip(),
-                "description": str(entry.get("description") or "").strip(),
-                "absolute_path": str(target),
-                "message": message,
-            })
-
-    env_blockers = []
-    for env_entry in details.get("env_vars") or []:
-        env_key = str(env_entry.get("key") or "").strip()
-        if not env_key:
-            continue
-        if not _runtime_env_value(env_key, ""):
-            message = f"missing env var {env_key}"
-            issues.append(message)
-            blocker = {
-                "kind": "env_var",
-                "key": env_key,
-                "group": env_entry.get("group") or _classify_env_key(env_key),
-                "label": env_entry.get("label") or env_key,
-                "description": env_entry.get("description") or "",
-                "default_value": str(env_entry.get("default_value") or "").strip(),
-                "secret": bool(env_entry.get("secret")),
-                "message": message,
-            }
-            blockers.append(blocker)
-            env_blockers.append(blocker)
-
-    for command_entry in details.get("required_commands") or []:
-        binary = str(command_entry.get("name") or "").strip()
-        if not binary:
-            continue
-        if shutil.which(binary) is None:
-            message = f"missing command {binary}"
-            issues.append(message)
-            blockers.append({
-                "kind": "command",
-                "name": binary,
-                "description": str(command_entry.get("description") or "").strip(),
-                "message": message,
-            })
-
-    for blocker in env_blockers:
-        actions.append({
-            "type": "env_var",
-            "key": blocker.get("key"),
-            "group": blocker.get("group"),
-            "description": blocker.get("description"),
-            "default_value": blocker.get("default_value"),
-            "secret": blocker.get("secret"),
-            "label": f"Set {blocker.get('label') or blocker.get('key')}",
-        })
-
-    if _skill_wants_integration_setup(skill, env_blockers):
-        actions.append({
-            "type": "screen",
-            "screen": "channels",
-            "label": "Open Apps & Integrations",
-        })
-
-    unique_actions = []
-    seen_actions = set()
-    for action in actions:
-        token = json.dumps(action, sort_keys=True)
-        if token in seen_actions:
-            continue
-        seen_actions.add(token)
-        unique_actions.append(action)
-
-    return {
-        "ready": not issues,
-        "issues": issues,
-        "blockers": blockers,
-        "actions": unique_actions,
-        "requirements": details,
-    }
+    return _skill_setup_service.skill_setup_readiness(
+        skill,
+        skill_absolute_path_fn=lambda value: _skill_absolute_path(value),
+        skill_setup_details_fn=lambda value: _skill_setup_details(value),
+        path_class=Path,
+        runtime_env_value_fn=lambda key, default="": _runtime_env_value(key, default),
+        classify_env_key_fn=lambda key: _classify_env_key(key),
+        shutil_module=shutil,
+        skill_wants_integration_setup_fn=lambda skill_data, env_blockers: _skill_wants_integration_setup(skill_data, env_blockers),
+    )
 
 
 def _skill_env_var_presets(skills: list[dict] | None = None) -> dict[str, dict]:
-    catalog = {}
-    for skill in skills if skills is not None else _discover_skill_entries():
-        requirements = ((skill.get("setup") or {}).get("requirements") if isinstance(skill.get("setup"), dict) else {}) or {}
-        for entry in requirements.get("env_vars") if isinstance(requirements.get("env_vars"), list) else []:
-            normalized = _normalize_capability_env_var(entry)
-            key = normalized.get("key")
-            if not key:
-                continue
-            existing = catalog.get(key, {})
-            merged = {
-                **_env_var_metadata(key),
-                **existing,
-                **normalized,
-            }
-            catalog[key] = merged
-    return catalog
+    return _skill_setup_service.skill_env_var_presets(
+        skills,
+        discover_skill_entries_fn=lambda: _discover_skill_entries(),
+        normalize_capability_env_var_fn=lambda entry: _normalize_capability_env_var(entry),
+        env_var_metadata_fn=lambda key: _env_var_metadata(key),
+    )
 
 
 def _starter_pack_skill_group(item_id: str) -> dict | None:
