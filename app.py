@@ -79,6 +79,7 @@ from webui_app import native_session_service as _native_session_service
 from webui_app import native_trace_service as _native_trace_service
 from webui_app import chat_http_service as _chat_http_service
 from webui_app import chat_attachment_service as _chat_attachment_service
+from webui_app import api_auth_service as _api_auth_service
 from webui_app.routes.agents import register_agent_routes
 from webui_app.routes.capabilities import register_capability_routes
 from webui_app.routes.chat import register_chat_routes
@@ -5256,40 +5257,36 @@ def _call_api_server(
 
 
 def _provider_env_api_key(provider: str | None) -> str:
-    provider_name = _normalize_provider_type(provider or "")
-    env_key = PROVIDER_ENV_KEY_MAP.get(provider_name)
-    return _runtime_env_value(env_key, "") if env_key else ""
+    return _api_auth_service.provider_env_api_key(
+        provider,
+        normalize_provider_type_fn=lambda value: _normalize_provider_type(value),
+        provider_env_key_map=PROVIDER_ENV_KEY_MAP,
+        runtime_env_value_fn=lambda key, default="": _runtime_env_value(key, default),
+    )
 
 
 def _resolved_target_api_key(target: dict | None) -> str:
-    target = target or {}
-    explicit_api_key = _resolve_runtime_template((target.get("api_key") or "").strip()).strip()
-    if explicit_api_key:
-        return explicit_api_key
-    provider_api_key = _provider_env_api_key(target.get("provider"))
-    if provider_api_key:
-        return provider_api_key
-    target_port = _api_url_port(target.get("base_url") or _effective_hermes_api_url(DEFAULT_HERMES_API_URL))
-    repo_env = _repo_env_values()
-    return (
-        next((str(repo_env.get(key) or "").strip() for key in _api_token_repo_keys_for_port(target_port) if str(repo_env.get(key) or "").strip()), "")
-        or str(os.environ.get("HERMES_API_KEY") or "").strip()
-        or str(os.environ.get("HERMES_API_TOKEN") or "").strip()
-        or str(os.environ.get("API_SERVER_KEY") or "").strip()
-        or str(os.environ.get("API_SERVER_TOKEN") or "").strip()
+    return _api_auth_service.resolved_target_api_key(
+        target,
+        resolve_runtime_template_fn=lambda value: _resolve_runtime_template(value),
+        provider_env_api_key_fn=lambda provider: _provider_env_api_key(provider),
+        api_url_port_fn=lambda url: _api_url_port(url),
+        effective_hermes_api_url_fn=lambda default_url: _effective_hermes_api_url(default_url),
+        default_hermes_api_url=DEFAULT_HERMES_API_URL,
+        repo_env_values_fn=lambda: _repo_env_values(),
+        api_token_repo_keys_for_port_fn=lambda port: _api_token_repo_keys_for_port(port),
+        os_environ=os.environ,
     )
 
 
 def _api_server_headers(api_key: str | None = None, provider: str | None = None, target: dict | None = None) -> dict:
-    headers = {}
-    resolved_api_key = (api_key or "").strip() if api_key is not None else ""
-    if not resolved_api_key and provider:
-        resolved_api_key = _provider_env_api_key(provider)
-    if not resolved_api_key:
-        resolved_api_key = _resolved_target_api_key(target)
-    if resolved_api_key:
-        headers["Authorization"] = f"Bearer {resolved_api_key}"
-    return headers
+    return _api_auth_service.api_server_headers(
+        api_key,
+        provider,
+        target,
+        provider_env_api_key_fn=lambda provider_name: _provider_env_api_key(provider_name),
+        resolved_target_api_key_fn=lambda target_value: _resolved_target_api_key(target_value),
+    )
 
 
 def _set_env_value(path: Path, key: str, value: str) -> None:
