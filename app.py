@@ -36,6 +36,7 @@ from werkzeug.utils import secure_filename
 from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
 from webui_app.routes.config import register_config_routes
 from webui_app.routes.env import register_env_routes
+from webui_app.routes.providers import register_provider_routes
 from webui_app.request_hooks import register_request_hooks
 from webui_app.routes.system import register_system_routes
 
@@ -5260,186 +5261,31 @@ register_env_routes(
 # 10–14. Providers
 # ===================================================================
 
-def _get_providers_info():
-    """Build a structured view of providers from config."""
-    raw = cfg.get_raw()
-    model_cfg = _normalized_model_config()
-    custom = _custom_provider_profiles(raw)
-
-    default = {
-        "profile": _role_linked_profile_name("primary", model_cfg=model_cfg, raw=raw),
-        "provider": model_cfg.get("default_provider", ""),
-        "model": model_cfg.get("default_model", ""),
-        "base_url": model_cfg.get("base_url", ""),
-        "routing_provider": model_cfg.get("routing_provider", ""),
-    }
-
-    auxiliary = {}
-    for aux_key in AUXILIARY_MODEL_KEYS:
-        val = model_cfg.get(aux_key)
-        if val:
-            if isinstance(val, str):
-                auxiliary[aux_key] = {"model": val}
-            elif isinstance(val, dict):
-                auxiliary[aux_key] = val
-
-    return default, custom, auxiliary
-
-
-@app.route("/api/providers", methods=["GET"])
-@require_token
-def api_providers_get():
-    try:
-        default, custom, auxiliary = _get_providers_info()
-        usage_map = _provider_usage_map()
-        safe_custom = []
-        for profile in custom:
-            safe = cfg.mask_secrets(profile)
-            safe["used_by"] = usage_map.get(profile.get("name", ""), [])
-            safe["has_api_key"] = bool(profile.get("api_key"))
-            safe["provider_label"] = _provider_display_name(profile.get("provider", ""))
-            safe_custom.append(safe)
-        safe_aux = cfg.mask_secrets(auxiliary)
-        for cfg_value in safe_aux.values():
-            if isinstance(cfg_value, dict):
-                cfg_value["provider_label"] = _provider_display_name(cfg_value.get("provider", ""))
-        return jsonify({
-            "default": {
-                **default,
-                "provider_label": _provider_display_name(default.get("provider", "")),
-            },
-            "custom": safe_custom,
-            "auxiliary": safe_aux,
-            "presets": PROVIDER_PRESETS,
-        })
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/providers", methods=["POST"])
-@require_token
-def api_providers_add():
-    try:
-        data = _normalize_provider_profile(request.get_json(force=True))
-        name = data.get("name")
-        if not name:
-            return jsonify({"ok": False, "error": "name is required"}), 400
-
-        raw = cfg.get_raw()
-        custom = _custom_provider_profiles(raw)
-        # Check for duplicate name
-        for p in custom:
-            if p.get("name") == name:
-                return jsonify({"ok": False, "error": f"Provider '{name}' already exists"}), 409
-
-        custom.append(data)
-        cfg.set("custom_providers", custom)
-        return jsonify({"ok": True})
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/providers/<name>", methods=["PUT"])
-@require_token
-def api_providers_update(name):
-    try:
-        data = request.get_json(force=True)
-        raw = cfg.get_raw()
-        custom = _custom_provider_profiles(raw)
-        found = False
-        for i, p in enumerate(custom):
-            if p.get("name") == name:
-                sanitized = _preserve_masked_secret_updates(p, data)
-                merged = ConfigManager.deep_merge(p, sanitized)
-                merged["name"] = name
-                custom[i] = _normalize_provider_profile(merged)
-                found = True
-                break
-        if not found:
-            return jsonify({"ok": False, "error": f"Provider '{name}' not found"}), 404
-        cfg.set("custom_providers", custom)
-        _sync_linked_provider_roles(name, custom[i])
-        return jsonify({"ok": True})
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/providers/<name>", methods=["DELETE"])
-@require_token
-def api_providers_delete(name):
-    try:
-        raw = cfg.get_raw()
-        usage_map = _provider_usage_map(raw=raw)
-        if usage_map.get(name):
-            used_by = ", ".join(usage_map.get(name, []))
-            return jsonify({"ok": False, "error": f"Provider '{name}' is still used by {used_by}"}), 409
-        custom = _custom_provider_profiles(raw)
-        new_custom = [p for p in custom if p.get("name") != name]
-        if len(new_custom) == len(custom):
-            return jsonify({"ok": False, "error": f"Provider '{name}' not found"}), 404
-        cfg.set("custom_providers", new_custom)
-        return jsonify({"ok": True})
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/providers/<name>/test", methods=["POST"])
-@require_token
-@rate_limit
-def api_providers_test(name):
-    try:
-        raw = cfg.get_raw()
-        model_cfg = _normalized_model_config()
-        provider_cfg = _get_provider_profile(name, raw)
-
-        if not provider_cfg:
-            # Maybe it's the default provider
-            if _role_linked_profile_name("primary", model_cfg=model_cfg, raw=raw) == name:
-                provider_cfg = _resolve_role_target("primary")
-            else:
-                return jsonify({"ok": False, "error": f"Provider '{name}' not found"}), 404
-
-        # Try a simple chat completion request
-        import urllib.request
-        import urllib.error
-
-        base_url = (provider_cfg.get("base_url") or "").rstrip("/")
-        model = provider_cfg.get("model", "gpt-3.5-turbo")
-        provider_type = provider_cfg.get("provider", "")
-        if not base_url:
-            return jsonify({"ok": False, "error": "Base URL is required to test this provider"}), 200
-        if not model:
-            return jsonify({"ok": False, "error": "Suggested model is required to test this provider"}), 200
-
-        url = _build_openai_api_url(base_url, "chat/completions")
-
-        payload = json.dumps({
-            "model": model,
-            "messages": [{"role": "user", "content": "ping"}],
-            "max_tokens": 5,
-        }).encode("utf-8")
-
-        headers = _api_server_headers(provider_cfg.get("api_key"), provider_type)
-        headers["Content-Type"] = "application/json"
-
-        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-        start = time.time()
-        try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                body = resp.read().decode("utf-8", errors="replace")
-                latency = int((time.time() - start) * 1000)
-                return jsonify({"ok": True, "latency_ms": latency, "response": body[:200]})
-        except urllib.error.HTTPError as e:
-            latency = int((time.time() - start) * 1000)
-            body = e.read().decode("utf-8", errors="replace")
-            detail = _summarize_upstream_error_detail(body, str(e.reason))[:300]
-            return jsonify({"ok": False, "error": f"HTTP {e.code}: {detail}", "latency_ms": latency}), 200
-        except urllib.error.URLError as e:
-            latency = int((time.time() - start) * 1000)
-            return jsonify({"ok": False, "error": str(e.reason), "latency_ms": latency}), 200
-
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
+register_provider_routes(
+    app,
+    require_token=require_token,
+    rate_limit=rate_limit,
+    http_error=_http_error,
+    cfg_get_raw=lambda: cfg.get_raw(),
+    cfg_set=lambda section, value: cfg.set(section, value),
+    cfg_mask_secrets=lambda value: cfg.mask_secrets(value),
+    normalized_model_config=lambda: _normalized_model_config(),
+    custom_provider_profiles=lambda raw=None: _custom_provider_profiles(raw),
+    role_linked_profile_name=lambda role, *, model_cfg=None, raw=None: _role_linked_profile_name(role, model_cfg=model_cfg, raw=raw),
+    provider_usage_map=lambda raw=None, model_cfg=None: _provider_usage_map(raw=raw, model_cfg=model_cfg),
+    provider_display_name=lambda provider_type: _provider_display_name(provider_type),
+    provider_presets=PROVIDER_PRESETS,
+    auxiliary_model_keys=AUXILIARY_MODEL_KEYS,
+    normalize_provider_profile=lambda entry: _normalize_provider_profile(entry),
+    preserve_masked_secret_updates=lambda current, update, parent_key="": _preserve_masked_secret_updates(current, update, parent_key),
+    deep_merge=lambda current, data: ConfigManager.deep_merge(current, data),
+    sync_linked_provider_roles=lambda name, profile: _sync_linked_provider_roles(name, profile),
+    get_provider_profile=lambda name, raw=None: _get_provider_profile(name, raw),
+    resolve_role_target=lambda role: _resolve_role_target(role),
+    build_openai_api_url=lambda base_url, path: _build_openai_api_url(base_url, path),
+    api_server_headers=lambda api_key, provider_type="": _api_server_headers(api_key, provider_type),
+    summarize_upstream_error_detail=lambda body, fallback="": _summarize_upstream_error_detail(body, fallback),
+)
 
 
 # ===================================================================
