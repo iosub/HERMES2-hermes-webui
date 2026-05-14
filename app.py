@@ -74,6 +74,7 @@ from webui_app import skill_setup_service as _skill_setup_service
 from webui_app import skill_runtime_service as _skill_runtime_service
 from webui_app import skill_filesystem_service as _skill_filesystem_service
 from webui_app import sidecar_payload_service as _sidecar_payload_service
+from webui_app import sidecar_runtime_service as _sidecar_runtime_service
 from webui_app.routes.agents import register_agent_routes
 from webui_app.routes.capabilities import register_capability_routes
 from webui_app.routes.chat import register_chat_routes
@@ -5406,94 +5407,25 @@ def _run_sidecar_vision_analysis(
     user_message: dict,
     file_display_names: dict | None = None,
 ) -> dict:
-    image_files = [path for path in files or [] if path.suffix.lower() in IMAGE_EXTENSIONS]
-    reanalysis = False
-    if not image_files and _vision_reanalysis_requested(message, session):
-        image_files = [path for path in (
-            _vision_asset_disk_path(asset) for asset in _latest_sidecar_asset_group(session)
-        ) if path is not None]
-        reanalysis = bool(image_files)
-    if not image_files:
-        return {}
-
-    import base64
-
-    image_labels = [
-        _attachment_display_name(path, file_display_names) if path in (files or []) else (path.name if path else "Image")
-        for path in image_files
-    ]
-    user_text = message.strip() or "User attached screenshots without extra text."
-    if reanalysis:
-        analysis_goal = (
-            "The user is asking a follow-up about an earlier screenshot. Refresh the visual analysis with extra focus on "
-            f"this question: {user_text}"
-        )
-    else:
-        analysis_goal = f"The user attached new screenshots. Focus on what matters for this request: {user_text}"
-    content = [{
-        "type": "text",
-        "text": (
-            "You are a sidecar vision interpreter for Hermes CLI. Analyze the images and return JSON only with this schema: "
-            "{\"overall_summary\":\"...\",\"follow_up_hints\":[\"...\"],\"images\":["
-            "{\"label\":\"...\",\"summary\":\"...\",\"visible_text\":[\"...\"],\"details\":[\"...\"],\"follow_up_hints\":[\"...\"]}"
-            "]}. Keep each list concise and preserve exact visible text when it matters.\n"
-            f"{analysis_goal}"
-        ),
-    }]
-    for idx, image_file in enumerate(image_files, start=1):
-        label = image_labels[idx - 1] if idx - 1 < len(image_labels) else image_file.name
-        try:
-            with image_file.open("rb") as handle:
-                b64 = base64.b64encode(handle.read()).decode("utf-8")
-        except Exception as exc:
-            raise ChatBackendError(f"Vision sidecar could not read {image_file.name}: {exc}") from exc
-        ext = image_file.suffix.lower().replace(".", "") or "png"
-        content.append({"type": "text", "text": f"Image {idx}: {label}"})
-        content.append({"type": "image_url", "image_url": {"url": f"data:image/{ext};base64,{b64}"}})
-
-    target = _resolve_api_target(prefer_vision=True)
-    try:
-        raw_text = _chat_completion_request(target, [{"role": "user", "content": content}])
-    except ChatBackendError as exc:
-        model_id = str(target.get("model") or "the configured vision model").strip()
-        detail = _chat_backend_error_detail(exc) or "upstream request failed"
-        if _chat_backend_error_is_rate_limited(exc):
-            raise ChatBackendError(
-                f"Vision sidecar is temporarily rate-limited for {model_id}. Retry shortly or switch the vision model/provider in Providers. Details: {detail}",
-                status_code=503,
-            ) from exc
-        raise ChatBackendError(
-            f"Vision sidecar failed for {model_id}. Details: {detail}",
-            status_code=getattr(exc, "status_code", 502),
-        ) from exc
-    parsed_payload = _parse_sidecar_payload(raw_text, image_labels)
-    asset_ids = _update_session_vision_assets(
+    return _sidecar_runtime_service.run_sidecar_vision_analysis(
         session,
-        image_files,
-        parsed_payload,
-        source_message_index=len(session.get("messages", [])) - 1,
-        source_message_timestamp=str(user_message.get("timestamp") or ""),
-        focus_message=user_text,
-        target=target,
+        message,
+        files,
+        user_message=user_message,
+        file_display_names=file_display_names,
+        image_extensions=IMAGE_EXTENSIONS,
+        vision_reanalysis_requested_fn=_vision_reanalysis_requested,
+        vision_asset_disk_path_fn=_vision_asset_disk_path,
+        latest_sidecar_asset_group_fn=_latest_sidecar_asset_group,
+        attachment_display_name_fn=_attachment_display_name,
+        resolve_api_target_fn=_resolve_api_target,
+        chat_completion_request_fn=_chat_completion_request,
+        chat_backend_error=ChatBackendError,
+        chat_backend_error_detail_fn=_chat_backend_error_detail,
+        chat_backend_error_is_rate_limited_fn=_chat_backend_error_is_rate_limited,
+        parse_sidecar_payload_fn=_parse_sidecar_payload,
+        update_session_vision_assets_fn=_update_session_vision_assets,
     )
-    summary = parsed_payload.get("overall_summary") or parsed_payload.get("raw_text") or ""
-    user_message["sidecar_vision"] = {
-        "used": True,
-        "status": "ok",
-        "asset_ids": asset_ids,
-        "summary": str(summary).strip(),
-        "analysis_mode": "reanalysis" if reanalysis else "sidecar",
-        "reanalysis": reanalysis,
-    }
-    return {
-        "overall_summary": parsed_payload.get("overall_summary") or parsed_payload.get("raw_text") or "",
-        "images": parsed_payload.get("images") or [],
-        "follow_up_hints": parsed_payload.get("follow_up_hints") or [],
-        "raw_text": parsed_payload.get("raw_text") or raw_text.strip(),
-        "asset_ids": asset_ids,
-        "reanalysis": reanalysis,
-        "analysis_mode": "reanalysis" if reanalysis else "sidecar",
-    }
 
 
 def _compose_cli_prompt_with_sidecar(
@@ -5504,17 +5436,16 @@ def _compose_cli_prompt_with_sidecar(
     sidecar_result: dict | None = None,
     file_display_names: dict | None = None,
 ) -> str:
-    non_image_files = [path for path in files or [] if path.suffix.lower() not in IMAGE_EXTENSIONS]
-    prompt, _ = _compose_chat_turn_payload(
+    return _sidecar_runtime_service.compose_cli_prompt_with_sidecar(
         session,
         message,
-        non_image_files,
-        image_support=False,
-        display_names=file_display_names,
+        files,
+        sidecar_result=sidecar_result,
+        file_display_names=file_display_names,
+        image_extensions=IMAGE_EXTENSIONS,
+        compose_chat_turn_payload_fn=_compose_chat_turn_payload,
+        format_sidecar_context_block_fn=_format_sidecar_context_block,
     )
-    sidecar_block = _format_sidecar_context_block(sidecar_result or {})
-    sections = [section for section in (prompt, sidecar_block) if section]
-    return "\n\n".join(sections)
 
 
 def _plan_chat_request(session: dict, files: list[Path]) -> dict:
