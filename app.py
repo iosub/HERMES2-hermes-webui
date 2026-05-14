@@ -34,6 +34,7 @@ import uuid
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
+from webui_app.routes.config import register_config_routes
 from webui_app.request_hooks import register_request_hooks
 from webui_app.routes.system import register_system_routes
 
@@ -5212,111 +5213,28 @@ register_system_routes(
 )
 
 
-# ===================================================================
-# 3–6. Config endpoints
-# ===================================================================
-
-@app.route("/api/config", methods=["GET"])
-@require_token
-def api_config_get():
-    try:
-        return jsonify(cfg.get())
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/config/<section>", methods=["GET"])
-@require_token
-def api_config_get_section(section):
-    try:
-        return jsonify(cfg.get(section))
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/config/<section>", methods=["PUT"])
-@require_token
-def api_config_put_section(section):
-    try:
-        data = request.get_json(force=True)
-        current = cfg.get_raw(section)
-        data = _preserve_masked_secret_updates(current, data)
-        cfg.update(section, data)
-        return jsonify({"ok": True})
-    except Exception as exc:
-        return jsonify({"ok": False, "errors": [str(exc)]}), 500
-
-
-@app.route("/api/config/reload", methods=["POST"])
-@require_token
-def api_config_reload():
-    try:
-        cfg.load()
-        return jsonify({"ok": True})
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/runtime/profiles", methods=["GET"])
-@require_token
-def api_runtime_profiles_get():
-    try:
-        cfg.load()
-        return jsonify(_selected_hermes_profile_payload())
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/runtime/profiles", methods=["PUT"])
-@require_token
-def api_runtime_profiles_put():
-    try:
-        data = request.get_json(force=True) or {}
-        selected = _set_selected_hermes_profile_name(data.get("profile") or "default")
-        cfg.load()
-        return jsonify({"ok": True, **_selected_hermes_profile_payload(), "selected": selected})
-    except ValueError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/runtime/profiles/<profile_name>/api-token", methods=["GET"])
-@require_token
-def api_runtime_profile_api_token_get(profile_name):
-    try:
-        return jsonify({"ok": True, **_profile_api_token_metadata(profile_name)})
-    except ValueError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/runtime/profiles/<profile_name>/api-token", methods=["PUT"])
-@require_token
-def api_runtime_profile_api_token_put(profile_name):
-    try:
-        normalized = _normalize_hermes_profile_name(profile_name)
-        if normalized not in _available_hermes_profile_names():
-            raise ValueError(f"Unknown Hermes profile: {normalized}")
-        data = request.get_json(force=True) or {}
-        token = str(data.get("token") or "").strip()
-        api_url = _profile_api_gateway_url(normalized)
-        port = _api_url_port(api_url)
-        env_path = REPO_ENV_PATH
-        env_path.parent.mkdir(parents=True, exist_ok=True)
-        raw = dotenv_values(str(env_path)) if env_path.exists() else {}
-        for key in _api_token_repo_keys_for_port(port):
-            if raw.get(key) is not None:
-                unset_key(str(env_path), key)
-        if token:
-            key_name = f"HERMES_API_TOKEN_PORT_{port}" if port else "HERMES_API_TOKEN"
-            _set_env_value(env_path, key_name, token)
-        return jsonify({"ok": True, **_profile_api_token_metadata(normalized)})
-    except ValueError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return _http_error(str(exc))
+register_config_routes(
+    app,
+    require_token=require_token,
+    http_error=_http_error,
+    cfg_get=lambda section=None: cfg.get(section),
+    cfg_get_raw=lambda section=None: cfg.get_raw(section),
+    cfg_update=lambda section, data: cfg.update(section, data),
+    cfg_load=lambda: cfg.load(),
+    preserve_masked_secret_updates=lambda current, data, parent_key="": _preserve_masked_secret_updates(current, data, parent_key),
+    selected_hermes_profile_payload=lambda: _selected_hermes_profile_payload(),
+    set_selected_hermes_profile_name=lambda profile_name: _set_selected_hermes_profile_name(profile_name),
+    profile_api_token_metadata=lambda profile_name: _profile_api_token_metadata(profile_name),
+    normalize_hermes_profile_name=lambda profile_name: _normalize_hermes_profile_name(profile_name),
+    available_hermes_profile_names=lambda: _available_hermes_profile_names(),
+    profile_api_gateway_url=lambda profile_name=None: _profile_api_gateway_url(profile_name),
+    api_url_port=lambda api_url: _api_url_port(api_url),
+    repo_env_path=lambda: REPO_ENV_PATH,
+    dotenv_values_fn=dotenv_values,
+    api_token_repo_keys_for_port=lambda port: _api_token_repo_keys_for_port(port),
+    unset_key_fn=unset_key,
+    set_env_value=lambda env_path, key, value: _set_env_value(env_path, key, value),
+)
 
 
 # ===================================================================

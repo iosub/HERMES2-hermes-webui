@@ -59,9 +59,9 @@ Manual validation routine for each test step:
 ### Phase 3: Extract Configuration Domain
 
 - [ ] Extract ConfigManager into a dedicated module.
-- [ ] Extract config read and update endpoints.
+- [x] Extract config read and update endpoints.
 - [ ] Extract environment variable helpers and endpoints.
-- [ ] Extract runtime profile selection helpers where safe.
+- [x] Extract runtime profile selection helpers where safe.
 - [ ] Validate smoke tests after this phase.
 
 ### Phase 4: Extract Provider and Agent APIs
