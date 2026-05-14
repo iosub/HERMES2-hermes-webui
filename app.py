@@ -34,6 +34,7 @@ import uuid
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
+from webui_app.routes.agents import register_agent_routes
 from webui_app.routes.config import register_config_routes
 from webui_app.routes.env import register_env_routes
 from webui_app.routes.model_roles import register_model_role_routes
@@ -5434,156 +5435,19 @@ def api_provider_discovery_endpoints(name):
 # 16–20. Agents / Personalities
 # ===================================================================
 
-@app.route("/api/agents", methods=["GET"])
-@require_token
-def api_agents_get():
-    try:
-        raw = cfg.get_raw()
-        agent_cfg = _agent_defaults(raw)
-        personalities, _ = _agent_personality_entries(raw)
-        entries = [
-            _personality_entry_for_api(name, value)
-            for name, value in sorted(personalities.items(), key=lambda item: str(item[0]).casefold())
-        ]
-        # Return agent defaults plus personalities (masked)
-        result = {
-            "defaults": cfg.mask_secrets({k: v for k, v in agent_cfg.items() if k != "personalities"}),
-            "personalities": cfg.mask_secrets(personalities),
-            "entries": entries,
-        }
-        return jsonify(result)
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/agents", methods=["POST"])
-@require_token
-def api_agents_add():
-    try:
-        data = request.get_json(force=True)
-        name = data.get("name")
-        if not name:
-            return jsonify({"ok": False, "error": "name is required"}), 400
-
-        raw = cfg.get_raw()
-        personalities, _ = _agent_personality_entries(raw)
-        if name in personalities:
-            return jsonify({"ok": False, "error": f"Agent '{name}' already exists"}), 409
-
-        agent_cfg = raw.get("agent", {})
-        if not isinstance(agent_cfg, dict):
-            agent_cfg = {}
-        nested = agent_cfg.get("personalities", {})
-        if not isinstance(nested, dict):
-            nested = {}
-        nested[name] = _normalize_personality_value({k: v for k, v in data.items() if k != "name"})
-        agent_cfg["personalities"] = nested
-        cfg.set("agent", agent_cfg)
-        return jsonify({"ok": True})
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/agents/<name>", methods=["PUT"])
-@require_token
-def api_agents_update(name):
-    try:
-        data = request.get_json(force=True)
-        raw = cfg.get_raw()
-        personalities, storage = _agent_personality_entries(raw)
-        if name not in personalities:
-            return jsonify({"ok": False, "error": f"Agent '{name}' not found"}), 404
-
-        if storage.get(name) == "legacy":
-            legacy = raw.get("personalities", {})
-            if not isinstance(legacy, dict):
-                legacy = {}
-            current = legacy.get(name, "")
-            merged = ConfigManager.deep_merge(current, data) if isinstance(current, dict) else {**data, "system_prompt": str(data.get("system_prompt") or data.get("prompt") or current or "")}
-            legacy[name] = _normalize_personality_value(merged)
-            cfg.set("personalities", legacy)
-        else:
-            agent_cfg = raw.get("agent", {})
-            if not isinstance(agent_cfg, dict):
-                agent_cfg = {}
-            nested = agent_cfg.get("personalities", {})
-            if not isinstance(nested, dict):
-                nested = {}
-            current = nested.get(name, "")
-            merged = ConfigManager.deep_merge(current, data) if isinstance(current, dict) else {**data, "system_prompt": str(data.get("system_prompt") or data.get("prompt") or current or "")}
-            nested[name] = _normalize_personality_value(merged)
-            agent_cfg["personalities"] = nested
-            cfg.set("agent", agent_cfg)
-        return jsonify({"ok": True})
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/agents/<name>", methods=["DELETE"])
-@require_token
-def api_agents_delete(name):
-    try:
-        raw = cfg.get_raw()
-        personalities, storage = _agent_personality_entries(raw)
-        if name not in personalities:
-            return jsonify({"ok": False, "error": f"Agent '{name}' not found"}), 404
-
-        if storage.get(name) == "legacy":
-            legacy = raw.get("personalities", {})
-            if not isinstance(legacy, dict):
-                legacy = {}
-            legacy.pop(name, None)
-            cfg.set("personalities", legacy)
-        else:
-            agent_cfg = raw.get("agent", {})
-            if not isinstance(agent_cfg, dict):
-                agent_cfg = {}
-            nested = agent_cfg.get("personalities", {})
-            if not isinstance(nested, dict):
-                nested = {}
-            nested.pop(name, None)
-            agent_cfg["personalities"] = nested
-            cfg.set("agent", agent_cfg)
-        return jsonify({"ok": True})
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/agents/<name>/duplicate", methods=["POST"])
-@require_token
-def api_agents_duplicate(name):
-    try:
-        data = request.get_json(force=True)
-        new_name = data.get("new_name")
-        if not new_name:
-            return jsonify({"ok": False, "error": "new_name is required"}), 400
-
-        raw = cfg.get_raw()
-        personalities, storage = _agent_personality_entries(raw)
-        if name not in personalities:
-            return jsonify({"ok": False, "error": f"Agent '{name}' not found"}), 404
-        if new_name in personalities:
-            return jsonify({"ok": False, "error": f"Agent '{new_name}' already exists"}), 409
-
-        if storage.get(name) == "legacy":
-            legacy = raw.get("personalities", {})
-            if not isinstance(legacy, dict):
-                legacy = {}
-            legacy[new_name] = copy.deepcopy(legacy.get(name))
-            cfg.set("personalities", legacy)
-        else:
-            agent_cfg = raw.get("agent", {})
-            if not isinstance(agent_cfg, dict):
-                agent_cfg = {}
-            nested = agent_cfg.get("personalities", {})
-            if not isinstance(nested, dict):
-                nested = {}
-            nested[new_name] = copy.deepcopy(nested.get(name))
-            agent_cfg["personalities"] = nested
-            cfg.set("agent", agent_cfg)
-        return jsonify({"ok": True})
-    except Exception as exc:
-        return _http_error(str(exc))
+register_agent_routes(
+    app,
+    require_token=require_token,
+    http_error=_http_error,
+    cfg_get_raw=lambda: cfg.get_raw(),
+    cfg_set=lambda section, value: cfg.set(section, value),
+    cfg_mask_secrets=lambda value: cfg.mask_secrets(value),
+    agent_defaults=lambda raw: _agent_defaults(raw),
+    agent_personality_entries=lambda raw: _agent_personality_entries(raw),
+    personality_entry_for_api=lambda name, value: _personality_entry_for_api(name, value),
+    normalize_personality_value=lambda value: _normalize_personality_value(value),
+    deep_merge=lambda current, data: ConfigManager.deep_merge(current, data),
+)
 
 
 # ===================================================================

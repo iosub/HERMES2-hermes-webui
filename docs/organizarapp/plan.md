@@ -23,13 +23,15 @@ Rules:
 - Do not continue to the next implementation step before user validation of the current one.
 - Keep each commit scoped to the single item that was just tested.
 - Update this checklist after the tested item is confirmed and committed.
+- Keep `hermes-webui.service` disabled for automatic startup during this refactor so the UI can be stopped and started manually for testing.
 
 Manual validation routine for each test step:
 
 1. Refresh the integrated browser before starting the check.
 2. Log in through the UI with the admin account before validating the current item.
 3. Use the integrated browser as the default manual validation surface unless the step clearly requires a different tool.
-4. After the browser-based check is ready, stop and wait for the user to confirm the result.
+4. Start or stop `hermes-webui.service` manually when the current test step requires it.
+5. After the browser-based check is ready, stop and wait for the user to confirm the result.
 
 ### Setup and Tracking
 
@@ -38,6 +40,7 @@ Manual validation routine for each test step:
 - [x] Keep the plan written in English.
 - [x] Define the item-by-item workflow: implement, user test, commit, push.
 - [x] Define the browser-first validation routine: refresh, login, user validation, commit, push.
+- [x] Keep `hermes-webui.service` disabled for autostart so tests can control it manually.
 - [ ] Keep this checklist updated after each completed refactor step.
 
 ### Phase 1: Stabilize the Entry Point
@@ -68,7 +71,7 @@ Manual validation routine for each test step:
 
 - [x] Extract provider profile helpers and routes.
 - [x] Extract model role routes.
-- [ ] Extract agent and personality routes.
+- [x] Extract agent and personality routes.
 - [ ] Extract capability preview and apply routes.
 - [ ] Extract skills and starter-pack endpoints.
 - [ ] Validate smoke tests after this phase.
