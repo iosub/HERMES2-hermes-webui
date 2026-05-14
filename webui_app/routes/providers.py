@@ -31,6 +31,10 @@ def register_provider_routes(
     build_openai_api_url,
     api_server_headers,
     summarize_upstream_error_detail,
+    model_role_info,
+    openrouter_discovery_models,
+    normalize_provider_type,
+    openrouter_discovery_endpoints,
 ) -> None:
     def _get_providers_info():
         raw = cfg_get_raw()
@@ -81,6 +85,53 @@ def register_provider_routes(
                 "custom": safe_custom,
                 "auxiliary": safe_aux,
                 "presets": provider_presets,
+            })
+        except Exception as exc:
+            return http_error(str(exc))
+
+    @app.route("/api/models", methods=["GET"])
+    @require_token
+    def api_models_get():
+        try:
+            raw = cfg_get_raw()
+            model_cfg = normalized_model_config()
+            custom = custom_provider_profiles(raw)
+
+            all_models = []
+            seen = set()
+
+            def _add(provider_name, model_name):
+                key = (provider_name, model_name)
+                if model_name and key not in seen:
+                    seen.add(key)
+                    all_models.append({"provider": provider_name, "model": model_name})
+
+            _add(model_cfg.get("default_provider", "default"), model_cfg.get("default_model", ""))
+            _add(model_cfg.get("fallback_provider") or model_cfg.get("default_provider", "default"), model_cfg.get("fallback_model", ""))
+
+            for profile in custom:
+                _add(profile.get("name", ""), profile.get("model", ""))
+
+            for aux_key in auxiliary_model_keys:
+                value = model_cfg.get(aux_key)
+                if isinstance(value, str):
+                    _add(aux_key, value)
+                elif isinstance(value, dict):
+                    _add(aux_key, value.get("model", ""))
+
+            return jsonify({
+                "default_model": model_cfg.get("default_model", ""),
+                "default_provider": model_cfg.get("default_provider", ""),
+                "default_profile": model_cfg.get("default_profile", ""),
+                "fallback_model": model_cfg.get("fallback_model", ""),
+                "fallback_provider": model_cfg.get("fallback_provider", ""),
+                "fallback_profile": model_cfg.get("fallback_profile", ""),
+                "all_models": all_models,
+                "roles": {
+                    "primary": model_role_info("primary"),
+                    "fallback": model_role_info("fallback"),
+                    "vision": model_role_info("vision"),
+                },
             })
         except Exception as exc:
             return http_error(str(exc))
@@ -202,3 +253,72 @@ def register_provider_routes(
 
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 500
+
+    @app.route("/api/providers/<name>/discovery/models", methods=["GET"])
+    @require_token
+    def api_provider_discovery_models(name):
+        try:
+            profile = get_provider_profile(name)
+            if not profile:
+                return jsonify({"ok": False, "error": f"Provider '{name}' not found"}), 404
+            vision_only = request.args.get("vision_only", "").lower() in ("1", "true", "yes")
+            if str(profile.get("provider") or "").strip().lower() != "openrouter":
+                return jsonify({
+                    "supported": False,
+                    "provider": profile.get("provider", ""),
+                    "models": [],
+                    "reason": "Live model discovery is only available for OpenRouter profiles right now",
+                })
+            return jsonify({
+                "supported": True,
+                "provider": profile.get("provider", ""),
+                "models": openrouter_discovery_models(vision_only=vision_only),
+            })
+        except Exception as exc:
+            return http_error(str(exc))
+
+    @app.route("/api/provider-types/<provider>/discovery/models", methods=["GET"])
+    @require_token
+    def api_provider_type_discovery_models(provider):
+        try:
+            provider = normalize_provider_type(provider or "")
+            vision_only = request.args.get("vision_only", "").lower() in ("1", "true", "yes")
+            if provider != "openrouter":
+                return jsonify({
+                    "supported": False,
+                    "provider": provider,
+                    "models": [],
+                    "reason": "Live model discovery is only available for OpenRouter right now",
+                })
+            return jsonify({
+                "supported": True,
+                "provider": provider,
+                "models": openrouter_discovery_models(vision_only=vision_only),
+            })
+        except Exception as exc:
+            return http_error(str(exc))
+
+    @app.route("/api/providers/<name>/discovery/endpoints", methods=["GET"])
+    @require_token
+    def api_provider_discovery_endpoints(name):
+        try:
+            profile = get_provider_profile(name)
+            if not profile:
+                return jsonify({"ok": False, "error": f"Provider '{name}' not found"}), 404
+            model_id = str(request.args.get("model") or "").strip()
+            if not model_id:
+                return jsonify({"supported": False, "endpoints": [], "reason": "model is required"}), 400
+            if str(profile.get("provider") or "").strip().lower() != "openrouter":
+                return jsonify({
+                    "supported": False,
+                    "provider": profile.get("provider", ""),
+                    "endpoints": [],
+                    "reason": "Live endpoint discovery is only available for OpenRouter profiles right now",
+                })
+            return jsonify({
+                "supported": True,
+                "provider": profile.get("provider", ""),
+                "endpoints": openrouter_discovery_endpoints(model_id),
+            })
+        except Exception as exc:
+            return http_error(str(exc))

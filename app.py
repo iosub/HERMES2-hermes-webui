@@ -5211,59 +5211,11 @@ register_provider_routes(
     build_openai_api_url=lambda base_url, path: _build_openai_api_url(base_url, path),
     api_server_headers=lambda api_key, provider_type="": _api_server_headers(api_key, provider_type),
     summarize_upstream_error_detail=lambda body, fallback="": _summarize_upstream_error_detail(body, fallback),
+    model_role_info=lambda role: _model_role_info(role),
+    openrouter_discovery_models=lambda vision_only=False: _openrouter_discovery_models(vision_only=vision_only),
+    normalize_provider_type=lambda provider_type: _normalize_provider_type(provider_type),
+    openrouter_discovery_endpoints=lambda model_id: _openrouter_discovery_endpoints(model_id),
 )
-
-
-# ===================================================================
-# 15. Models
-# ===================================================================
-
-@app.route("/api/models", methods=["GET"])
-@require_token
-def api_models_get():
-    try:
-        raw = cfg.get_raw()
-        model_cfg = _normalized_model_config()
-        custom = _custom_provider_profiles(raw)
-
-        all_models = []
-        seen = set()
-
-        def _add(provider_name, model_name):
-            key = (provider_name, model_name)
-            if model_name and key not in seen:
-                seen.add(key)
-                all_models.append({"provider": provider_name, "model": model_name})
-
-        _add(model_cfg.get("default_provider", "default"), model_cfg.get("default_model", ""))
-        _add(model_cfg.get("fallback_provider") or model_cfg.get("default_provider", "default"), model_cfg.get("fallback_model", ""))
-
-        for cp in custom:
-            _add(cp.get("name", ""), cp.get("model", ""))
-
-        for aux_key in AUXILIARY_MODEL_KEYS:
-            val = model_cfg.get(aux_key)
-            if isinstance(val, str):
-                _add(aux_key, val)
-            elif isinstance(val, dict):
-                _add(aux_key, val.get("model", ""))
-
-        return jsonify({
-            "default_model": model_cfg.get("default_model", ""),
-            "default_provider": model_cfg.get("default_provider", ""),
-            "default_profile": model_cfg.get("default_profile", ""),
-            "fallback_model": model_cfg.get("fallback_model", ""),
-            "fallback_provider": model_cfg.get("fallback_provider", ""),
-            "fallback_profile": model_cfg.get("fallback_profile", ""),
-            "all_models": all_models,
-            "roles": {
-                "primary": _model_role_info("primary"),
-                "fallback": _model_role_info("fallback"),
-                "vision": _model_role_info("vision"),
-            },
-        })
-    except Exception as exc:
-        return _http_error(str(exc))
 
 
 register_model_role_routes(
@@ -5281,78 +5233,6 @@ register_model_role_routes(
     profile_payload_for_role=lambda profile_name, model_name, routing_provider="": _profile_payload_for_role(profile_name, model_name, routing_provider),
     chat_backend_error_cls=ChatBackendError,
 )
-
-
-@app.route("/api/providers/<name>/discovery/models", methods=["GET"])
-@require_token
-def api_provider_discovery_models(name):
-    try:
-        profile = _get_provider_profile(name)
-        if not profile:
-            return jsonify({"ok": False, "error": f"Provider '{name}' not found"}), 404
-        vision_only = request.args.get("vision_only", "").lower() in ("1", "true", "yes")
-        if str(profile.get("provider") or "").strip().lower() != "openrouter":
-            return jsonify({
-                "supported": False,
-                "provider": profile.get("provider", ""),
-                "models": [],
-                "reason": "Live model discovery is only available for OpenRouter profiles right now",
-            })
-        return jsonify({
-            "supported": True,
-            "provider": profile.get("provider", ""),
-            "models": _openrouter_discovery_models(vision_only=vision_only),
-        })
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/provider-types/<provider>/discovery/models", methods=["GET"])
-@require_token
-def api_provider_type_discovery_models(provider):
-    try:
-        provider = _normalize_provider_type(provider or "")
-        vision_only = request.args.get("vision_only", "").lower() in ("1", "true", "yes")
-        if provider != "openrouter":
-            return jsonify({
-                "supported": False,
-                "provider": provider,
-                "models": [],
-                "reason": "Live model discovery is only available for OpenRouter right now",
-            })
-        return jsonify({
-            "supported": True,
-            "provider": provider,
-            "models": _openrouter_discovery_models(vision_only=vision_only),
-        })
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/providers/<name>/discovery/endpoints", methods=["GET"])
-@require_token
-def api_provider_discovery_endpoints(name):
-    try:
-        profile = _get_provider_profile(name)
-        if not profile:
-            return jsonify({"ok": False, "error": f"Provider '{name}' not found"}), 404
-        model_id = str(request.args.get("model") or "").strip()
-        if not model_id:
-            return jsonify({"supported": False, "endpoints": [], "reason": "model is required"}), 400
-        if str(profile.get("provider") or "").strip().lower() != "openrouter":
-            return jsonify({
-                "supported": False,
-                "provider": profile.get("provider", ""),
-                "endpoints": [],
-                "reason": "Live endpoint discovery is only available for OpenRouter profiles right now",
-            })
-        return jsonify({
-            "supported": True,
-            "provider": profile.get("provider", ""),
-            "endpoints": _openrouter_discovery_endpoints(model_id),
-        })
-    except Exception as exc:
-        return _http_error(str(exc))
 
 
 # ===================================================================
@@ -5374,23 +5254,11 @@ register_agent_routes(
 )
 
 
-# ===================================================================
-# 21–23. Capability Builder
-# ===================================================================
-
-@app.route("/api/capabilities", methods=["GET"])
-@require_token
-def api_capabilities_get():
-    try:
-        return jsonify(_capability_catalog())
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
 register_capability_routes(
     app,
     require_token=require_token,
     http_error=_http_error,
+    capability_catalog=lambda: _capability_catalog(),
     preview_skill_capability=lambda draft: _preview_skill_capability(draft),
     apply_skill_capability=lambda draft, preview_token: _apply_skill_capability(draft, preview_token),
     preview_integration_capability=lambda draft: _preview_integration_capability(draft),

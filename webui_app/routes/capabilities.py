@@ -8,6 +8,7 @@ def register_capability_routes(
     *,
     require_token,
     http_error,
+    capability_catalog,
     preview_skill_capability,
     apply_skill_capability,
     preview_integration_capability,
@@ -15,6 +16,14 @@ def register_capability_routes(
     preview_agent_preset_capability,
     apply_agent_preset_capability,
 ) -> None:
+    @app.route("/api/capabilities", methods=["GET"])
+    @require_token
+    def api_capabilities_get():
+        try:
+            return jsonify(capability_catalog())
+        except Exception as exc:
+            return http_error(str(exc))
+
     @app.route("/api/capabilities/preview", methods=["POST"])
     @require_token
     def api_capabilities_preview():

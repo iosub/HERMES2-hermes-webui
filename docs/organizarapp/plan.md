@@ -75,7 +75,7 @@ Manual validation routine for each test step:
 - [x] Extract capability preview and apply routes.
 - [x] Extract skills inventory, toggle, and bulk endpoints.
 - [x] Extract skill install and starter-pack endpoints.
-- [ ] Validate smoke tests after this phase.
+- [x] Validate smoke tests after this phase.
 
 ### Phase 5: Isolate Chat Persistence First
 
