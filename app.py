@@ -36,6 +36,7 @@ from werkzeug.utils import secure_filename
 from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
 from webui_app.routes.config import register_config_routes
 from webui_app.routes.env import register_env_routes
+from webui_app.routes.model_roles import register_model_role_routes
 from webui_app.routes.providers import register_provider_routes
 from webui_app.request_hooks import register_request_hooks
 from webui_app.routes.system import register_system_routes
@@ -5340,108 +5341,21 @@ def api_models_get():
         return _http_error(str(exc))
 
 
-@app.route("/api/model-roles", methods=["GET"])
-@require_token
-def api_model_roles_get():
-    try:
-        profiles = []
-        usage_map = _provider_usage_map()
-        for profile in _available_provider_profiles():
-            safe = cfg.mask_secrets(profile)
-            safe["used_by"] = usage_map.get(profile.get("name", ""), [])
-            safe["has_api_key"] = bool(profile.get("api_key") or _provider_env_api_key(profile.get("provider")))
-            safe["provider_label"] = _provider_display_name(profile.get("provider", ""))
-            profiles.append(safe)
-        return jsonify({
-            "profiles": profiles,
-            "roles": {
-                "primary": _model_role_info("primary"),
-                "fallback": _model_role_info("fallback"),
-                "vision": _model_role_info("vision"),
-            },
-        })
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/model-roles/<role>", methods=["PUT"])
-@require_token
-def api_model_roles_update(role):
-    try:
-        role = str(role or "").strip().lower()
-        if role not in MODEL_ROLE_LABELS:
-            return jsonify({"ok": False, "error": f"Unknown role '{role}'"}), 404
-
-        data = request.get_json(force=True) or {}
-        profile_name = str(data.get("profile") or "").strip()
-        model_name = str(data.get("model") or "").strip()
-        routing_provider = str(data.get("routing_provider") or "").strip()
-
-        if role == "primary":
-            if not profile_name or not model_name:
-                return jsonify({"ok": False, "error": "Primary Chat requires both a provider profile and a model"}), 400
-            profile_payload = _profile_payload_for_role(profile_name, model_name, routing_provider)
-            cfg.update("model", {
-                "default_profile": profile_payload["profile"],
-                "default_provider": profile_payload["provider"],
-                "default_model": profile_payload["model"],
-                "base_url": profile_payload["base_url"],
-                "api_key": profile_payload["api_key"],
-                "routing_provider": profile_payload["routing_provider"],
-            })
-            return jsonify({"ok": True})
-
-        if not profile_name or not model_name:
-            if role == "fallback":
-                cfg.update("model", {
-                    "fallback_profile": "",
-                    "fallback_provider": "",
-                    "fallback_model": "",
-                    "fallback_base_url": "",
-                    "fallback_api_key": "",
-                    "fallback_routing_provider": "",
-                })
-                return jsonify({"ok": True})
-            if role == "vision":
-                cfg.update("auxiliary", {
-                    "vision": {
-                        "profile": "",
-                        "provider": "auto",
-                        "model": "",
-                        "base_url": "",
-                        "api_key": "",
-                        "routing_provider": "",
-                    }
-                })
-                return jsonify({"ok": True})
-
-        profile_payload = _profile_payload_for_role(profile_name, model_name, routing_provider)
-        if role == "fallback":
-            cfg.update("model", {
-                "fallback_profile": profile_payload["profile"],
-                "fallback_provider": profile_payload["provider"],
-                "fallback_model": profile_payload["model"],
-                "fallback_base_url": profile_payload["base_url"],
-                "fallback_api_key": profile_payload["api_key"],
-                "fallback_routing_provider": profile_payload["routing_provider"],
-            })
-            return jsonify({"ok": True})
-
-        cfg.update("auxiliary", {
-            "vision": {
-                "profile": profile_payload["profile"],
-                "provider": profile_payload["provider"],
-                "model": profile_payload["model"],
-                "base_url": profile_payload["base_url"],
-                "api_key": profile_payload["api_key"],
-                "routing_provider": profile_payload["routing_provider"],
-            }
-        })
-        return jsonify({"ok": True})
-    except ChatBackendError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), exc.status_code
-    except Exception as exc:
-        return _http_error(str(exc))
+register_model_role_routes(
+    app,
+    require_token=require_token,
+    http_error=_http_error,
+    cfg_mask_secrets=lambda value: cfg.mask_secrets(value),
+    cfg_update=lambda section, data: cfg.update(section, data),
+    provider_usage_map=lambda raw=None, model_cfg=None: _provider_usage_map(raw=raw, model_cfg=model_cfg),
+    available_provider_profiles=lambda: _available_provider_profiles(),
+    provider_env_api_key=lambda provider_type: _provider_env_api_key(provider_type),
+    provider_display_name=lambda provider_type: _provider_display_name(provider_type),
+    model_role_info=lambda role: _model_role_info(role),
+    model_role_labels=MODEL_ROLE_LABELS,
+    profile_payload_for_role=lambda profile_name, model_name, routing_provider="": _profile_payload_for_role(profile_name, model_name, routing_provider),
+    chat_backend_error_cls=ChatBackendError,
+)
 
 
 @app.route("/api/providers/<name>/discovery/models", methods=["GET"])

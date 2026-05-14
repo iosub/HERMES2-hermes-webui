@@ -67,7 +67,7 @@ Manual validation routine for each test step:
 ### Phase 4: Extract Provider and Agent APIs
 
 - [x] Extract provider profile helpers and routes.
-- [ ] Extract model role routes.
+- [x] Extract model role routes.
 - [ ] Extract agent and personality routes.
 - [ ] Extract capability preview and apply routes.
 - [ ] Extract skills and starter-pack endpoints.
