@@ -69,6 +69,7 @@ from webui_app.config_manager import ConfigManager as _BaseConfigManager
 from webui_app import provider_service as _provider_service
 from webui_app import capability_agent_preset_service as _capability_agent_preset_service
 from webui_app import capability_integration_service as _capability_integration_service
+from webui_app import capability_skill_service as _capability_skill_service
 from webui_app.routes.agents import register_agent_routes
 from webui_app.routes.capabilities import register_capability_routes
 from webui_app.routes.chat import register_chat_routes
@@ -2629,35 +2630,15 @@ def _normalize_capability_env_var(entry) -> dict:
 
 
 def _normalize_capability_credential_file(entry) -> dict:
-    if isinstance(entry, str):
-        entry = {"path": entry}
-    if not isinstance(entry, dict):
-        return {}
-    rel_path = _safe_skill_rel_path(entry.get("path") or "")
-    if not rel_path:
-        return {}
-    label = str(entry.get("label") or Path(rel_path).name).strip() or Path(rel_path).name
-    description = str(entry.get("description") or "").strip()
-    return {
-        "path": rel_path,
-        "label": label,
-        "description": description,
-    }
+    return _capability_skill_service.normalize_capability_credential_file(
+        entry,
+        safe_skill_rel_path_fn=lambda value: _safe_skill_rel_path(value),
+        path_class=Path,
+    )
 
 
 def _normalize_capability_required_command(entry) -> dict:
-    if isinstance(entry, str):
-        entry = {"name": entry}
-    if not isinstance(entry, dict):
-        return {}
-    name = str(entry.get("name") or "").strip()
-    if not name:
-        return {}
-    description = str(entry.get("description") or "").strip()
-    return {
-        "name": name,
-        "description": description,
-    }
+    return _capability_skill_service.normalize_capability_required_command(entry)
 
 
 def _normalize_capability_env_assignment(entry) -> dict:
@@ -2810,351 +2791,67 @@ def _apply_agent_preset_capability(data: dict | None, preview_token: str) -> tup
 
 
 def _normalize_skill_capability_draft(data: dict | None) -> tuple[dict, list[str]]:
-    payload = data if isinstance(data, dict) else {}
-    name = str(payload.get("name") or "").strip()
-    slug = _slugify_capability(str(payload.get("slug") or "").strip() or name)
-    category = str(payload.get("category") or "").strip()
-    description = str(payload.get("description") or "").strip()
-    instructions = str(payload.get("instructions") or "").strip()
-    include_scripts = bool(payload.get("include_scripts"))
-    include_references = bool(payload.get("include_references"))
-
-    env_vars = []
-    seen_env_keys = set()
-    for entry in payload.get("env_vars") if isinstance(payload.get("env_vars"), list) else []:
-        normalized = _normalize_capability_env_var(entry)
-        key = normalized.get("key")
-        if not key or key in seen_env_keys:
-            continue
-        seen_env_keys.add(key)
-        env_vars.append(normalized)
-
-    credential_files = []
-    seen_paths = set()
-    for entry in payload.get("credential_files") if isinstance(payload.get("credential_files"), list) else []:
-        normalized = _normalize_capability_credential_file(entry)
-        rel_path = normalized.get("path")
-        if not rel_path or rel_path in seen_paths:
-            continue
-        seen_paths.add(rel_path)
-        credential_files.append(normalized)
-
-    required_commands = []
-    seen_commands = set()
-    for entry in payload.get("required_commands") if isinstance(payload.get("required_commands"), list) else []:
-        normalized = _normalize_capability_required_command(entry)
-        command_name = normalized.get("name")
-        if not command_name or command_name in seen_commands:
-            continue
-        seen_commands.add(command_name)
-        required_commands.append(normalized)
-
-    normalized = {
-        "name": name[:120].rstrip(),
-        "slug": slug,
-        "category": category[:120].rstrip(),
-        "description": description[:400].rstrip(),
-        "instructions": instructions[:12000].rstrip(),
-        "env_vars": env_vars,
-        "credential_files": credential_files,
-        "required_commands": required_commands,
-        "include_scripts": include_scripts,
-        "include_references": include_references,
-    }
-    errors = []
-    if not normalized["name"]:
-        errors.append("Skill name is required")
-    if not normalized["slug"]:
-        errors.append("Skill slug is required")
-    return normalized, errors
+    return _capability_skill_service.normalize_skill_capability_draft(
+        data,
+        slugify_capability_fn=lambda value: _slugify_capability(value),
+        normalize_capability_env_var_fn=lambda entry: _normalize_capability_env_var(entry),
+        normalize_capability_credential_file_fn=lambda entry: _normalize_capability_credential_file(entry),
+        normalize_capability_required_command_fn=lambda entry: _normalize_capability_required_command(entry),
+    )
 
 
 def _render_skill_capability_frontmatter(draft: dict) -> dict:
-    frontmatter = {
-        "name": draft.get("name") or "",
-        "description": draft.get("description") or f"{draft.get('name') or 'Skill'} created in Hermes Web UI.",
-    }
-    if draft.get("category"):
-        frontmatter["category"] = draft["category"]
-    if draft.get("env_vars"):
-        frontmatter["prerequisites"] = {
-            "env_vars": [entry.get("key") for entry in draft["env_vars"] if entry.get("key")],
-        }
-    if draft.get("credential_files"):
-        frontmatter["required_credential_files"] = [
-            {
-                key: value
-                for key, value in entry.items()
-                if value not in (None, "", [])
-            }
-            for entry in draft["credential_files"]
-        ]
-
-    metadata = {
-        "hermes_web_ui": {
-            "capability_type": "skill",
-            "schema_version": 1,
-            "created_via": "hermes-web-ui",
-            "setup": {},
-        }
-    }
-    if draft.get("required_commands"):
-        metadata["openclaw"] = {
-            "requires": {
-                "bins": [entry.get("name") for entry in draft["required_commands"] if entry.get("name")],
-            }
-        }
-    setup = metadata["hermes_web_ui"]["setup"]
-    if draft.get("env_vars"):
-        setup["env_vars"] = draft["env_vars"]
-    if draft.get("credential_files"):
-        setup["credential_files"] = draft["credential_files"]
-    if draft.get("required_commands"):
-        setup["required_commands"] = draft["required_commands"]
-    if draft.get("include_scripts") or draft.get("include_references"):
-        setup["folders"] = {
-            "scripts": bool(draft.get("include_scripts")),
-            "references": bool(draft.get("include_references")),
-        }
-    if setup:
-        frontmatter["metadata"] = metadata
-    return frontmatter
+    return _capability_skill_service.render_skill_capability_frontmatter(draft)
 
 
 def _render_skill_capability_markdown(draft: dict, frontmatter: dict) -> str:
-    frontmatter_yaml = yaml.safe_dump(
+    return _capability_skill_service.render_skill_capability_markdown(
+        draft,
         frontmatter,
-        default_flow_style=False,
-        sort_keys=False,
-        allow_unicode=True,
-    ).strip()
-    instructions = draft.get("instructions") or (
-        f"Describe when to use the {draft.get('name') or 'skill'} capability, what steps it should follow, "
-        "and any constraints or output expectations."
+        yaml_module=yaml,
     )
-    lines = [
-        "---",
-        frontmatter_yaml,
-        "---",
-        "",
-        f"# {draft.get('name') or 'New Skill'}",
-        "",
-        draft.get("description") or "Reusable Hermes skill created in Hermes Web UI.",
-        "",
-        "## Instructions",
-        instructions,
-    ]
-
-    env_vars = draft.get("env_vars") or []
-    credential_files = draft.get("credential_files") or []
-    required_commands = draft.get("required_commands") or []
-    if env_vars or credential_files or required_commands:
-        lines.extend(["", "## Setup Requirements"])
-        if env_vars:
-            lines.append("")
-            lines.append("### Environment Variables")
-            for entry in env_vars:
-                detail = str(entry.get("description") or "").strip()
-                label = str(entry.get("label") or entry.get("key") or "").strip()
-                line = f"- `{entry.get('key')}`"
-                if label and label != entry.get("key"):
-                    line += f" - {label}"
-                if detail:
-                    line += f": {detail}"
-                lines.append(line)
-        if credential_files:
-            lines.append("")
-            lines.append("### Credential Files")
-            for entry in credential_files:
-                detail = str(entry.get("description") or "").strip()
-                line = f"- `{entry.get('path')}`"
-                if detail:
-                    line += f": {detail}"
-                lines.append(line)
-        if required_commands:
-            lines.append("")
-            lines.append("### Required Commands")
-            for entry in required_commands:
-                detail = str(entry.get("description") or "").strip()
-                line = f"- `{entry.get('name')}`"
-                if detail:
-                    line += f": {detail}"
-                lines.append(line)
-
-    included_folders = []
-    if draft.get("include_scripts"):
-        included_folders.append("`scripts/` for helper automation")
-    if draft.get("include_references"):
-        included_folders.append("`references/` for docs and examples")
-    if included_folders:
-        lines.extend(["", "## Included Folders"])
-        lines.extend([f"- {item}" for item in included_folders])
-
-    return "\n".join(lines).rstrip() + "\n"
 
 
 def _capability_skill_source_metadata() -> dict:
-    return _build_skill_source_record(
-        "hermes-web-ui/create-skill",
-        install_mode="webui_create",
-        display="Hermes Web UI",
-        catalog_source="create-capability",
+    return _capability_skill_service.capability_skill_source_metadata(
+        build_skill_source_record_fn=lambda *args, **kwargs: _build_skill_source_record(*args, **kwargs),
     )
 
 
 def _capability_skill_conflicts(slug: str) -> list[str]:
-    info = _skill_request_paths(slug)
-    if not info:
-        return []
-    return [
-        str(path)
-        for path in info.get("variants") or []
-        if isinstance(path, Path) and path.exists()
-    ]
+    return _capability_skill_service.capability_skill_conflicts(
+        slug,
+        skill_request_paths_fn=lambda value: _skill_request_paths(value),
+        path_class=Path,
+    )
 
 
 def _preview_skill_capability(data: dict | None) -> tuple[dict, int]:
-    draft, errors = _normalize_skill_capability_draft(data)
-    if errors:
-        return {"ok": False, "error": "; ".join(errors)}, 400
-
-    frontmatter = _render_skill_capability_frontmatter(draft)
-    skill_md = _render_skill_capability_markdown(draft, frontmatter)
-    source = _capability_skill_source_metadata()
-    skill = {
-        "name": frontmatter.get("name") or draft.get("name") or draft.get("slug") or "Skill",
-        "category": frontmatter.get("category") or "",
-        "description": frontmatter.get("description") or "",
-        "path": draft.get("slug") or "",
-        "enabled": True,
-        "frontmatter": frontmatter,
-        "source": source,
-    }
-    skill["setup"] = _skill_setup_readiness(skill)
-
-    target_dir = SKILLS_DIR / draft["slug"]
-    writes = [{
-        "kind": "directory",
-        "path": str(target_dir),
-        "action": "create",
-        "label": "Skill folder",
-    }, {
-        "kind": "file",
-        "path": str(target_dir / "SKILL.md"),
-        "action": "create",
-        "label": "Skill instructions",
-        "content": skill_md,
-    }]
-    if draft.get("include_scripts"):
-        writes.append({
-            "kind": "directory",
-            "path": str(target_dir / "scripts"),
-            "action": "create",
-            "label": "Optional scripts folder",
-        })
-    if draft.get("include_references"):
-        writes.append({
-            "kind": "directory",
-            "path": str(target_dir / "references"),
-            "action": "create",
-            "label": "Optional references folder",
-        })
-
-    conflicts = _capability_skill_conflicts(draft["slug"])
-    warnings = []
-    if conflicts:
-        warnings.append("A skill already exists for this slug. Change the slug before approval.")
-
-    preview_payload = {
-        "draft": draft,
-        "skill": {
-            **skill,
-            "setup": skill.get("setup") or {},
-        },
-        "writes": writes,
-        "conflicts": conflicts,
-    }
-    preview_token = _capability_preview_token("skill", preview_payload)
-    return {
-        "ok": True,
-        "type": "skill",
-        "phase": "Phase 1",
-        "preview_token": preview_token,
-        "can_apply": not conflicts,
-        "draft": draft,
-        "summary": {
-            "name": draft.get("name") or draft.get("slug") or "Skill",
-            "slug": draft.get("slug") or "",
-            "target_dir": str(target_dir),
-            "description": frontmatter.get("description") or "",
-            "conflict_count": len(conflicts),
-            "env_var_count": len(draft.get("env_vars") or []),
-            "credential_file_count": len(draft.get("credential_files") or []),
-            "required_command_count": len(draft.get("required_commands") or []),
-        },
-        "warnings": warnings,
-        "conflicts": conflicts,
-        "writes": writes,
-        "manifest": {
-            "skill": skill,
-        },
-    }, 200
+    return _capability_skill_service.preview_skill_capability(
+        data,
+        normalize_skill_capability_draft_fn=lambda value: _normalize_skill_capability_draft(value),
+        render_skill_capability_frontmatter_fn=lambda draft: _render_skill_capability_frontmatter(draft),
+        render_skill_capability_markdown_fn=lambda draft, frontmatter: _render_skill_capability_markdown(draft, frontmatter),
+        capability_skill_source_metadata_fn=lambda: _capability_skill_source_metadata(),
+        skill_setup_readiness_fn=lambda skill: _skill_setup_readiness(skill),
+        skills_dir=SKILLS_DIR,
+        capability_skill_conflicts_fn=lambda slug: _capability_skill_conflicts(slug),
+        capability_preview_token_fn=lambda capability_type, payload: _capability_preview_token(capability_type, payload),
+    )
 
 
 def _apply_skill_capability(data: dict | None, preview_token: str) -> tuple[dict, int]:
-    preview, status = _preview_skill_capability(data)
-    if status != 200:
-        return preview, status
-    if not preview_token or preview_token != preview.get("preview_token"):
-        return {"ok": False, "error": "Preview has changed. Refresh the draft preview before approval."}, 409
-    if not preview.get("can_apply"):
-        return {"ok": False, "error": "This skill slug is already taken. Change the slug and preview again."}, 409
-
-    draft = preview.get("draft") or {}
-    target_dir = SKILLS_DIR / str(draft.get("slug") or "")
-    target_dir.parent.mkdir(parents=True, exist_ok=True)
-    if target_dir.exists():
-        return {"ok": False, "error": "This skill already exists on disk."}, 409
-    tmp_dir = target_dir.parent / f".{target_dir.name}.tmp-{uuid.uuid4().hex[:8]}"
-    skill_md_content = next(
-        (entry.get("content") for entry in (preview.get("writes") or []) if entry.get("path") == str(target_dir / "SKILL.md")),
-        "",
+    return _capability_skill_service.apply_skill_capability(
+        data,
+        preview_token,
+        preview_skill_capability_fn=lambda value: _preview_skill_capability(value),
+        skills_dir=SKILLS_DIR,
+        uuid_module=uuid,
+        write_skill_source_metadata_fn=lambda skill_dir, metadata: _write_skill_source_metadata(skill_dir, metadata),
+        capability_skill_source_metadata_fn=lambda: _capability_skill_source_metadata(),
+        discover_skill_entries_fn=lambda: _discover_skill_entries(),
+        shutil_module=shutil,
     )
-    try:
-        tmp_dir.mkdir(parents=False, exist_ok=False)
-        (tmp_dir / "SKILL.md").write_text(
-            skill_md_content,
-            encoding="utf-8",
-        )
-        if draft.get("include_scripts"):
-            (tmp_dir / "scripts").mkdir(exist_ok=True)
-        if draft.get("include_references"):
-            (tmp_dir / "references").mkdir(exist_ok=True)
-        _write_skill_source_metadata(tmp_dir, _capability_skill_source_metadata())
-        tmp_dir.rename(target_dir)
-    except Exception:
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-        raise
-
-    try:
-        created_skill = next(
-            (entry for entry in _discover_skill_entries() if entry.get("path") == draft.get("slug")),
-            None,
-        )
-    except Exception:
-        created_skill = copy.deepcopy(((preview.get("manifest") or {}).get("skill") if isinstance(preview.get("manifest"), dict) else {}) or None)
-    return {
-        "ok": True,
-        "type": "skill",
-        "created": {
-            "name": draft.get("name") or draft.get("slug") or "Skill",
-            "slug": draft.get("slug") or "",
-            "target_dir": str(target_dir),
-            "files": [entry.get("path") for entry in (preview.get("writes") or []) if entry.get("path")],
-            "skill": created_skill,
-        },
-    }, 200
 
 
 OFFICIAL_HERMES_REPO_URLS = {
