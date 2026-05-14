@@ -4,6 +4,76 @@
 
 Split the current Flask backend into smaller, responsibility-focused modules without changing external behavior, breaking the smoke tests, or forcing a large one-shot rewrite.
 
+## Progress Checklist
+
+Use this checklist as the working tracker for the refactor.
+
+### Setup and Tracking
+
+- [x] Create the refactor plan document.
+- [x] Create and push the split branch.
+- [x] Keep the plan written in English.
+- [ ] Keep this checklist updated after each completed refactor step.
+
+### Phase 1: Stabilize the Entry Point
+
+- [ ] Keep app.py as the main compatibility entry point.
+- [ ] Identify the minimum globals that must remain re-exported for tests.
+- [ ] Confirm imports from app.py still succeed after the first extraction.
+
+### Phase 2: Extract Low-Risk Infrastructure
+
+- [ ] Extract authentication helpers.
+- [ ] Extract login, logout, and auth-check routes.
+- [ ] Extract request lifecycle hooks.
+- [ ] Extract shared request error handlers.
+- [ ] Extract rate limiting helpers.
+- [ ] Extract health and system routes.
+- [ ] Validate smoke tests after this phase.
+
+### Phase 3: Extract Configuration Domain
+
+- [ ] Extract ConfigManager into a dedicated module.
+- [ ] Extract config read and update endpoints.
+- [ ] Extract environment variable helpers and endpoints.
+- [ ] Extract runtime profile selection helpers where safe.
+- [ ] Validate smoke tests after this phase.
+
+### Phase 4: Extract Provider and Agent APIs
+
+- [ ] Extract provider profile helpers and routes.
+- [ ] Extract model role routes.
+- [ ] Extract agent and personality routes.
+- [ ] Extract capability preview and apply routes.
+- [ ] Extract skills and starter-pack endpoints.
+- [ ] Validate smoke tests after this phase.
+
+### Phase 5: Isolate Chat Persistence First
+
+- [ ] Extract chat session file load and write helpers.
+- [ ] Extract folder persistence helpers.
+- [ ] Extract request control persistence helpers.
+- [ ] Extract attachment metadata helpers.
+- [ ] Validate smoke tests after this phase.
+
+### Phase 6: Extract Chat Runtime and Routes
+
+- [ ] Extract chat transport selection logic.
+- [ ] Extract CLI and API dispatch helpers.
+- [ ] Extract cancellation flow helpers.
+- [ ] Extract upload endpoints.
+- [ ] Extract chat session and folder routes.
+- [ ] Extract chat status route.
+- [ ] Validate smoke tests after this phase.
+
+### Completion Criteria
+
+- [ ] Reduce app.py to a thin bootstrap and compatibility layer.
+- [ ] Organize routes by concern in dedicated modules.
+- [ ] Separate shared services from route registration.
+- [ ] Keep smoke tests passing.
+- [ ] Avoid unintended user-facing API changes.
+
 ## Why This Refactor Is Needed
 
 The current app.py file mixes multiple concerns in a single module:
