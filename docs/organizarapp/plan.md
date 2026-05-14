@@ -90,12 +90,12 @@ Manual validation routine for each test step:
 - [x] Extract chat transport selection logic.
 - [x] Extract API dispatch helpers.
 - [x] Extract CLI wrapper dispatch helper.
-- [ ] Extract CLI subprocess dispatch helper.
-- [ ] Extract cancellation flow helpers.
-- [ ] Extract upload endpoints.
-- [ ] Extract chat session and folder routes.
-- [ ] Extract chat status route.
-- [ ] Validate smoke tests after this phase.
+- [x] Extract CLI subprocess dispatch helper.
+- [x] Extract cancellation flow helpers.
+- [x] Extract upload endpoints.
+- [x] Extract chat session and folder routes.
+- [x] Extract chat status route.
+- [x] Validate smoke tests after this phase.
 
 ### Completion Criteria
 

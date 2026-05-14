@@ -56,11 +56,18 @@ from webui_app.chat_persistence import write_folder as _write_folder_impl
 from webui_app.chat_persistence import write_session as _write_session_impl
 from webui_app.chat_dispatch import call_api_server as _call_api_server_impl
 from webui_app.chat_dispatch import call_hermes_direct as _call_hermes_direct_impl
+from webui_app.chat_dispatch import call_hermes_prompt as _call_hermes_prompt_impl
+from webui_app.chat_dispatch import cancel_chat_request as _cancel_chat_request_impl
+from webui_app.chat_dispatch import is_process_alive as _is_process_alive_impl
+from webui_app.chat_dispatch import register_chat_request as _register_chat_request_impl
+from webui_app.chat_dispatch import terminate_chat_process as _terminate_chat_process_impl
+from webui_app.chat_dispatch import update_chat_request as _update_chat_request_impl
 from webui_app.chat_transport import plan_chat_request as _plan_chat_request_impl
 from webui_app.chat_transport import validated_transport_preference as _validated_transport_preference_impl
 from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
 from webui_app.routes.agents import register_agent_routes
 from webui_app.routes.capabilities import register_capability_routes
+from webui_app.routes.chat import register_chat_routes
 from webui_app.routes.config import register_config_routes
 from webui_app.routes.env import register_env_routes
 from webui_app.routes.model_roles import register_model_role_routes
@@ -1942,29 +1949,23 @@ def _register_chat_request(
     transport: str,
     cancel_supported: bool,
 ) -> None:
-    _write_request_control(request_id, {
-        "request_id": request_id,
-        "session_id": session_id,
-        "status": "running",
-        "transport": transport,
-        "cancel_supported": cancel_supported,
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
-        "pid": None,
-        "pgid": None,
-        "cancel_requested_at": None,
-        "output_path": str(_request_output_path(request_id)),
-    })
+    _register_chat_request_impl(
+        request_id,
+        session_id,
+        transport=transport,
+        cancel_supported=cancel_supported,
+        write_request_control=_write_request_control,
+        request_output_path=_request_output_path,
+    )
 
 
 def _update_chat_request(request_id: str, **fields) -> dict | None:
-    payload = _read_request_control(request_id)
-    if payload is None:
-        return None
-    payload.update(fields)
-    payload["updated_at"] = datetime.now().isoformat()
-    _write_request_control(request_id, payload)
-    return payload
+    return _update_chat_request_impl(
+        request_id,
+        read_request_control=_read_request_control,
+        write_request_control=_write_request_control,
+        fields=fields,
+    )
 
 
 def _remove_chat_request(request_id: str) -> None:
@@ -1972,73 +1973,25 @@ def _remove_chat_request(request_id: str) -> None:
 
 
 def _is_process_alive(pid: int | None) -> bool:
-    if not pid:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+    return _is_process_alive_impl(pid, os_module=os)
 
 
 def _terminate_chat_process(pid: int | None, pgid: int | None, sig: int) -> bool:
-    try:
-        if pgid:
-            os.killpg(pgid, sig)
-        elif pid:
-            os.kill(pid, sig)
-        else:
-            return False
-        return True
-    except ProcessLookupError:
-        return True
-    except Exception as exc:
-        logger.warning("Failed to signal chat process pid=%s pgid=%s: %s", pid, pgid, exc)
-        return False
+    return _terminate_chat_process_impl(pid, pgid, sig, os_module=os, logger=logger)
 
 
 def _cancel_chat_request(request_id: str) -> tuple[bool, str]:
-    payload = _read_request_control(request_id)
-    if payload is None:
-        return False, "Request not found"
-    if not payload.get("cancel_supported", False):
-        return False, "This request is using the API/vision path and cannot be cancelled server-side"
-    if payload.get("status") == "completed":
-        return False, "Request already completed"
-    if payload.get("status") == "cancelled":
-        return True, "Request already cancelled"
-
-    pid = payload.get("pid")
-    pgid = payload.get("pgid")
-    _update_chat_request(
+    return _cancel_chat_request_impl(
         request_id,
-        status="cancel_requested",
-        cancel_requested_at=datetime.now().isoformat(),
+        read_request_control=_read_request_control,
+        update_chat_request=_update_chat_request,
+        terminate_chat_process=_terminate_chat_process,
+        chat_cancel_grace_seconds=CHAT_CANCEL_GRACE_SECONDS,
+        chat_cancel_poll_interval=CHAT_CANCEL_POLL_INTERVAL,
+        is_process_alive=_is_process_alive,
+        time_module=time,
+        signal_module=signal,
     )
-
-    if not pid:
-        return True, "Cancellation queued before subprocess start"
-
-    if not _terminate_chat_process(pid, pgid, signal.SIGTERM):
-        return False, "Failed to terminate Hermes process"
-
-    deadline = time.time() + CHAT_CANCEL_GRACE_SECONDS
-    while time.time() < deadline:
-        if not _is_process_alive(pid):
-            _update_chat_request(request_id, status="cancelled")
-            return True, "Request cancelled"
-        time.sleep(CHAT_CANCEL_POLL_INTERVAL)
-
-    _terminate_chat_process(pid, pgid, signal.SIGKILL)
-    for _ in range(int(1 / CHAT_CANCEL_POLL_INTERVAL)):
-        if not _is_process_alive(pid):
-            _update_chat_request(request_id, status="cancelled")
-            return True, "Request cancelled"
-        time.sleep(CHAT_CANCEL_POLL_INTERVAL)
-
-    return False, "Hermes process did not exit after cancellation"
 
 
 # Load sessions on startup
@@ -5471,6 +5424,93 @@ register_skill_routes(
 )
 
 
+register_chat_routes(
+    app,
+    require_token=require_token,
+    rate_limit=rate_limit,
+    deps={
+        "normalize_profile_name": lambda value: _normalize_hermes_profile_name(value),
+        "available_profile_names": lambda: _available_hermes_profile_names(),
+        "normalize_transport_preference": lambda value: _normalize_transport_preference(value),
+        "get_or_create_chat_session": lambda session_id=None, profile_name=None: _get_or_create_chat_session(session_id, profile_name=profile_name),
+        "selected_profile_name": lambda: _selected_hermes_profile_name(),
+        "validated_transport_preference": lambda value: _validated_transport_preference(value),
+        "ensure_folder_exists": lambda folder_id: _ensure_folder_exists(folder_id),
+        "scoped_profile_override": lambda profile: _scoped_profile_override(profile),
+        "plan_chat_request": lambda session, files: _plan_chat_request(session, files),
+        "append_chat_segment": lambda session, profile, transport="": _append_chat_segment(session, profile, transport=transport),
+        "segment_hermes_session_id": lambda segment: _segment_hermes_session_id(segment),
+        "validate_attachment_selection": lambda files, image_support: _validate_attachment_selection(files, image_support),
+        "register_chat_request": lambda request_id, session_id, transport, cancel_supported: _register_chat_request(request_id, session_id, transport=transport, cancel_supported=cancel_supported),
+        "attachment_display_name": lambda path, display_names=None: _attachment_display_name(path, display_names),
+        "build_attachment_refs": lambda files, display_names=None: _build_attachment_refs(files, display_names),
+        "write_session": lambda session: _write_session(session),
+        "messages_for_active_segment": lambda session: _messages_for_active_segment(session),
+        "call_api_server": lambda session, messages, session_id, files=None, prefer_vision=False, file_display_names=None: _call_api_server(session, messages, session_id, files=files, prefer_vision=prefer_vision, file_display_names=file_display_names),
+        "active_segment_has_image_history": lambda session: _active_segment_has_image_history(session),
+        "image_extensions": {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"},
+        "vision_reanalysis_requested": lambda message, session: _vision_reanalysis_requested(message, session),
+        "run_sidecar_vision_analysis": lambda session, message, files, user_message=None, file_display_names=None: _run_sidecar_vision_analysis(session, message, files, user_message=user_message, file_display_names=file_display_names),
+        "compose_cli_prompt_with_sidecar": lambda session, message, files, sidecar_result=None, file_display_names=None: _compose_cli_prompt_with_sidecar(session, message, files, sidecar_result=sidecar_result, file_display_names=file_display_names),
+        "call_hermes_prompt": lambda session, prompt, request_id=None: _call_hermes_prompt(session, prompt, request_id=request_id),
+        "call_hermes_direct": lambda session, message, files=None, request_id=None, file_display_names=None: _call_hermes_direct(session, message, files, request_id=request_id, file_display_names=file_display_names),
+        "clean_hermes_session_id": lambda value: _clean_hermes_session_id(value),
+        "update_chat_request": lambda request_id, **fields: _update_chat_request(request_id, **fields),
+        "rollback_failed_chat_turn": lambda session, session_id, user_msg: _rollback_failed_chat_turn(session, session_id, user_msg),
+        "debug_trace_lines_for_chat": lambda request_id, hermes_session_id: _debug_trace_lines_for_chat(request_id, hermes_session_id),
+        "remove_chat_request": lambda request_id: _remove_chat_request(request_id),
+        "chat_session_meta": lambda session: _chat_session_meta(session),
+        "cancel_chat_request": lambda request_id: _cancel_chat_request(request_id),
+        "request_id_or_dash": lambda: _request_id_or_dash(),
+        "save_upload_stream": lambda file_storage, destination: _save_upload_stream(file_storage, destination),
+        "upload_folder": lambda: UPLOAD_FOLDER,
+        "max_request_body_size": lambda: MAX_REQUEST_BODY_SIZE,
+        "max_upload_size": lambda: MAX_UPLOAD_SIZE,
+        "estimate_base64_decoded_size": lambda b64: _estimate_base64_decoded_size(b64),
+        "load_all_sessions": lambda: _load_all_sessions(),
+        "folder_summaries": lambda sessions=None: _folder_summaries(sessions),
+        "parse_folder_update": lambda data, existing=None: _parse_folder_update(data, existing=existing),
+        "folder_title_conflict": lambda title, exclude_folder_id=None: _folder_title_conflict(title, exclude_folder_id=exclude_folder_id),
+        "legacy_folder_from_sessions": lambda title, sessions: _legacy_folder_from_sessions(title, sessions),
+        "write_folder": lambda folder: _write_folder(folder),
+        "folder_with_fallback": lambda folder_id, sessions=None: _folder_with_fallback(folder_id, sessions),
+        "load_all_folders": lambda: _load_all_folders(),
+        "resolve_folder_reference": lambda folder_ref, sessions=None, folders=None, include_legacy=True: _resolve_folder_reference(folder_ref, sessions=sessions, folders=folders, include_legacy=include_legacy),
+        "delete_folder": lambda folder_id: _delete_folder(folder_id),
+        "load_session": lambda session_id: _load_session(session_id),
+        "merge_unique_strings": lambda *values: _merge_unique_strings(*values),
+        "folder_workspace_roots_for_docs": lambda docs: _folder_workspace_roots_for_docs(docs),
+        "parse_chat_context_update": lambda data: _parse_chat_context_update(data),
+        "delete_session_from_disk": lambda session_id: _delete_session_from_disk(session_id),
+        "trim_trailing_empty_chat_segments": lambda session: _trim_trailing_empty_chat_segments(session),
+        "read_request_control": lambda request_id: _read_request_control(request_id),
+        "filter_live_progress_lines": lambda lines: _filter_live_progress_lines(lines),
+        "request_progress_lines": lambda request_id: _request_progress_lines(request_id),
+        "check_api_server": lambda: _check_api_server(),
+        "api_server_probe": lambda timeout=2: _api_server_probe(timeout=timeout),
+        "image_attachment_support_status": lambda: _image_attachment_support_status(),
+        "vision_configured": lambda: _vision_configured(),
+        "resolve_api_target": lambda prefer_vision=False: _resolve_api_target(prefer_vision=prefer_vision),
+        "chat_runtime_status": lambda: _chat_runtime_status(),
+        "effective_hermes_api_url": lambda default_url: _effective_hermes_api_url(default_url),
+        "default_hermes_api_url": lambda: DEFAULT_HERMES_API_URL,
+        "chat_request_timeout": lambda: CHAT_REQUEST_TIMEOUT,
+        "chat_server_timeout": lambda: CHAT_SERVER_TIMEOUT,
+        "chat_persist_debug_trace": lambda: CHAT_PERSIST_DEBUG_TRACE,
+        "chat_transport_api": CHAT_TRANSPORT_API,
+        "chat_transport_cli": CHAT_TRANSPORT_CLI,
+        "chat_continuity_hermes": CHAT_CONTINUITY_HERMES,
+        "chat_continuity_local": CHAT_CONTINUITY_LOCAL,
+        "chat_continuity_limited": CHAT_CONTINUITY_LIMITED,
+        "chat_request_cancelled": ChatRequestCancelled,
+        "chat_backend_error": ChatBackendError,
+        "logger": logger,
+        "request_output_path": lambda request_id: _request_output_path(request_id),
+        "folder_source_dir": lambda: CHAT_FOLDER_SOURCE_DIR,
+    },
+)
+
+
 # ===================================================================
 # 23–24. Channels
 # ===================================================================
@@ -7721,126 +7761,30 @@ def _call_hermes_prompt(
     request_id: str | None = None,
 ) -> tuple[str, str | None]:
     """Call Hermes CLI subprocess with an already-assembled text prompt."""
-    if request_id:
-        state = _read_request_control(request_id)
-        if state and state.get("cancel_requested_at"):
-            _update_chat_request(request_id, status="cancelled")
-            raise ChatRequestCancelled("Request cancelled before Hermes started")
-    native_session_snapshot = _snapshot_hermes_native_sessions()
-    cmd = [str(_selected_hermes_bin()), "chat"]
-    if session.get("hermes_session_id"):
-        cmd.extend(["--resume", session["hermes_session_id"]])
-    cmd.extend(["-q", prompt])
-    try:
-        output_path = _request_output_path(request_id) if request_id else None
-        if output_path:
-            try:
-                output_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-        output_handle = output_path.open("w", encoding="utf-8") if output_path else None
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(Path.home()),
-            env={**os.environ, "NO_COLOR": "1", "HERMES_HOME": str(_selected_hermes_home())},
-            stdout=output_handle if output_handle is not None else subprocess.PIPE,
-            stderr=subprocess.STDOUT if output_handle is not None else subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-        if request_id:
-            _update_chat_request(request_id, pid=proc.pid, pgid=os.getpgid(proc.pid))
-
-        last_activity_at = time.time()
-        last_output_size = 0
-        while True:
-            if request_id:
-                state = _read_request_control(request_id)
-                if state and state.get("cancel_requested_at"):
-                    pgid = os.getpgid(proc.pid)
-                    _terminate_chat_process(proc.pid, pgid, signal.SIGTERM)
-                    try:
-                        stdout, stderr = proc.communicate(timeout=CHAT_CANCEL_GRACE_SECONDS)
-                    except subprocess.TimeoutExpired:
-                        _terminate_chat_process(proc.pid, pgid, signal.SIGKILL)
-                        stdout, stderr = proc.communicate()
-                    if output_handle is not None:
-                        output_handle.flush()
-                    _update_chat_request(request_id, status="cancelled")
-                    raise ChatRequestCancelled("Request cancelled")
-            if output_path and output_path.exists():
-                try:
-                    current_size = output_path.stat().st_size
-                    if current_size > last_output_size:
-                        last_output_size = current_size
-                        last_activity_at = time.time()
-                except OSError:
-                    pass
-            remaining = CHAT_REQUEST_TIMEOUT - (time.time() - last_activity_at)
-            if remaining <= 0:
-                _terminate_chat_process(proc.pid, os.getpgid(proc.pid), signal.SIGKILL)
-                proc.communicate()
-                raise subprocess.TimeoutExpired(proc.args, CHAT_REQUEST_TIMEOUT)
-            try:
-                stdout, stderr = proc.communicate(timeout=min(CHAT_CANCEL_POLL_INTERVAL, remaining))
-                break
-            except subprocess.TimeoutExpired:
-                if output_handle is not None:
-                    output_handle.flush()
-                if output_path and output_path.exists():
-                    try:
-                        current_size = output_path.stat().st_size
-                        if current_size > last_output_size:
-                            last_output_size = current_size
-                            last_activity_at = time.time()
-                    except OSError:
-                        pass
-                continue
-
-        if output_handle is not None:
-            output_handle.flush()
-
-        if request_id:
-            state = _read_request_control(request_id)
-            if state and state.get("cancel_requested_at"):
-                _update_chat_request(request_id, status="cancelled")
-                raise ChatRequestCancelled("Request cancelled")
-
-        if proc.returncode != 0:
-            if output_path and output_path.exists():
-                error_output = output_path.read_text(encoding="utf-8", errors="replace").strip()
-            else:
-                error_output = (stderr or "").strip() or (stdout or "").strip()
-            error_output = error_output or f"Hermes CLI exited with status {proc.returncode}"
-            raise ChatBackendError(error_output)
-
-        if output_path and output_path.exists():
-            output = output_path.read_text(encoding="utf-8", errors="replace").strip()
-        else:
-            output = (stdout or "").strip()
-        if not output:
-            raise ChatBackendError(((stderr or "").strip()) or "Hermes returned an empty response")
-        import re as _re
-        output = _re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', output)
-        output = _re.sub(r'\x1b\].*?\x07', '', output)
-        response_text, hermes_session_id = _parse_hermes_chat_result(output)
-        native_session_path = _find_updated_hermes_native_session(native_session_snapshot, hermes_session_id)
-        native_text = None
-        native_session_id = None
-        if native_session_path:
-            native_text, native_session_id = _load_hermes_native_session_reply(native_session_path)
-        return native_text or response_text, native_session_id or hermes_session_id
-    except ChatRequestCancelled:
-        raise
-    except subprocess.TimeoutExpired:
-        raise ChatRequestTimeout(f"Hermes did not produce activity within {CHAT_REQUEST_TIMEOUT} seconds")
-    except ChatBackendError:
-        raise
-    except Exception as e:
-        raise ChatBackendError(f"Error calling Hermes: {e}") from e
-    finally:
-        if 'output_handle' in locals() and output_handle is not None:
-            output_handle.close()
+    return _call_hermes_prompt_impl(
+        session,
+        prompt,
+        request_id=request_id,
+        read_request_control=_read_request_control,
+        update_chat_request=_update_chat_request,
+        chat_request_cancelled=ChatRequestCancelled,
+        snapshot_hermes_native_sessions=_snapshot_hermes_native_sessions,
+        selected_hermes_bin=_selected_hermes_bin,
+        selected_hermes_home=_selected_hermes_home,
+        request_output_path=_request_output_path,
+        path_home=Path.home,
+        terminate_chat_process=_terminate_chat_process,
+        chat_cancel_grace_seconds=CHAT_CANCEL_GRACE_SECONDS,
+        chat_cancel_poll_interval=CHAT_CANCEL_POLL_INTERVAL,
+        chat_request_timeout=CHAT_REQUEST_TIMEOUT,
+        parse_hermes_chat_result=_parse_hermes_chat_result,
+        find_updated_hermes_native_session=_find_updated_hermes_native_session,
+        load_hermes_native_session_reply=_load_hermes_native_session_reply,
+        chat_request_timeout_error=ChatRequestTimeout,
+        chat_backend_error=ChatBackendError,
+        signal_module=signal,
+        os_module=os,
+    )
 
 
 def _call_hermes_direct(
@@ -8243,772 +8187,6 @@ def _rollback_failed_chat_turn(session: dict, session_id: str, user_msg: dict) -
         return
     session["updated"] = datetime.now().isoformat()
     _write_session(session)
-
-
-@app.route("/api/chat", methods=["POST"])
-@require_token
-@rate_limit
-def api_chat():
-    chat_started_at = time.monotonic()
-    data = request.get_json(silent=True) or {}
-    message = data.get("message", "").strip()
-    session_id = data.get("session_id")
-    requested_profile = _normalize_hermes_profile_name(data.get("profile") or "")
-    if requested_profile and requested_profile not in _available_hermes_profile_names():
-        return jsonify({"error": "Invalid profile"}), 400
-    requested_transport_preference = _normalize_transport_preference(data.get("transport_preference"))
-    requested_folder_id = str(data.get("folder_id") or "").strip()
-    request_id = (data.get("request_id") or str(uuid.uuid4())).strip()
-    files = []
-    file_display_names = {}
-    for ref in (data.get("files") or []):
-        stored_as = None
-        display_name = None
-        if isinstance(ref, str):
-            stored_as = ref
-            display_name = Path(ref).name
-        elif isinstance(ref, dict):
-            stored_as = str(ref.get("stored_as") or "").strip()
-            display_name = str(ref.get("name") or "").strip() or None
-        if not stored_as:
-            continue
-        fpath = UPLOAD_FOLDER / stored_as
-        if fpath.exists():
-            files.append(fpath)
-            if display_name:
-                file_display_names[fpath.name] = display_name
-    if not message and not files:
-        return jsonify({"error": "Message or attachment is required"}), 400
-    sess = _get_or_create_chat_session(session_id, profile_name=requested_profile)
-    sess["profile"] = _normalize_hermes_profile_name(sess.get("profile")) or _selected_hermes_profile_name()
-    if data.get("transport_preference") is not None:
-        validated_preference, preference_notice = _validated_transport_preference(requested_transport_preference)
-        sess["transport_preference"] = validated_preference
-        sess["transport_notice"] = preference_notice or ""
-    if requested_folder_id:
-        ensured = _ensure_folder_exists(requested_folder_id)
-        requested_folder_id = ensured["id"] if ensured else requested_folder_id
-    if requested_folder_id and not sess.get("folder_id"):
-        sess["folder_id"] = requested_folder_id
-    sid = sess["id"]
-    with _scoped_profile_override(sess.get("profile")):
-        request_plan = _plan_chat_request(sess, files)
-        active_segment = _append_chat_segment(sess, sess["profile"], transport=request_plan["transport"])
-        sess["hermes_session_id"] = _segment_hermes_session_id(active_segment)
-        attachment_errors = _validate_attachment_selection(files, request_plan["image_support"])
-    if attachment_errors:
-        return jsonify({"error": "Unsupported attachment selection", "details": attachment_errors}), 400
-
-    logger.info(
-        "Chat request started request_id=%s session_id=%s transport=%s files=%s folder_id=%s",
-        request_id,
-        sid,
-        request_plan["transport"],
-        len(files),
-        sess.get("folder_id") or "",
-    )
-
-    _register_chat_request(
-        request_id,
-        sid,
-        transport=request_plan["transport"],
-        cancel_supported=request_plan["cancel_supported"],
-    )
-    user_msg = {
-        "role": "user",
-        "content": message,
-        "files": [_attachment_display_name(f, file_display_names) for f in files],
-        "attachment_refs": _build_attachment_refs(files, file_display_names),
-        "timestamp": datetime.now().isoformat(),
-        "segment_id": active_segment.get("id"),
-        "segment_index": active_segment.get("index"),
-        "profile": active_segment.get("profile") or sess.get("profile"),
-        "transport": request_plan["transport"],
-    }
-    sess["messages"].append(user_msg)
-    # Auto-title from first user message
-    if len(sess["messages"]) == 1 and sess.get("title") == "New Chat":
-        if message:
-            sess["title"] = message[:60] + ("..." if len(message) > 60 else "")
-        elif files:
-            file_label = ", ".join(f.name for f in files[:2])
-            if len(files) > 2:
-                file_label += f" +{len(files) - 2} more"
-            sess["title"] = f"Files: {file_label}"
-    sess["updated"] = datetime.now().isoformat()
-    _write_session(sess)
-    if sess.get("messages"):
-        user_msg = sess["messages"][-1]
-    try:
-        with _scoped_profile_override(sess.get("profile")):
-            use_api_server = request_plan["transport"] == CHAT_TRANSPORT_API
-            if use_api_server:
-                if sess.get("transport_mode") != CHAT_TRANSPORT_API:
-                    sess["transport_mode"] = CHAT_TRANSPORT_API
-                    sess["continuity_mode"] = CHAT_CONTINUITY_LOCAL
-                    sess["transport_notice"] = request_plan["transport_notice"]
-                    sess["hermes_session_id"] = None
-                api_msgs = []
-                for m in _messages_for_active_segment(sess):
-                    msg = {"role": m["role"], "content": m["content"]}
-                    if m.get("files"):
-                        msg["files"] = m["files"]
-                    api_msgs.append(msg)
-                response_text = _call_api_server(
-                    sess,
-                    api_msgs,
-                    sid,
-                    files,
-                    prefer_vision=_active_segment_has_image_history(sess) or any(
-                        f.suffix.lower() in IMAGE_EXTENSIONS for f in files
-                    ),
-                    file_display_names=file_display_names,
-                )
-            else:
-                sidecar_result = {}
-                if any(f.suffix.lower() in IMAGE_EXTENSIONS for f in files) or _vision_reanalysis_requested(message, sess):
-                    sidecar_result = _run_sidecar_vision_analysis(
-                        sess,
-                        message,
-                        files,
-                        user_message=user_msg,
-                        file_display_names=file_display_names,
-                    )
-                if sidecar_result:
-                    prompt = _compose_cli_prompt_with_sidecar(
-                        sess,
-                        message,
-                        files,
-                        sidecar_result=sidecar_result,
-                        file_display_names=file_display_names,
-                    )
-                    response_text, hermes_session_id = _call_hermes_prompt(
-                        sess,
-                        prompt,
-                        request_id=request_id,
-                    )
-                else:
-                    response_text, hermes_session_id = _call_hermes_direct(
-                        sess,
-                        message,
-                        files,
-                        request_id=request_id,
-                        file_display_names=file_display_names,
-                    )
-                sess["transport_mode"] = CHAT_TRANSPORT_CLI
-                effective_hermes_session_id = _clean_hermes_session_id(hermes_session_id) or _segment_hermes_session_id(active_segment)
-                if effective_hermes_session_id:
-                    active_segment["hermes_session_id"] = effective_hermes_session_id
-                    sess["hermes_session_id"] = effective_hermes_session_id
-                    sess["continuity_mode"] = CHAT_CONTINUITY_HERMES
-                    sess["transport_notice"] = ""
-                else:
-                    active_segment["hermes_session_id"] = None
-                    sess["hermes_session_id"] = None
-                    sess["continuity_mode"] = CHAT_CONTINUITY_LIMITED
-                    sess["transport_notice"] = (
-                        "Hermes CLI did not return a resumable session id for this chat yet. "
-                        "Follow-up turns may not preserve Hermes-side context."
-                    )
-        _update_chat_request(request_id, status="completed")
-    except ChatRequestCancelled:
-        _rollback_failed_chat_turn(sess, sid, user_msg)
-        _update_chat_request(request_id, status="cancelled")
-        logger.info(
-            "Chat request cancelled request_id=%s session_id=%s duration_ms=%s",
-            request_id,
-            sid,
-            int((time.monotonic() - chat_started_at) * 1000),
-        )
-        return jsonify({"ok": False, "cancelled": True, "session_id": sid}), 499
-    except ChatBackendError as exc:
-        _rollback_failed_chat_turn(sess, sid, user_msg)
-        _update_chat_request(request_id, status="failed", error=str(exc))
-        logger.warning(
-            "Chat request failed request_id=%s session_id=%s duration_ms=%s detail=%s",
-            request_id,
-            sid,
-            int((time.monotonic() - chat_started_at) * 1000),
-            exc,
-        )
-        return jsonify({"error": str(exc), "request_id": request_id, "session_id": sid}), exc.status_code
-    except Exception as exc:
-        _rollback_failed_chat_turn(sess, sid, user_msg)
-        _update_chat_request(request_id, status="failed", error=str(exc))
-        logger.exception(
-            "Unexpected chat request failure request_id=%s session_id=%s duration_ms=%s",
-            request_id,
-            sid,
-            int((time.monotonic() - chat_started_at) * 1000),
-        )
-        return jsonify({"error": f"Unexpected chat error: {exc}", "request_id": request_id, "session_id": sid}), 500
-    finally:
-        if request_id:
-            with _scoped_profile_override(sess.get("profile")):
-                debug_trace_lines = _debug_trace_lines_for_chat(request_id, sess.get("hermes_session_id"))
-        _remove_chat_request(request_id)
-    assistant_msg = {"role": "assistant", "content": response_text,
-                     "timestamp": datetime.now().isoformat(),
-                     "segment_id": active_segment.get("id"),
-                     "segment_index": active_segment.get("index"),
-                     "profile": active_segment.get("profile") or sess.get("profile"),
-                     "transport": sess.get("transport_mode") or request_plan["transport"]}
-    if debug_trace_lines:
-        assistant_msg["debug_trace_lines"] = debug_trace_lines
-        assistant_msg["debug_trace_transport"] = sess.get("transport_mode") or request_plan["transport"] or ""
-        assistant_msg["debug_trace_status"] = "Completed"
-        assistant_msg["show_debug_trace"] = True
-    sess["messages"].append(assistant_msg)
-    sess["updated"] = datetime.now().isoformat()
-    _write_session(sess)
-    logger.info(
-        "Chat request completed request_id=%s session_id=%s duration_ms=%s response_chars=%s transport=%s",
-        request_id,
-        sid,
-        int((time.monotonic() - chat_started_at) * 1000),
-        len(response_text),
-        sess.get("transport_mode"),
-    )
-    session_meta = _chat_session_meta(sess)
-    return jsonify({"session_id": sid, "response": response_text,
-                     "message_count": len(sess["messages"]), "title": sess.get("title", ""),
-                     "cancel_supported": request_plan["cancel_supported"],
-                     "session": session_meta,
-                     "user_message": user_msg,
-                     "assistant_message": assistant_msg})
-
-
-@app.route("/api/chat/cancel", methods=["POST"])
-@require_token
-@rate_limit
-def api_chat_cancel():
-    data = request.get_json(silent=True) or {}
-    request_id = (data.get("request_id") or "").strip()
-    if not request_id:
-        return jsonify({"error": "request_id is required"}), 400
-    cancelled, detail = _cancel_chat_request(request_id)
-    status_code = 200 if cancelled else 409
-    if detail == "Request not found":
-        status_code = 404
-    return jsonify({"cancelled": cancelled, "detail": detail, "request_id": request_id}), status_code
-
-
-@app.route("/api/upload", methods=["POST"])
-@require_token
-@rate_limit
-def api_upload():
-    if request.content_length and request.content_length > MAX_REQUEST_BODY_SIZE:
-        raise RequestEntityTooLarge()
-    if "file" not in request.files:
-        return jsonify({"error": "No file"}), 400
-    f = request.files["file"]
-    if not f.filename:
-        return jsonify({"error": "No filename"}), 400
-    safe = secure_filename(f.filename) or "file"
-    unique = f"{uuid.uuid4().hex[:8]}_{safe}"
-    target = UPLOAD_FOLDER / unique
-    try:
-        size = _save_upload_stream(f, target)
-    except RequestEntityTooLarge:
-        logger.warning(
-            "Rejected oversized multipart upload request_id=%s name=%s content_length=%s remote=%s",
-            _request_id_or_dash(),
-            safe,
-            request.content_length,
-            request.remote_addr,
-        )
-        raise
-    logger.info(
-        "Stored upload request_id=%s stored_as=%s name=%s size=%s type=%s remote=%s",
-        _request_id_or_dash(),
-        unique,
-        safe,
-        size,
-        f.content_type,
-        request.remote_addr,
-    )
-    return jsonify({"name": safe, "stored_as": unique, "size": size,
-                     "type": f.content_type, "url": f"/uploads/{unique}"})
-
-
-@app.route("/api/upload/base64", methods=["POST"])
-@require_token
-@rate_limit
-def api_upload_base64():
-    """Accept a base64-encoded image (from clipboard paste) and save it."""
-    if request.content_length and request.content_length > MAX_REQUEST_BODY_SIZE:
-        raise RequestEntityTooLarge()
-    data = request.get_json(silent=True) or {}
-    b64 = data.get("data", "")
-    if not b64:
-        return jsonify({"error": "No data"}), 400
-    # Strip data URL prefix if present
-    if "," in b64:
-        b64 = b64.split(",", 1)[1]
-    try:
-        estimated_size = _estimate_base64_decoded_size(b64)
-    except ValueError:
-        return jsonify({"error": "Invalid base64"}), 400
-    if estimated_size > MAX_UPLOAD_SIZE:
-        logger.warning(
-            "Rejected oversized base64 upload request_id=%s estimated_size=%s remote=%s",
-            _request_id_or_dash(),
-            estimated_size,
-            request.remote_addr,
-        )
-        return jsonify({"error": f"Too large (max {MAX_UPLOAD_SIZE//(1024*1024)}MB)"}), 400
-    try:
-        import base64
-        img_bytes = base64.b64decode(b64, validate=True)
-    except Exception:
-        return jsonify({"error": "Invalid base64"}), 400
-    if len(img_bytes) > MAX_UPLOAD_SIZE:
-        return jsonify({"error": f"Too large (max {MAX_UPLOAD_SIZE//(1024*1024)}MB)"}), 400
-    ext = secure_filename(str(data.get("ext", "png"))).lower().lstrip(".") or "png"
-    if ext not in {"png", "jpg", "jpeg", "webp", "gif"}:
-        ext = "png"
-    unique = f"{uuid.uuid4().hex[:8]}_clipboard.{ext}"
-    (UPLOAD_FOLDER / unique).write_bytes(img_bytes)
-    logger.info(
-        "Stored base64 upload request_id=%s stored_as=%s size=%s type=image/%s remote=%s",
-        _request_id_or_dash(),
-        unique,
-        len(img_bytes),
-        "jpeg" if ext == "jpg" else ext,
-        request.remote_addr,
-    )
-    return jsonify({"name": f"clipboard.{ext}", "stored_as": unique,
-                     "size": len(img_bytes), "type": f"image/{'jpeg' if ext == 'jpg' else ext}",
-                     "url": f"/uploads/{unique}"})
-
-
-@app.route("/uploads/<path:filename>")
-@require_token
-def serve_upload(filename):
-    return send_from_directory(str(UPLOAD_FOLDER), filename)
-
-
-@app.route("/api/chat/sessions", methods=["GET"])
-@require_token
-def api_chat_sessions():
-    sessions = []
-    for sid, s in _load_all_sessions().items():
-        meta = _chat_session_meta(s)
-        sessions.append({
-            "id": s["id"],
-            "title": s.get("title", "Untitled"),
-            "message_count": len(s["messages"]),
-            "created": s["created"],
-            "updated": s.get("updated", s["created"]),
-            "last_message": s["messages"][-1]["content"][:100] if s["messages"] else "",
-            "session": meta,
-        })
-    # Sort by updated desc
-    sessions.sort(key=lambda x: x.get("updated", ""), reverse=True)
-    return jsonify({"sessions": sessions})
-
-
-@app.route("/api/chat/folders", methods=["GET"])
-@require_token
-def api_chat_folders():
-    sessions = _load_all_sessions()
-    return jsonify({"folders": _folder_summaries(sessions)})
-
-
-@app.route("/api/chat/folders", methods=["POST"])
-@require_token
-def api_chat_folders_create():
-    data = request.get_json() or {}
-    folder_payload, errors = _parse_folder_update(data)
-    if errors:
-        return jsonify({"error": "Invalid folder", "details": errors}), 400
-    existing = _folder_title_conflict(folder_payload["title"])
-    if existing:
-        return jsonify({"error": "Folder name already exists", "folder": existing}), 409
-    sessions = _load_all_sessions()
-    legacy = _legacy_folder_from_sessions(folder_payload["title"], sessions)
-    if legacy:
-        folder = _write_folder({
-            "id": legacy["id"],
-            "title": folder_payload["title"],
-            "created": legacy.get("created"),
-            "updated": datetime.now().isoformat(),
-            "workspace_roots": folder_payload["workspace_roots"] or legacy.get("workspace_roots") or [],
-            "source_docs": folder_payload["source_docs"] or legacy.get("source_docs") or [],
-        })
-        summary = next((item for item in _folder_summaries(sessions) if item["id"] == folder["id"]), None)
-        return jsonify({"ok": True, "folder": summary or folder})
-    now = datetime.now().isoformat()
-    folder = _write_folder({
-        "id": str(uuid.uuid4())[:8],
-        "title": folder_payload["title"],
-        "created": now,
-        "updated": now,
-        "workspace_roots": folder_payload["workspace_roots"],
-        "source_docs": folder_payload["source_docs"],
-    })
-    return jsonify({"ok": True, "folder": folder})
-
-
-@app.route("/api/chat/folders/<folder_id>", methods=["GET"])
-@require_token
-def api_chat_folder_get(folder_id):
-    folder = _folder_with_fallback(folder_id)
-    if not folder:
-        return jsonify({"error": "Folder not found"}), 404
-    sessions = _load_all_sessions()
-    summary = next((item for item in _folder_summaries(sessions) if item["id"] == folder["id"]), None)
-    return jsonify({"folder": summary or folder})
-
-
-@app.route("/api/chat/folders/<folder_id>", methods=["PUT"])
-@require_token
-def api_chat_folder_update(folder_id):
-    existing = _folder_with_fallback(folder_id)
-    if not existing:
-        return jsonify({"error": "Folder not found"}), 404
-    folder_payload, errors = _parse_folder_update(request.get_json() or {}, existing=existing)
-    if errors:
-        return jsonify({"error": "Invalid folder", "details": errors}), 400
-    conflict = _folder_title_conflict(folder_payload["title"], exclude_folder_id=existing["id"])
-    if conflict:
-        return jsonify({"error": "Folder name already exists", "folder": conflict}), 409
-    folder = _write_folder({
-        "id": existing["id"],
-        "title": folder_payload["title"],
-        "created": existing.get("created"),
-        "updated": datetime.now().isoformat(),
-        "workspace_roots": folder_payload["workspace_roots"],
-        "source_docs": folder_payload["source_docs"],
-    })
-    summary = next((item for item in _folder_summaries() if item["id"] == folder["id"]), None)
-    return jsonify({"ok": True, "folder": summary or folder})
-
-
-@app.route("/api/chat/folders/<folder_id>", methods=["DELETE"])
-@require_token
-def api_chat_folder_delete(folder_id):
-    sessions = _load_all_sessions()
-    folder = _folder_with_fallback(folder_id, sessions)
-    if not folder:
-        return jsonify({"error": "Folder not found"}), 404
-
-    moved_session_ids = []
-    now = datetime.now().isoformat()
-    folders = _load_all_folders()
-    for session in sessions.values():
-        session_folder = _resolve_folder_reference(session.get("folder_id"), sessions=sessions, folders=folders, include_legacy=False)
-        if not session_folder or session_folder["id"] != folder["id"]:
-            continue
-        session["folder_id"] = ""
-        session["updated"] = now
-        _write_session(session)
-        moved_session_ids.append(session["id"])
-
-    _delete_folder(folder_id)
-    return jsonify({
-        "ok": True,
-        "deleted_folder_id": folder_id,
-        "moved_session_count": len(moved_session_ids),
-        "moved_session_ids": moved_session_ids,
-    })
-
-
-@app.route("/api/chat/folders/<folder_id>/sources/from-chat", methods=["POST"])
-@require_token
-def api_chat_folder_source_from_chat(folder_id):
-    folder = _folder_with_fallback(folder_id)
-    if not folder:
-        return jsonify({"error": "Folder not found"}), 404
-    data = request.get_json() or {}
-    session_id = str(data.get("session_id") or "").strip()
-    session = _load_session(session_id)
-    if not session:
-        return jsonify({"error": "Session not found"}), 404
-    lines = [
-        f"# {session.get('title') or 'Chat'}",
-        "",
-        f"Session ID: {session.get('id')}",
-        "",
-    ]
-    for message in session.get("messages", []):
-        role = "User" if message.get("role") == "user" else "Hermes"
-        lines.append(f"## {role}")
-        lines.append("")
-        lines.append(message.get("content") or "")
-        if message.get("files"):
-            lines.append("")
-            lines.append("Attachments: " + ", ".join(message.get("files") or []))
-        lines.append("")
-    safe_name = secure_filename(session.get("title") or session.get("id") or "chat-source") or "chat-source"
-    target_path = CHAT_FOLDER_SOURCE_DIR / f"{folder_id}_{session.get('id')}_{safe_name}.md"
-    target_path.write_text("\n".join(lines), encoding="utf-8")
-    updated_sources = _merge_unique_strings((folder.get("source_docs") or []), [str(target_path.resolve())])
-    updated_workspace_roots = _merge_unique_strings(
-        folder.get("workspace_roots") or [],
-        _folder_workspace_roots_for_docs(updated_sources),
-    )
-    stored = _write_folder({
-        "id": folder["id"],
-        "title": folder["title"],
-        "created": folder.get("created"),
-        "updated": datetime.now().isoformat(),
-        "source_docs": updated_sources,
-        "workspace_roots": updated_workspace_roots,
-    })
-    summary = next((item for item in _folder_summaries() if item["id"] == stored["id"]), None)
-    return jsonify({"ok": True, "folder": summary or stored, "source_path": str(target_path.resolve())})
-
-
-@app.route("/api/chat/sessions", methods=["POST"])
-@require_token
-def api_chat_sessions_create():
-    data = request.get_json() or {}
-    requested_profile = _normalize_hermes_profile_name(data.get("profile") or "")
-    if requested_profile and requested_profile not in _available_hermes_profile_names():
-        return jsonify({"error": "Invalid profile"}), 400
-    session = _get_or_create_chat_session(profile_name=requested_profile)
-    context_update, errors = _parse_chat_context_update(data)
-    transport_preference, transport_notice = _validated_transport_preference(data.get("transport_preference"))
-    folder_id = context_update.get("folder_id") or ""
-    if folder_id:
-        ensured = _ensure_folder_exists(folder_id)
-        context_update["folder_id"] = ensured["id"] if ensured else folder_id
-    if errors:
-        _delete_session_from_disk(session["id"])
-        return jsonify({"error": "Invalid chat context", "details": errors}), 400
-    session.update(context_update)
-    session["transport_preference"] = transport_preference
-    if transport_notice:
-        session["transport_notice"] = transport_notice
-    session["updated"] = datetime.now().isoformat()
-    _write_session(session)
-    return jsonify({
-        "ok": True,
-        "session_id": session["id"],
-        "title": session.get("title", ""),
-        "session": _chat_session_meta(session),
-    })
-
-
-@app.route("/api/chat/sessions/<session_id>/messages", methods=["GET"])
-@require_token
-def api_chat_messages(session_id):
-    session = _load_session(session_id)
-    if not session:
-        return jsonify({"error": "Session not found"}), 404
-    if _trim_trailing_empty_chat_segments(session):
-        _write_session(session)
-        session = _load_session(session_id) or session
-    return jsonify({"messages": session["messages"],
-                     "title": session.get("title", ""),
-                     "session": _chat_session_meta(session)})
-
-
-@app.route("/api/chat/sessions/<session_id>/rename", methods=["POST"])
-@require_token
-def api_chat_rename(session_id):
-    session = _load_session(session_id)
-    if not session:
-        return jsonify({"error": "Session not found"}), 404
-    data = request.get_json() or {}
-    new_title = data.get("title", "").strip()
-    if new_title:
-        session["title"] = new_title
-        session["updated"] = datetime.now().isoformat()
-        _write_session(session)
-    return jsonify({"ok": True, "title": session.get("title", "")})
-
-
-@app.route("/api/chat/sessions/<session_id>/context", methods=["PUT"])
-@require_token
-def api_chat_context_update(session_id):
-    session = _load_session(session_id)
-    if not session:
-        return jsonify({"error": "Session not found"}), 404
-    context_update, errors = _parse_chat_context_update(request.get_json() or {})
-    folder_id = context_update.get("folder_id") or ""
-    if folder_id:
-        ensured = _ensure_folder_exists(folder_id)
-        context_update["folder_id"] = ensured["id"] if ensured else folder_id
-    if errors:
-        return jsonify({"error": "Invalid chat context", "details": errors}), 400
-    session.update(context_update)
-    session["updated"] = datetime.now().isoformat()
-    _write_session(session)
-    return jsonify({"ok": True, "session": _chat_session_meta(session)})
-
-
-@app.route("/api/chat/sessions/<session_id>/transport", methods=["PUT"])
-@require_token
-def api_chat_session_transport_update(session_id):
-    session = _load_session(session_id)
-    if not session:
-        return jsonify({"error": "Session not found"}), 404
-    data = request.get_json() or {}
-    requested = str(data.get("transport_preference") or "").strip().lower()
-    if requested not in ("", CHAT_TRANSPORT_AUTO, CHAT_TRANSPORT_CLI, CHAT_TRANSPORT_API):
-        return jsonify({"error": "Invalid transport preference"}), 400
-    session["transport_preference"], session["transport_notice"] = _validated_transport_preference(requested)
-    session["updated"] = datetime.now().isoformat()
-    _write_session(session)
-    return jsonify({"ok": True, "session": _chat_session_meta(session)})
-
-
-@app.route("/api/chat/sessions/<session_id>/profile", methods=["PUT"])
-@require_token
-def api_chat_session_profile_update(session_id):
-    session = _load_session(session_id)
-    if not session:
-        return jsonify({"error": "Session not found"}), 404
-    data = request.get_json() or {}
-    requested_profile = _normalize_hermes_profile_name(data.get("profile"))
-    if requested_profile not in _available_hermes_profile_names():
-        return jsonify({"error": "Invalid profile"}), 400
-    selected = requested_profile
-    segment = _append_chat_segment(session, selected)
-    session["profile"] = selected
-    session["transport_mode"] = None
-    session["continuity_mode"] = None
-    session["hermes_session_id"] = _segment_hermes_session_id(segment)
-    session["transport_notice"] = (
-        f"Switched to Hermes profile {selected}. "
-        "Next messages in this chat will use that profile."
-    )
-    session["updated"] = datetime.now().isoformat()
-    _write_session(session)
-    return jsonify({"ok": True, "selected": selected, "session": _chat_session_meta(session)})
-
-
-@app.route("/api/chat/sessions/<session_id>/folder", methods=["PUT"])
-@require_token
-def api_chat_session_folder_update(session_id):
-    session = _load_session(session_id)
-    if not session:
-        return jsonify({"error": "Session not found"}), 404
-    data = request.get_json() or {}
-    folder_id = str(data.get("folder_id") or "").strip()
-    if folder_id:
-        ensured = _ensure_folder_exists(folder_id)
-        folder_id = ensured["id"] if ensured else folder_id
-    session["folder_id"] = folder_id
-    session["updated"] = datetime.now().isoformat()
-    _write_session(session)
-    return jsonify({"ok": True, "session": _chat_session_meta(session)})
-
-
-@app.route("/api/chat/sessions/<session_id>/delete", methods=["POST"])
-@require_token
-def api_chat_delete(session_id):
-    if not _load_session(session_id):
-        return jsonify({"ok": False, "error": "Session not found"}), 404
-    _delete_session_from_disk(session_id)
-    return jsonify({"ok": True})
-
-
-@app.route("/api/chat/sessions/<session_id>/clear", methods=["POST"])
-@require_token
-def api_chat_clear(session_id):
-    session = _load_session(session_id)
-    if not session:
-        return jsonify({"ok": False, "error": "Session not found"}), 404
-    session["messages"] = []
-    session["updated"] = datetime.now().isoformat()
-    session["hermes_session_id"] = None
-    for segment in session.get("segments") or []:
-        if isinstance(segment, dict):
-            segment["hermes_session_id"] = None
-    session["transport_mode"] = None
-    session["continuity_mode"] = None
-    session["transport_notice"] = ""
-    _write_session(session)
-    return jsonify({"ok": True, "session": _chat_session_meta(session)})
-
-
-@app.route("/api/chat/status", methods=["GET"])
-@require_token
-def api_chat_status():
-    request_id = str(request.args.get("request_id") or "").strip()
-    if request_id:
-        payload = _read_request_control(request_id)
-        if payload is None:
-            return jsonify({"error": "Request not found", "request_id": request_id}), 404
-        response = jsonify({
-            "request_id": request_id,
-            "status": payload.get("status") or "running",
-            "transport": payload.get("transport") or "",
-            "cancel_supported": bool(payload.get("cancel_supported")),
-            "session_id": payload.get("session_id") or "",
-            "created_at": payload.get("created_at") or "",
-            "updated_at": payload.get("updated_at") or "",
-            "progress_lines": _filter_live_progress_lines(_request_progress_lines(request_id)),
-            "error": payload.get("error") or "",
-        })
-        response.headers["Cache-Control"] = "no-store, no-cache, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-        return response
-    api_server = _check_api_server()
-    default_api_ok, default_api_reason, default_api_probe = _api_server_probe(timeout=2)
-    image_support, image_reason = _image_attachment_support_status()
-    vision_ready, vision_reason = _vision_configured()
-    vision_target = _resolve_api_target(prefer_vision=True)
-    runtime = _chat_runtime_status()
-    api_selectable = api_server and not runtime.get("requires_cli")
-    return jsonify({
-        "api_server": api_server,
-        "api_url": _effective_hermes_api_url(DEFAULT_HERMES_API_URL),
-        "profile": _selected_hermes_profile_name(),
-        "api_probe": {
-            "reachable": default_api_ok,
-            "reason": default_api_reason,
-            "probe": default_api_probe,
-        },
-        "capabilities": {
-            "text_attachments": True,
-            "image_attachments": image_support,
-            "audio_attachments": False,
-        },
-        "capability_reasons": {
-            "image_attachments": image_reason,
-        },
-        "request_lifecycle": {
-            "chat_timeout_seconds": CHAT_REQUEST_TIMEOUT,
-            "server_timeout_seconds": CHAT_SERVER_TIMEOUT,
-            "cancel_supported": {
-                CHAT_TRANSPORT_CLI: True,
-                CHAT_TRANSPORT_API: False,
-            },
-            "continuity": {
-                CHAT_TRANSPORT_CLI: CHAT_CONTINUITY_HERMES,
-                CHAT_TRANSPORT_API: CHAT_CONTINUITY_LOCAL,
-            },
-        },
-        "limits": {
-            "max_upload_bytes": MAX_UPLOAD_SIZE,
-            "max_request_body_bytes": MAX_REQUEST_BODY_SIZE,
-        },
-        "debug": {
-            "persist_trace": CHAT_PERSIST_DEBUG_TRACE,
-        },
-        "transport_policy": {
-            "requires_cli": runtime.get("requires_cli"),
-            "api_selectable": api_selectable,
-            "reason": runtime.get("cli_reason") or "",
-            "reasons": runtime.get("reasons") or [],
-        },
-        "runtime": runtime,
-        "readiness": {
-            "screenshots_ready": image_support,
-            "vision_sidecar_ready": image_support,
-            "vision_configured": vision_ready,
-            "vision_reason": vision_reason,
-            "vision_api_url": vision_target.get("base_url") or _effective_hermes_api_url(DEFAULT_HERMES_API_URL),
-            "vision_model": vision_target.get("model") if vision_ready else "",
-            "api_reachable": default_api_ok,
-            "api_reason": default_api_reason,
-        },
-    })
 
 
 # ===================================================================
