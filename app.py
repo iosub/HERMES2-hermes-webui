@@ -4629,35 +4629,20 @@ def _latest_turn_sidecar_asset_names(session: dict) -> list[str]:
 
 
 def _chat_session_meta(session: dict) -> dict:
-    normalized = _normalize_chat_session(copy.deepcopy(session))
-    context = _effective_session_context(normalized)
-    active_segment = _active_chat_segment(normalized) or {}
-    active_request = _active_request_for_session(normalized.get("id") or "")
-    return {
-        "profile": normalized.get("profile") or _selected_hermes_profile_name(),
-        "active_segment_id": active_segment.get("id") or "",
-        "active_segment_index": active_segment.get("index") or 1,
-        "segments": copy.deepcopy(normalized.get("segments") or []),
-        "transport_mode": normalized.get("transport_mode"),
-        "transport_preference": normalized.get("transport_preference") or CHAT_TRANSPORT_AUTO,
-        "transport_preference_label": _transport_preference_label(normalized.get("transport_preference")),
-        "continuity_mode": normalized.get("continuity_mode"),
-        "transport_notice": normalized.get("transport_notice") or "",
-        "hermes_session_backed": normalized.get("continuity_mode") == CHAT_CONTINUITY_HERMES,
-        "last_turn_used_sidecar_vision": _latest_turn_used_sidecar_vision(normalized),
-        "last_turn_sidecar_asset_names": _latest_turn_sidecar_asset_names(normalized),
-        "vision_asset_count": len(normalized.get("vision_assets") or []),
-        "folder_id": context.get("folder_id") or "",
-        "folder_title": context.get("folder_title") or "",
-        "workspace_roots": context.get("workspace_roots") or [],
-        "source_docs": context.get("source_docs") or [],
-        "folder_workspace_roots": context.get("folder_workspace_roots") or [],
-        "folder_source_docs": context.get("folder_source_docs") or [],
-        "active_request_id": (active_request or {}).get("request_id") or "",
-        "active_request_status": (active_request or {}).get("status") or "",
-        "active_request_cancel_supported": bool((active_request or {}).get("cancel_supported")),
-        "active_request_transport": (active_request or {}).get("transport") or "",
-    }
+    return _chat_attachment_service.chat_session_meta(
+        session,
+        normalize_chat_session_fn=lambda value: _normalize_chat_session(value),
+        copy_module=copy,
+        effective_session_context_fn=lambda value: _effective_session_context(value),
+        active_chat_segment_fn=lambda value: _active_chat_segment(value),
+        active_request_for_session_fn=lambda session_id: _active_request_for_session(session_id),
+        selected_hermes_profile_name_fn=lambda: _selected_hermes_profile_name(),
+        chat_transport_auto=CHAT_TRANSPORT_AUTO,
+        transport_preference_label_fn=lambda value: _transport_preference_label(value),
+        chat_continuity_hermes=CHAT_CONTINUITY_HERMES,
+        latest_turn_used_sidecar_vision_fn=lambda value: _latest_turn_used_sidecar_vision(value),
+        latest_turn_sidecar_asset_names_fn=lambda value: _latest_turn_sidecar_asset_names(value),
+    )
 
 
 def _format_chat_context_block(session: dict) -> str:

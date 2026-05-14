@@ -181,6 +181,52 @@ def latest_turn_sidecar_asset_names(session: dict, *, latest_user_turn_fn, clean
     return asset_names
 
 
+def chat_session_meta(
+    session: dict,
+    *,
+    normalize_chat_session_fn,
+    copy_module,
+    effective_session_context_fn,
+    active_chat_segment_fn,
+    active_request_for_session_fn,
+    selected_hermes_profile_name_fn,
+    chat_transport_auto: str,
+    transport_preference_label_fn,
+    chat_continuity_hermes: str,
+    latest_turn_used_sidecar_vision_fn,
+    latest_turn_sidecar_asset_names_fn,
+) -> dict:
+    normalized = normalize_chat_session_fn(copy_module.deepcopy(session))
+    context = effective_session_context_fn(normalized)
+    active_segment = active_chat_segment_fn(normalized) or {}
+    active_request = active_request_for_session_fn(normalized.get("id") or "")
+    return {
+        "profile": normalized.get("profile") or selected_hermes_profile_name_fn(),
+        "active_segment_id": active_segment.get("id") or "",
+        "active_segment_index": active_segment.get("index") or 1,
+        "segments": copy_module.deepcopy(normalized.get("segments") or []),
+        "transport_mode": normalized.get("transport_mode"),
+        "transport_preference": normalized.get("transport_preference") or chat_transport_auto,
+        "transport_preference_label": transport_preference_label_fn(normalized.get("transport_preference")),
+        "continuity_mode": normalized.get("continuity_mode"),
+        "transport_notice": normalized.get("transport_notice") or "",
+        "hermes_session_backed": normalized.get("continuity_mode") == chat_continuity_hermes,
+        "last_turn_used_sidecar_vision": latest_turn_used_sidecar_vision_fn(normalized),
+        "last_turn_sidecar_asset_names": latest_turn_sidecar_asset_names_fn(normalized),
+        "vision_asset_count": len(normalized.get("vision_assets") or []),
+        "folder_id": context.get("folder_id") or "",
+        "folder_title": context.get("folder_title") or "",
+        "workspace_roots": context.get("workspace_roots") or [],
+        "source_docs": context.get("source_docs") or [],
+        "folder_workspace_roots": context.get("folder_workspace_roots") or [],
+        "folder_source_docs": context.get("folder_source_docs") or [],
+        "active_request_id": (active_request or {}).get("request_id") or "",
+        "active_request_status": (active_request or {}).get("status") or "",
+        "active_request_cancel_supported": bool((active_request or {}).get("cancel_supported")),
+        "active_request_transport": (active_request or {}).get("transport") or "",
+    }
+
+
 def format_chat_context_block(
     session: dict,
     *,
