@@ -64,7 +64,7 @@ from webui_app.chat_dispatch import terminate_chat_process as _terminate_chat_pr
 from webui_app.chat_dispatch import update_chat_request as _update_chat_request_impl
 from webui_app.chat_transport import plan_chat_request as _plan_chat_request_impl
 from webui_app.chat_transport import validated_transport_preference as _validated_transport_preference_impl
-from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
+from webui_app.auth import build_rate_limit, build_require_token, current_webui_token as _current_webui_token_impl, load_session_tokens as _load_session_tokens_impl, register_auth_routes, register_session_token as _register_session_token_impl, remove_session_token as _remove_session_token_impl, save_session_tokens as _save_session_tokens_impl, verify_session_cookie as _verify_session_cookie_impl
 from webui_app.config_manager import ConfigManager as _BaseConfigManager
 from webui_app import provider_service as _provider_service
 from webui_app.routes.agents import register_agent_routes
@@ -2049,7 +2049,7 @@ register_request_hooks(
 # Authentication
 # ---------------------------------------------------------------------------
 def _current_webui_token() -> str:
-    return _runtime_env_value("HERMES_WEBUI_TOKEN", "")
+    return _current_webui_token_impl(runtime_env_value=lambda key, default="": _runtime_env_value(key, default))
 
 
 HERMES_WEBUI_TOKEN = _current_webui_token()
@@ -2067,49 +2067,39 @@ _SESSION_TOKEN_STORE = Path(os.environ.get(
 
 
 def _load_session_tokens() -> dict[str, float]:
-    """Load valid session tokens from disk (shared across workers)."""
-    if not _SESSION_TOKEN_STORE.exists():
-        return {}
-    try:
-        data = json.loads(_SESSION_TOKEN_STORE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    now = time.time()
-    return {str(k): float(v) for k, v in data.items()
-            if isinstance(v, (int, float)) and float(v) > now}
+    return _load_session_tokens_impl(
+        token_store_path=_SESSION_TOKEN_STORE,
+        time_fn=time.time,
+    )
 
 
 def _save_session_tokens(tokens: dict[str, float]) -> None:
-    """Persist session tokens to disk."""
-    try:
-        _SESSION_TOKEN_STORE.write_text(json.dumps(tokens), encoding="utf-8")
-    except Exception:
-        pass
+    _save_session_tokens_impl(tokens, token_store_path=_SESSION_TOKEN_STORE)
 
 
 def _register_session_token(token: str, expiry: float) -> None:
-    tokens = _load_session_tokens()
-    tokens[token] = expiry
-    _save_session_tokens(tokens)
+    _register_session_token_impl(
+        token,
+        expiry,
+        load_session_tokens_fn=lambda: _load_session_tokens(),
+        save_session_tokens_fn=lambda tokens: _save_session_tokens(tokens),
+    )
 
 
 def _remove_session_token(token: str) -> None:
-    tokens = _load_session_tokens()
-    tokens.pop(token, None)
-    _save_session_tokens(tokens)
+    _remove_session_token_impl(
+        token,
+        load_session_tokens_fn=lambda: _load_session_tokens(),
+        save_session_tokens_fn=lambda tokens: _save_session_tokens(tokens),
+    )
 
 
 def _verify_session_cookie() -> bool:
-    token = request.cookies.get("hermes_webui")
-    if not token:
-        return False
-    tokens = _load_session_tokens()
-    expiry = tokens.get(token)
-    if expiry is None or time.time() > expiry:
-        if expiry is not None:
-            _remove_session_token(token)
-        return False
-    return True
+    return _verify_session_cookie_impl(
+        load_session_tokens_fn=lambda: _load_session_tokens(),
+        remove_session_token_fn=lambda token: _remove_session_token(token),
+        time_fn=time.time,
+    )
 
 
 register_auth_routes(

@@ -1,8 +1,60 @@
 from __future__ import annotations
 
 from functools import wraps
+import json
 
 from flask import jsonify, request
+
+
+def current_webui_token(*, runtime_env_value):
+    return runtime_env_value("HERMES_WEBUI_TOKEN", "")
+
+
+def load_session_tokens(*, token_store_path, time_fn) -> dict[str, float]:
+    if not token_store_path.exists():
+        return {}
+    try:
+        data = json.loads(token_store_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    now = time_fn()
+    return {
+        str(key): float(value)
+        for key, value in data.items()
+        if isinstance(value, (int, float)) and float(value) > now
+    }
+
+
+def save_session_tokens(tokens: dict[str, float], *, token_store_path) -> None:
+    try:
+        token_store_path.write_text(json.dumps(tokens), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def register_session_token(token: str, expiry: float, *, load_session_tokens_fn, save_session_tokens_fn) -> None:
+    tokens = load_session_tokens_fn()
+    tokens[token] = expiry
+    save_session_tokens_fn(tokens)
+
+
+def remove_session_token(token: str, *, load_session_tokens_fn, save_session_tokens_fn) -> None:
+    tokens = load_session_tokens_fn()
+    tokens.pop(token, None)
+    save_session_tokens_fn(tokens)
+
+
+def verify_session_cookie(*, load_session_tokens_fn, remove_session_token_fn, time_fn) -> bool:
+    token = request.cookies.get("hermes_webui")
+    if not token:
+        return False
+    tokens = load_session_tokens_fn()
+    expiry = tokens.get(token)
+    if expiry is None or time_fn() > expiry:
+        if expiry is not None:
+            remove_session_token_fn(token)
+        return False
+    return True
 
 
 def register_auth_routes(

@@ -121,6 +121,13 @@ Manual validation routine for each test step:
 - [x] Extract linked-provider synchronization helpers.
 - [x] Validate provider and model-role smoke tests after this phase.
 
+### Phase 10: Extract Auth Session State Helpers
+
+- [x] Extract current UI token helper.
+- [x] Extract session token load and save helpers.
+- [x] Extract session cookie verification helper.
+- [x] Validate token and cookie auth flows after this phase.
+
 ### Completion Criteria
 
 - [ ] Reduce app.py to a thin bootstrap and compatibility layer.
