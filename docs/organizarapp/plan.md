@@ -8,11 +8,28 @@ Split the current Flask backend into smaller, responsibility-focused modules wit
 
 Use this checklist as the working tracker for the refactor.
 
+## Working Agreement
+
+This refactor will follow a strict step-by-step workflow:
+
+1. Complete one checklist item or one tightly related mini-step.
+2. Stop and let the user test that specific change.
+3. Only after the user confirms the test is good, create the commit.
+4. Push immediately after that commit.
+
+Rules:
+
+- Do not batch multiple untested refactor items into a single commit.
+- Do not continue to the next implementation step before user validation of the current one.
+- Keep each commit scoped to the single item that was just tested.
+- Update this checklist after the tested item is confirmed and committed.
+
 ### Setup and Tracking
 
 - [x] Create the refactor plan document.
 - [x] Create and push the split branch.
 - [x] Keep the plan written in English.
+- [x] Define the item-by-item workflow: implement, user test, commit, push.
 - [ ] Keep this checklist updated after each completed refactor step.
 
 ### Phase 1: Stabilize the Entry Point
