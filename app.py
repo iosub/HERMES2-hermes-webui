@@ -76,6 +76,7 @@ from webui_app import skill_filesystem_service as _skill_filesystem_service
 from webui_app import sidecar_payload_service as _sidecar_payload_service
 from webui_app import sidecar_runtime_service as _sidecar_runtime_service
 from webui_app import native_session_service as _native_session_service
+from webui_app import native_trace_service as _native_trace_service
 from webui_app.routes.agents import register_agent_routes
 from webui_app.routes.capabilities import register_capability_routes
 from webui_app.routes.chat import register_chat_routes
@@ -4408,174 +4409,76 @@ def _load_hermes_native_session_reply(path: Path) -> tuple[str | None, str | Non
 
 
 def _trace_summary_text(value, limit: int = 160) -> str:
-    text = str(value or "").replace("\r", " ").replace("\n", " ")
-    text = re.sub(r"\s+", " ", text).strip()
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 3)].rstrip() + "..."
+    return _native_trace_service.trace_summary_text(value, limit)
 
 
 def _trace_summary_url(value, limit: int = 140) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    parsed = urlparse(raw)
-    if parsed.scheme or parsed.netloc:
-        compact = f"{parsed.netloc}{parsed.path or ''}".strip()
-        if parsed.query:
-            compact = f"{compact}?{parsed.query}"
-        return _trace_summary_text(compact or raw, limit)
-    return _trace_summary_text(raw, limit)
+    return _native_trace_service.trace_summary_url(
+        value,
+        limit,
+        trace_summary_text_fn=lambda item, text_limit=160: _trace_summary_text(item, text_limit),
+    )
 
 
 def _parse_trace_json(value) -> dict | list | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    try:
-        parsed = json.loads(value)
-    except Exception:
-        return None
-    return parsed if isinstance(parsed, (dict, list)) else None
+    return _native_trace_service.parse_trace_json(value)
 
 
 def _summarize_native_tool_call(tool_name: str, arguments) -> str:
-    payload = arguments if isinstance(arguments, dict) else {}
-    if tool_name in {"browser_navigate", "fetch_webpage"} and payload.get("url"):
-        return _trace_summary_url(payload.get("url"), 140)
-    if tool_name == "browser_click" and payload.get("ref"):
-        return f"ref {payload.get('ref')}"
-    if tool_name == "browser_type" and payload.get("text"):
-        return _trace_summary_text(payload.get("text"), 120)
-    if tool_name == "skill_view" and payload.get("name"):
-        return _trace_summary_text(payload.get("name"), 120)
-    if tool_name == "terminal" and payload.get("command"):
-        return _trace_summary_text(payload.get("command"), 140)
-    if payload.get("query"):
-        return _trace_summary_text(payload.get("query"), 140)
-    for key in ("path", "file_path", "name", "url"):
-        if payload.get(key):
-            return _trace_summary_text(payload.get(key), 140)
-    return ""
+    return _native_trace_service.summarize_native_tool_call(
+        tool_name,
+        arguments,
+        trace_summary_url_fn=lambda value, limit=140: _trace_summary_url(value, limit),
+        trace_summary_text_fn=lambda value, limit=160: _trace_summary_text(value, limit),
+    )
 
 
 def _summarize_native_tool_result(tool_name: str, content) -> str:
-    parsed = _parse_trace_json(content)
-    if isinstance(parsed, dict):
-        if parsed.get("error"):
-            return _trace_summary_text(parsed.get("error"), 140)
-        if tool_name in {"browser_navigate", "fetch_webpage"} and parsed.get("url"):
-            return _trace_summary_url(parsed.get("url"), 140)
-        if tool_name == "skill_view" and parsed.get("name"):
-            return _trace_summary_text(parsed.get("name"), 120)
-        if tool_name == "terminal":
-            exit_code = parsed.get("exit_code")
-            if exit_code not in (None, ""):
-                return f"exit_code={exit_code}"
-        for key in ("message", "title", "path"):
-            if parsed.get(key):
-                return _trace_summary_text(parsed.get(key), 140)
-    return _trace_summary_text(content, 140) if isinstance(content, str) else ""
+    return _native_trace_service.summarize_native_tool_result(
+        tool_name,
+        content,
+        parse_trace_json_fn=lambda value: _parse_trace_json(value),
+        trace_summary_text_fn=lambda value, limit=160: _trace_summary_text(value, limit),
+        trace_summary_url_fn=lambda value, limit=140: _trace_summary_url(value, limit),
+    )
 
 
 def _native_trace_icon(tool_name: str) -> str:
-    name = str(tool_name or "").strip().lower()
-    if not name:
-        return "⚙"
-    if name.startswith("browser_"):
-        return "🌐"
-    if name.startswith("skill_"):
-        return "📚"
-    if name in {"terminal", "process"}:
-        return "💻"
-    if name.startswith("web_") or name in {"fetch_webpage", "search_files"}:
-        return "🔍"
-    if name.startswith("memory"):
-        return "🧠"
-    return "⚙"
+    return _native_trace_service.native_trace_icon(tool_name)
 
 
 def _format_native_trace_line(tool_name: str, summary: str = "") -> str:
-    name = str(tool_name or "").strip()
-    if not name:
-        return ""
-    icon = _native_trace_icon(name)
-    if summary:
-        return f"  ┊ {icon} {name} {summary}".rstrip()
-    return f"  ┊ {icon} {name}"
+    return _native_trace_service.format_native_trace_line(
+        tool_name,
+        summary,
+        native_trace_icon_fn=lambda value: _native_trace_icon(value),
+    )
 
 
 def _load_hermes_native_session_trace_lines(path: Path) -> list[str]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    messages = data.get("messages")
-    if not isinstance(messages, list):
-        return []
-
-    lines = []
-    tool_names_by_call_id = {}
-    for item in messages:
-        if not isinstance(item, dict):
-            continue
-        role = str(item.get("role") or "").strip().lower()
-        if role == "assistant":
-            tool_calls = item.get("tool_calls")
-            if not isinstance(tool_calls, list):
-                continue
-            for call in tool_calls:
-                if not isinstance(call, dict):
-                    continue
-                function = call.get("function") or {}
-                tool_name = str(function.get("name") or "").strip()
-                if not tool_name:
-                    continue
-                arguments = _parse_trace_json(function.get("arguments"))
-                summary = _summarize_native_tool_call(tool_name, arguments)
-                formatted = _format_native_trace_line(tool_name, summary)
-                if formatted:
-                    lines.append(formatted)
-                tool_call_id = str(call.get("tool_call_id") or call.get("call_id") or call.get("id") or "").strip()
-                if tool_call_id:
-                    tool_names_by_call_id[tool_call_id] = tool_name
-        elif role == "tool":
-            tool_name = str(item.get("name") or "").strip()
-            tool_call_id = str(item.get("tool_call_id") or "").strip()
-            if not tool_name and tool_call_id:
-                tool_name = tool_names_by_call_id.get(tool_call_id, "")
-            if not tool_name:
-                continue
-            summary = _summarize_native_tool_result(tool_name, item.get("content"))
-            if summary:
-                formatted = _format_native_trace_line(tool_name, summary)
-                if formatted:
-                    lines.append(formatted)
-
-    return _truncate_recent_lines(lines, limit=120)
+    return _native_trace_service.load_hermes_native_session_trace_lines(
+        path,
+        parse_trace_json_fn=lambda value: _parse_trace_json(value),
+        summarize_native_tool_call_fn=lambda tool_name, arguments: _summarize_native_tool_call(tool_name, arguments),
+        format_native_trace_line_fn=lambda tool_name, summary="": _format_native_trace_line(tool_name, summary),
+        summarize_native_tool_result_fn=lambda tool_name, content: _summarize_native_tool_result(tool_name, content),
+        truncate_recent_lines_fn=lambda lines, limit=120: _truncate_recent_lines(lines, limit=limit),
+    )
 
 
 def _looks_like_rich_cli_trace(lines: list[str]) -> bool:
-    rows = [str(line or "") for line in (lines or []) if str(line or "").strip()]
-    if not rows:
-        return False
-    tool_progress = sum(1 for line in rows if re.search(r"^\s*┊\s+[📚🌐💻🔍🧠⚙]", line))
-    if tool_progress >= 2:
-        return True
-    tool_progress = sum(1 for line in rows if re.search(r"^\s*┊\s+", line))
-    return tool_progress >= 3
+    return _native_trace_service.looks_like_rich_cli_trace(lines)
 
 
 def _debug_trace_lines_for_chat(request_id: str, hermes_session_id: str | None) -> list[str]:
-    raw_lines = _request_progress_lines(request_id)
-    if _looks_like_rich_cli_trace(raw_lines):
-        return raw_lines
-
-    native_path = _find_updated_hermes_native_session(None, hermes_session_id)
-    if native_path:
-        native_lines = _load_hermes_native_session_trace_lines(native_path)
-        if native_lines:
-            return native_lines
-    return raw_lines
+    return _native_trace_service.debug_trace_lines_for_chat(
+        request_id,
+        hermes_session_id,
+        request_progress_lines_fn=lambda value: _request_progress_lines(value),
+        looks_like_rich_cli_trace_fn=lambda lines: _looks_like_rich_cli_trace(lines),
+        find_updated_hermes_native_session_fn=lambda before, session_id=None: _find_updated_hermes_native_session(before, session_id),
+        load_hermes_native_session_trace_lines_fn=lambda path: _load_hermes_native_session_trace_lines(path),
+    )
 
 
 def _extract_cli_reply_after_session_marker(output: str) -> str:
