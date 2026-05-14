@@ -24,27 +24,35 @@ Rules:
 - Keep each commit scoped to the single item that was just tested.
 - Update this checklist after the tested item is confirmed and committed.
 
+Manual validation routine for each test step:
+
+1. Refresh the integrated browser before starting the check.
+2. Log in through the UI with the admin account before validating the current item.
+3. Use the integrated browser as the default manual validation surface unless the step clearly requires a different tool.
+4. After the browser-based check is ready, stop and wait for the user to confirm the result.
+
 ### Setup and Tracking
 
 - [x] Create the refactor plan document.
 - [x] Create and push the split branch.
 - [x] Keep the plan written in English.
 - [x] Define the item-by-item workflow: implement, user test, commit, push.
+- [x] Define the browser-first validation routine: refresh, login, user validation, commit, push.
 - [ ] Keep this checklist updated after each completed refactor step.
 
 ### Phase 1: Stabilize the Entry Point
 
-- [ ] Keep app.py as the main compatibility entry point.
+- [x] Keep app.py as the main compatibility entry point.
 - [ ] Identify the minimum globals that must remain re-exported for tests.
-- [ ] Confirm imports from app.py still succeed after the first extraction.
+- [x] Confirm imports from app.py still succeed after the first extraction.
 
 ### Phase 2: Extract Low-Risk Infrastructure
 
-- [ ] Extract authentication helpers.
-- [ ] Extract login, logout, and auth-check routes.
-- [ ] Extract request lifecycle hooks.
-- [ ] Extract shared request error handlers.
-- [ ] Extract rate limiting helpers.
+- [x] Extract authentication helpers.
+- [x] Extract login, logout, and auth-check routes.
+- [x] Extract request lifecycle hooks.
+- [x] Extract shared request error handlers.
+- [x] Extract rate limiting helpers.
 - [ ] Extract health and system routes.
 - [ ] Validate smoke tests after this phase.
 

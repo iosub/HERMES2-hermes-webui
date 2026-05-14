@@ -23,7 +23,6 @@ import threading
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from functools import wraps
 from contextlib import contextmanager
 from urllib.parse import urlparse
 
@@ -34,6 +33,8 @@ from flask_cors import CORS
 import uuid
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 from werkzeug.utils import secure_filename
+from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
+from webui_app.request_hooks import register_request_hooks
 
 # ---------------------------------------------------------------------------
 # Logging Setup
@@ -2102,76 +2103,14 @@ def _should_log_request_summary(path: str, status_code: int, duration_ms: int) -
     return path.startswith("/api/chat") or path.startswith("/api/upload")
 
 
-@app.before_request
-def _start_request_tracking():
-    raw_request_id = (request.headers.get("X-Request-ID") or "").strip()
-    if raw_request_id:
-        sanitized = re.sub(r"[^A-Za-z0-9._:-]", "", raw_request_id)[:64]
-        g.request_id = sanitized or uuid.uuid4().hex[:12]
-    else:
-        g.request_id = uuid.uuid4().hex[:12]
-    g.request_started_at = time.monotonic()
-
-
-@app.after_request
-def _finish_request_tracking(response):
-    request_id = _request_id_or_dash()
-    response.headers.setdefault("X-Request-ID", request_id)
-    started_at = getattr(g, "request_started_at", None)
-    if started_at is None:
-        return response
-    duration_ms = int((time.monotonic() - started_at) * 1000)
-    if _should_log_request_summary(request.path, response.status_code, duration_ms):
-        logger.info(
-            "HTTP %s %s status=%s duration_ms=%s request_id=%s content_length=%s remote=%s",
-            request.method,
-            request.path,
-            response.status_code,
-            duration_ms,
-            request_id,
-            request.content_length,
-            request.remote_addr,
-        )
-    return response
-
-
-@app.errorhandler(RequestEntityTooLarge)
-def _handle_request_too_large(exc):
-    logger.warning(
-        "Rejected oversized request path=%s request_id=%s content_length=%s remote=%s limit=%s",
-        request.path,
-        _request_id_or_dash(),
-        request.content_length,
-        request.remote_addr,
-        MAX_REQUEST_BODY_SIZE,
-    )
-    if request.path.startswith("/api/"):
-        return jsonify({
-            "ok": False,
-            "error": f"Request too large (max upload {MAX_UPLOAD_SIZE // (1024 * 1024)}MB)",
-            "request_id": _request_id_or_dash(),
-            "max_upload_mb": MAX_UPLOAD_SIZE // (1024 * 1024),
-        }), 413
-    return "Request too large", 413
-
-
-@app.errorhandler(BadRequest)
-def _handle_bad_request(exc):
-    if not request.path.startswith("/api/"):
-        return exc
-    logger.warning(
-        "Rejected bad request path=%s request_id=%s remote=%s detail=%s",
-        request.path,
-        _request_id_or_dash(),
-        request.remote_addr,
-        exc.description,
-    )
-    return jsonify({
-        "ok": False,
-        "error": "Invalid request body",
-        "detail": exc.description,
-        "request_id": _request_id_or_dash(),
-    }), 400
+register_request_hooks(
+    app,
+    logger=logger,
+    max_request_body_size=MAX_REQUEST_BODY_SIZE,
+    max_upload_size=MAX_UPLOAD_SIZE,
+    request_id_or_dash=_request_id_or_dash,
+    should_log_request_summary=_should_log_request_summary,
+)
 
 # ---------------------------------------------------------------------------
 # Authentication
@@ -2240,67 +2179,24 @@ def _verify_session_cookie() -> bool:
     return True
 
 
-@app.route("/api/login", methods=["POST"])
-def webui_login():
-    data = request.get_json(silent=True) or {}
-    username = data.get("username", "")
-    password = data.get("password", "")
-    if username == _DASHBOARD_USER and password == _DASHBOARD_PASS:
-        token = _secrets.token_urlsafe(32)
-        _register_session_token(token, time.time() + _SESSION_TOKEN_TTL)
-        resp = jsonify({"ok": True})
-        resp.set_cookie(
-            "hermes_webui", token,
-            httponly=True, samesite="Lax", secure=True, max_age=_SESSION_TOKEN_TTL,
-        )
-        return resp
-    return jsonify({"ok": False, "error": "Invalid credentials"}), 401
+register_auth_routes(
+    app,
+    verify_session_cookie=_verify_session_cookie,
+    register_session_token=_register_session_token,
+    remove_session_token=_remove_session_token,
+    dashboard_user=lambda: _DASHBOARD_USER,
+    dashboard_pass=lambda: _DASHBOARD_PASS,
+    session_token_ttl=_SESSION_TOKEN_TTL,
+    token_generator=_secrets.token_urlsafe,
+    time_fn=time.time,
+)
 
 
-@app.route("/api/auth/check", methods=["GET"])
-def webui_auth_check():
-    if _verify_session_cookie():
-        return jsonify({"authenticated": True})
-    return jsonify({"authenticated": False}), 401
-
-
-@app.route("/api/logout", methods=["POST"])
-def webui_logout():
-    token = request.cookies.get("hermes_webui")
-    if token:
-        _remove_session_token(token)
-    resp = jsonify({"ok": True})
-    resp.delete_cookie("hermes_webui")
-    return resp
-
-
-def require_token(f):
-    """Decorator to require authentication for API endpoints.
-    Accepts either a session cookie (login screen) or Bearer token (legacy)."""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        # 1. Check session cookie first (login screen flow)
-        if _verify_session_cookie():
-            return f(*args, **kwargs)
-
-        # 2. Fall back to Bearer token (legacy/API flow)
-        expected_token = _current_webui_token()
-        if not expected_token:
-            logger.warning("Authentication not configured - rejecting API request")
-            return jsonify({"ok": False, "error": "API authentication not configured"}), 401
-        
-        auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
-            logger.warning("API request missing Authorization header from %s", request.remote_addr)
-            return jsonify({"ok": False, "error": "Missing or invalid Authorization header"}), 401
-        
-        provided_token = auth_header[7:]
-        if provided_token != expected_token:
-            logger.warning("API authentication failed - invalid token from %s", request.remote_addr)
-            return jsonify({"ok": False, "error": "Invalid token"}), 401
-        
-        return f(*args, **kwargs)
-    return decorated_function
+require_token = build_require_token(
+    logger=logger,
+    verify_session_cookie=_verify_session_cookie,
+    current_webui_token=lambda: _current_webui_token(),
+)
 
 # ---------------------------------------------------------------------------
 # Rate Limiting
@@ -2310,40 +2206,13 @@ _rate_limit_store = {}
 _RATE_LIMIT_WINDOW = 60  # seconds
 _RATE_LIMIT_MAX_REQUESTS = 60  # requests per window per IP
 
-def rate_limit(f):
-    """Decorator to rate limit requests per IP address."""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        client_ip = request.remote_addr
-        now = time.time()
-        endpoint = request.endpoint
-        
-        # Clean old entries for this IP
-        if client_ip in _rate_limit_store:
-            _rate_limit_store[client_ip] = [
-                (ts, ep) for ts, ep in _rate_limit_store[client_ip]
-                if now - ts < _RATE_LIMIT_WINDOW
-            ]
-        else:
-            _rate_limit_store[client_ip] = []
-        
-        # Check rate limit
-        request_count = len(_rate_limit_store[client_ip])
-        if request_count >= _RATE_LIMIT_MAX_REQUESTS:
-            logger.warning(
-                "Rate limit exceeded for %s on %s (%d requests in %ds)",
-                client_ip, endpoint, request_count, _RATE_LIMIT_WINDOW
-            )
-            return jsonify({
-                "ok": False,
-                "error": "Rate limit exceeded. Please try again later."
-            }), 429
-        
-        # Record this request
-        _rate_limit_store[client_ip].append((now, endpoint))
-        
-        return f(*args, **kwargs)
-    return decorated_function
+rate_limit = build_rate_limit(
+    logger=logger,
+    rate_limit_store=_rate_limit_store,
+    window_seconds=_RATE_LIMIT_WINDOW,
+    max_requests=_RATE_LIMIT_MAX_REQUESTS,
+    time_fn=time.time,
+)
 
 # ---------------------------------------------------------------------------
 # Secret-key patterns
