@@ -178,3 +178,35 @@ def delete_folder(folder_id, *, load_all_folders_fn, write_all_folders_fn):
     if normalized_folder_id in folders:
         folders.pop(normalized_folder_id, None)
         write_all_folders_fn(folders)
+
+
+def request_control_path(request_id: str, *, chat_request_dir):
+    return chat_request_dir() / f"{secure_filename(request_id)}.json"
+
+
+def read_request_control(request_id: str, *, request_control_path_fn, logger):
+    path = request_control_path_fn(request_id)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Failed to read chat request control file %s: %s", path.name, exc)
+        return None
+
+
+def write_request_control(request_id: str, payload: dict, *, request_control_path_fn):
+    path = request_control_path_fn(request_id)
+    tmp_path = path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
+def request_output_path(request_id: str, *, chat_request_dir):
+    return chat_request_dir() / f"{secure_filename(request_id)}.log"
+
+
+def remove_chat_request(request_id: str, *, request_control_path_fn):
+    path = request_control_path_fn(request_id)
+    if path.exists():
+        path.unlink()

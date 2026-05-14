@@ -41,8 +41,13 @@ from webui_app.chat_persistence import folders_from_file as _folders_from_file_i
 from webui_app.chat_persistence import load_all_folders as _load_all_folders_impl_folders
 from webui_app.chat_persistence import load_all_sessions as _load_all_sessions_impl
 from webui_app.chat_persistence import load_folder as _load_folder_impl
+from webui_app.chat_persistence import read_request_control as _read_request_control_impl
+from webui_app.chat_persistence import remove_chat_request as _remove_chat_request_impl
+from webui_app.chat_persistence import request_control_path as _request_control_path_impl
+from webui_app.chat_persistence import request_output_path as _request_output_path_impl
 from webui_app.chat_persistence import load_session as _load_session_impl
 from webui_app.chat_persistence import session_from_file as _session_from_file_impl
+from webui_app.chat_persistence import write_request_control as _write_request_control_impl
 from webui_app.chat_persistence import write_all_folders as _write_all_folders_impl
 from webui_app.chat_persistence import write_folder as _write_folder_impl
 from webui_app.chat_persistence import write_session as _write_session_impl
@@ -1845,29 +1850,19 @@ class ChatRequestTimeout(ChatBackendError):
 
 
 def _request_control_path(request_id: str) -> Path:
-    return CHAT_REQUEST_DIR / f"{secure_filename(request_id)}.json"
+    return _request_control_path_impl(request_id, chat_request_dir=lambda: CHAT_REQUEST_DIR)
 
 
 def _read_request_control(request_id: str) -> dict | None:
-    path = _request_control_path(request_id)
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        logger.warning("Failed to read chat request control file %s: %s", path.name, exc)
-        return None
+    return _read_request_control_impl(request_id, request_control_path_fn=_request_control_path, logger=logger)
 
 
 def _write_request_control(request_id: str, payload: dict) -> None:
-    path = _request_control_path(request_id)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    _write_request_control_impl(request_id, payload, request_control_path_fn=_request_control_path)
 
 
 def _request_output_path(request_id: str) -> Path:
-    return CHAT_REQUEST_DIR / f"{secure_filename(request_id)}.log"
+    return _request_output_path_impl(request_id, chat_request_dir=lambda: CHAT_REQUEST_DIR)
 
 
 def _truncate_recent_lines(lines: list[str], limit: int = 24) -> list[str]:
@@ -1966,9 +1961,7 @@ def _update_chat_request(request_id: str, **fields) -> dict | None:
 
 
 def _remove_chat_request(request_id: str) -> None:
-    path = _request_control_path(request_id)
-    if path.exists():
-        path.unlink()
+    _remove_chat_request_impl(request_id, request_control_path_fn=_request_control_path)
 
 
 def _is_process_alive(pid: int | None) -> bool:
