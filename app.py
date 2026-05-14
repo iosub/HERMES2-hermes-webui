@@ -35,6 +35,7 @@ from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 from webui_app.auth import build_rate_limit, build_require_token, register_auth_routes
 from webui_app.routes.agents import register_agent_routes
+from webui_app.routes.capabilities import register_capability_routes
 from webui_app.routes.config import register_config_routes
 from webui_app.routes.env import register_env_routes
 from webui_app.routes.model_roles import register_model_role_routes
@@ -5463,47 +5464,17 @@ def api_capabilities_get():
         return _http_error(str(exc))
 
 
-@app.route("/api/capabilities/preview", methods=["POST"])
-@require_token
-def api_capabilities_preview():
-    try:
-        data = request.get_json(force=True) or {}
-        capability_type = str(data.get("type") or "").strip().lower()
-        draft = data.get("draft") if isinstance(data.get("draft"), dict) else {}
-        if capability_type == "skill":
-            payload, status = _preview_skill_capability(draft)
-            return jsonify(payload), status
-        if capability_type == "integration":
-            payload, status = _preview_integration_capability(draft)
-            return jsonify(payload), status
-        if capability_type == "agent_preset":
-            payload, status = _preview_agent_preset_capability(draft)
-            return jsonify(payload), status
-        return jsonify({"ok": False, "error": "Capability type is required"}), 400
-    except Exception as exc:
-        return _http_error(str(exc))
-
-
-@app.route("/api/capabilities/apply", methods=["POST"])
-@require_token
-def api_capabilities_apply():
-    try:
-        data = request.get_json(force=True) or {}
-        capability_type = str(data.get("type") or "").strip().lower()
-        draft = data.get("draft") if isinstance(data.get("draft"), dict) else {}
-        preview_token = str(data.get("preview_token") or "").strip()
-        if capability_type == "skill":
-            payload, status = _apply_skill_capability(draft, preview_token)
-            return jsonify(payload), status
-        if capability_type == "integration":
-            payload, status = _apply_integration_capability(draft, preview_token)
-            return jsonify(payload), status
-        if capability_type == "agent_preset":
-            payload, status = _apply_agent_preset_capability(draft, preview_token)
-            return jsonify(payload), status
-        return jsonify({"ok": False, "error": "Capability type is required"}), 400
-    except Exception as exc:
-        return _http_error(str(exc))
+register_capability_routes(
+    app,
+    require_token=require_token,
+    http_error=_http_error,
+    preview_skill_capability=lambda draft: _preview_skill_capability(draft),
+    apply_skill_capability=lambda draft, preview_token: _apply_skill_capability(draft, preview_token),
+    preview_integration_capability=lambda draft: _preview_integration_capability(draft),
+    apply_integration_capability=lambda draft, preview_token: _apply_integration_capability(draft, preview_token),
+    preview_agent_preset_capability=lambda draft: _preview_agent_preset_capability(draft),
+    apply_agent_preset_capability=lambda draft, preview_token: _apply_agent_preset_capability(draft, preview_token),
+)
 
 
 # ===================================================================

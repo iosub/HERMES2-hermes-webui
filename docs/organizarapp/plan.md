@@ -72,7 +72,7 @@ Manual validation routine for each test step:
 - [x] Extract provider profile helpers and routes.
 - [x] Extract model role routes.
 - [x] Extract agent and personality routes.
-- [ ] Extract capability preview and apply routes.
+- [x] Extract capability preview and apply routes.
 - [ ] Extract skills and starter-pack endpoints.
 - [ ] Validate smoke tests after this phase.
 
