@@ -4713,6 +4713,12 @@ const chatState = {
     activeProfile: '',
     currentSessionProfile: '',
     draftProfile: '',
+    compareMode: false,
+    compareSecondaryProfile: '',
+    compareSessionIds: {},
+    compareRequestIds: {},
+    compareRequestProgressPolls: {},
+    compareRequestProgressErrorCounts: {},
     availableProfiles: [],
     currentSegments: [],
     currentActiveSegmentId: '',
@@ -4879,11 +4885,28 @@ function chatReplacePendingFiles(files) {
     chatSyncSendButton();
 }
 
+function chatStopCompareRequestProgress(profile) {
+    const key = String(profile || '').trim();
+    if (!key) return;
+    const pollId = chatState.compareRequestProgressPolls[key];
+    if (pollId) {
+        clearInterval(pollId);
+        delete chatState.compareRequestProgressPolls[key];
+    }
+}
+
+function chatClearCompareRequestProgressState() {
+    Object.keys(chatState.compareRequestProgressPolls || {}).forEach(chatStopCompareRequestProgress);
+    chatState.compareRequestIds = {};
+    chatState.compareRequestProgressErrorCounts = {};
+}
+
 function chatResetComposerAfterRequest() {
     if (chatState.requestProgressPoll) {
         clearInterval(chatState.requestProgressPoll);
         chatState.requestProgressPoll = null;
     }
+    chatClearCompareRequestProgressState();
     chatState.isThinking = false;
     chatState.currentRequestId = null;
     chatState.chatAbortController = null;
@@ -5191,6 +5214,82 @@ function chatMessageTraceMarkup(message) {
     );
 }
 
+function chatRenderCompareProgressLines(profile, lines = [], transport = '') {
+    const filteredLines = Array.isArray(lines) ? lines.filter(Boolean) : [];
+    const entry = chatCompareResponseEntry(chatGetPendingAssistantMessage(), profile);
+    if (entry) {
+        entry.debug_trace_lines = [...filteredLines];
+        entry.debug_trace_transport = transport || entry.debug_trace_transport || '';
+        entry.debug_trace_status = 'Running';
+        entry.show_debug_trace = true;
+    }
+    chatRenderLogPanel(document.getElementById(chatCompareProgressLogId(profile)), filteredLines, transport || '');
+}
+
+function chatRenderCompareProgressError(profile, message) {
+    const entry = chatCompareResponseEntry(chatGetPendingAssistantMessage(), profile);
+    const errorMessage = message || 'Live CLI activity could not be loaded.';
+    const panel = document.getElementById(chatCompareProgressLogId(profile));
+    if (panel) {
+        chatBindProgressLog(panel);
+        panel.innerHTML = '<div class="chat-progress-error">' + escH(errorMessage) + '</div>';
+    }
+    if (entry) {
+        entry.debug_trace_lines = [errorMessage];
+        entry.debug_trace_transport = entry.debug_trace_transport || entry.transport || 'cli';
+        entry.debug_trace_status = 'Error';
+        entry.show_debug_trace = true;
+    }
+}
+
+async function chatFetchCompareRequestProgress(profile, requestId) {
+    if (!requestId || chatState.compareRequestIds[profile] !== requestId) return;
+    try {
+        const resp = await authFetch('/api/chat/status?request_id=' + encodeURIComponent(requestId) + '&_ts=' + Date.now(), {
+            method: 'GET',
+            cache: 'no-store',
+            headers: {
+                'Cache-Control': 'no-store, no-cache, max-age=0',
+                'Pragma': 'no-cache',
+            },
+        });
+        if (!resp.ok) {
+            // Compare-mode requests can briefly return 404 here before the backend
+            // registers the request. Keep waiting and let the main request result
+            // decide success/failure instead of surfacing a false trace error.
+            chatState.compareRequestProgressErrorCounts[profile] = (chatState.compareRequestProgressErrorCounts[profile] || 0) + 1;
+            return;
+        }
+        chatState.compareRequestProgressErrorCounts[profile] = 0;
+        const progress = await resp.json();
+        if (chatState.compareRequestIds[profile] !== requestId) return;
+        chatRenderCompareProgressLines(profile, progress.progress_lines || [], progress.transport || '');
+        if (progress.status && progress.status !== 'running' && progress.status !== 'cancel_requested') {
+            chatStopCompareRequestProgress(profile);
+        }
+    } catch (e) {
+        chatState.compareRequestProgressErrorCounts[profile] = (chatState.compareRequestProgressErrorCounts[profile] || 0) + 1;
+    }
+}
+
+function chatStartCompareRequestProgress(profile, requestId, expectedTransport) {
+    chatStopCompareRequestProgress(profile);
+    chatState.compareRequestIds[profile] = requestId;
+    chatState.compareRequestProgressErrorCounts[profile] = 0;
+    chatUpdateComparePendingResponse(profile, {
+        request_id: requestId,
+        debug_trace_lines: [],
+        debug_trace_transport: expectedTransport || '',
+        debug_trace_status: 'Running',
+        show_debug_trace: true,
+    });
+    chatRenderCompareProgressLines(profile, [], expectedTransport || '');
+    chatFetchCompareRequestProgress(profile, requestId);
+    chatState.compareRequestProgressPolls[profile] = window.setInterval(() => {
+        chatFetchCompareRequestProgress(profile, requestId);
+    }, 900);
+}
+
 function chatToggleProgressLog(trigger) {
     const bubble = trigger?.closest('.chat-thinking-bubble');
     if (!bubble) return;
@@ -5405,6 +5504,141 @@ function chatVisibleProfile() {
     return chatState.currentSessionProfile || chatState.draftProfile || chatState.activeProfile || 'default';
 }
 
+function chatCanCompareProfiles() {
+    return (chatState.availableProfiles || []).length > 1;
+}
+
+function chatResetCompareSessions() {
+    chatClearCompareRequestProgressState();
+    chatState.compareSessionIds = {};
+}
+
+function chatDefaultCompareSecondaryProfile(primaryProfile = chatVisibleProfile()) {
+    const normalizedPrimary = String(primaryProfile || '').trim();
+    const profiles = Array.isArray(chatState.availableProfiles) ? chatState.availableProfiles : [];
+    const match = profiles.find(profile => {
+        const name = String(profile?.name || '').trim();
+        return name && name !== normalizedPrimary;
+    });
+    return match?.name || '';
+}
+
+function chatEnsureCompareSecondaryProfile(primaryProfile = chatVisibleProfile()) {
+    const current = String(chatState.compareSecondaryProfile || '').trim();
+    if (current && current !== String(primaryProfile || '').trim()) {
+        return current;
+    }
+    chatState.compareSecondaryProfile = chatDefaultCompareSecondaryProfile(primaryProfile);
+    return chatState.compareSecondaryProfile;
+}
+
+function chatCompareProfiles() {
+    const primary = chatVisibleProfile();
+    const secondary = chatEnsureCompareSecondaryProfile(primary);
+    if (!primary || !secondary || primary === secondary) return [];
+    return [primary, secondary];
+}
+
+function chatBuildComparePendingAssistantMessage(profiles) {
+    return {
+        role: 'assistant',
+        content: '',
+        timestamp: new Date().toISOString(),
+        compare_mode: true,
+        compare_responses: (profiles || []).map(profile => ({
+            profile,
+            status: 'running',
+            content: '',
+            transport: '',
+            debug_trace_lines: [],
+            debug_trace_transport: '',
+            debug_trace_status: 'Running',
+            show_debug_trace: true,
+        })),
+        _pendingAssistant: true,
+    };
+}
+
+function chatCompareProgressKey(profile) {
+    const normalized = String(profile || 'default').trim().toLowerCase() || 'default';
+    return normalized.replace(/[^a-z0-9_-]+/g, '-');
+}
+
+function chatCompareProgressLogId(profile) {
+    return 'chat-compare-progress-log-' + chatCompareProgressKey(profile);
+}
+
+function chatCompareTraceMarkup(entry) {
+    const status = String(entry?.status || 'running').trim().toLowerCase();
+    const traceLines = Array.isArray(entry?.debug_trace_lines) ? entry.debug_trace_lines : [];
+    const transport = String(entry?.debug_trace_transport || entry?.transport || '').trim();
+    const shouldShowTrace = status === 'running' || !!entry?.show_debug_trace || traceLines.length > 0;
+    if (!shouldShowTrace) return '';
+    const title = status === 'running'
+        ? 'Hermes (' + escH(entry?.profile || 'default') + ') is thinking<span class="chat-thinking-ellipsis"></span>'
+        : 'Debug trace (' + escH(entry?.debug_trace_status || (status === 'failed' ? 'Error' : 'Completed')) + ')';
+    return chatProgressBubbleMarkup(
+        title,
+        chatCompareProgressLogId(entry?.profile || 'default'),
+        false,
+        traceLines,
+        transport,
+    );
+}
+
+function chatCompareResponseEntry(message, profile) {
+    if (!message || !Array.isArray(message.compare_responses)) return null;
+    return message.compare_responses.find(entry => entry.profile === profile) || null;
+}
+
+function chatUpdateComparePendingResponse(profile, patch = {}) {
+    const pendingAssistant = chatGetPendingAssistantMessage();
+    const entry = chatCompareResponseEntry(pendingAssistant, profile);
+    if (!entry) return;
+    Object.assign(entry, patch);
+}
+
+function chatCompareStatusBadge(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'completed') return '<span class="badge badge-success">Ready</span>';
+    if (normalized === 'failed') return '<span class="badge badge-danger">Failed</span>';
+    return '<span class="badge badge-warning">Running</span>';
+}
+
+function chatBuildCompareResponseMarkup(entry) {
+    const profile = String(entry?.profile || 'default').trim() || 'default';
+    const transport = String(entry?.transport || '').trim();
+    const status = String(entry?.status || 'running').trim().toLowerCase();
+    const content = String(entry?.content || '');
+    const error = String(entry?.error || '').trim();
+    const traceHtml = chatCompareTraceMarkup(entry);
+    let bodyHtml = '';
+    if (status === 'completed' && content) {
+        bodyHtml = traceHtml + chatBuildResponseMarkup(content);
+    } else if (status === 'failed') {
+        bodyHtml = traceHtml + '<div class="chat-compare-state chat-compare-state-error">' + escH(error || 'This profile could not answer the request.') + '</div>';
+    } else {
+        bodyHtml = traceHtml + '<div class="chat-compare-state">Waiting for ' + escH(profile) + '...</div>';
+    }
+    return '<div class="chat-compare-card ' + chatMessageToneClass(profile) + '" data-compare-profile="' + escA(profile) + '">'
+        + '<div class="chat-compare-card-header">'
+        + '<div class="chat-compare-card-title">'
+        + '<span class="badge badge-accent">' + escH(profile) + '</span>'
+        + (transport ? '<span class="badge badge-info">' + escH(chatTransportPreferenceLabel(transport)) + '</span>' : '')
+        + '</div>'
+        + chatCompareStatusBadge(status)
+        + '</div>'
+        + '<div class="chat-compare-card-body">' + bodyHtml + '</div>'
+        + '</div>';
+}
+
+function chatBuildCompareBubbleMarkup(message) {
+    const entries = Array.isArray(message?.compare_responses) ? message.compare_responses : [];
+    return '<div class="chat-bubble chat-compare-bubble"><div class="chat-compare-grid">'
+        + entries.map(chatBuildCompareResponseMarkup).join('')
+        + '</div></div>';
+}
+
 function chatCurrentSegment() {
     return (chatState.currentSegments || []).find(segment => segment.id === chatState.currentActiveSegmentId)
         || chatState.currentSegments[chatState.currentSegments.length - 1]
@@ -5418,6 +5652,7 @@ async function chatLoadAvailableProfiles() {
     } catch (e) {
         chatState.availableProfiles = [];
     }
+    chatEnsureCompareSecondaryProfile();
     chatRenderTransportControls();
 }
 
@@ -5575,6 +5810,7 @@ function chatGoHome() {
     chatState.currentSessionId = null;
     chatState.localMessages = [];
     chatState.lastSubmission = null;
+    chatResetCompareSessions();
     chatState.selectedFolderId = '';
     chatState.draftFolderId = '';
     chatReplacePendingFiles([]);
@@ -5774,10 +6010,18 @@ function chatRenderTransportControls() {
     }
     const availableProfiles = Array.isArray(chatState.availableProfiles) ? chatState.availableProfiles : [];
     const activeSegment = chatCurrentSegment();
+    const primaryProfile = chatVisibleProfile();
+    const secondaryProfile = chatEnsureCompareSecondaryProfile(primaryProfile);
     const profileOptions = availableProfiles.map(profile => {
         const name = profile?.name || 'default';
-        return '<option value="' + escA(name) + '"' + (name === chatVisibleProfile() ? ' selected' : '') + '>' + escH(name) + '</option>';
+        return '<option value="' + escA(name) + '"' + (name === primaryProfile ? ' selected' : '') + '>' + escH(name) + '</option>';
     }).join('');
+    const secondaryProfileOptions = availableProfiles
+        .filter(profile => String(profile?.name || '').trim() !== primaryProfile)
+        .map(profile => {
+            const name = profile?.name || 'default';
+            return '<option value="' + escA(name) + '"' + (name === secondaryProfile ? ' selected' : '') + '>' + escH(name) + '</option>';
+        }).join('');
     const switchSummary = chatState.currentSessionId
         ? 'Changing the profile applies immediately to the next messages in this chat.'
         : 'Choose the profile you want to use before the next new chat turn.';
@@ -5791,6 +6035,10 @@ function chatRenderTransportControls() {
                 '<div class="chat-transport-label">Profile</div>' +
                 '<div class="chat-profile-controls">' +
                     '<select id="chat-profile-select" class="chat-profile-select" onchange="chatHandleProfileDraftChange()">' + profileOptions + '</select>' +
+                    '<button type="button" class="chat-compare-toggle' + (chatState.compareMode ? ' active' : '') + '" onclick="chatToggleCompareMode()"' + (chatCanCompareProfiles() ? '' : ' disabled') + '>' + escH(chatState.compareMode ? 'Compare On' : 'Compare') + '</button>' +
+                    (chatState.compareMode
+                        ? '<span class="chat-compare-vs">vs</span><select id="chat-compare-profile-select" class="chat-profile-select chat-profile-select-secondary" onchange="chatHandleCompareProfileDraftChange()">' + secondaryProfileOptions + '</select>'
+                        : '') +
                 '</div>' +
             '</div>' +
         '</div>';
@@ -5802,6 +6050,42 @@ window.chatHandleProfileDraftChange = async function () {
     if (!select || !select.value) return;
     if (select.value === chatVisibleProfile()) return;
     await chatApplyRuntimeProfile(select.value);
+};
+
+window.chatToggleCompareMode = function () {
+    if (!chatCanCompareProfiles()) {
+        toast('At least two profiles are required for compare mode', 'warning');
+        return;
+    }
+    if (!chatState.compareMode && chatState.currentSessionId) {
+        toast('Compare mode starts from a new chat. Click New Chat first.', 'warning', 3000);
+        return;
+    }
+    chatState.compareMode = !chatState.compareMode;
+    chatResetCompareSessions();
+    if (chatState.compareMode) {
+        chatEnsureCompareSecondaryProfile(chatVisibleProfile());
+    }
+    chatRenderTransportControls();
+    chatRenderSessionBanner();
+};
+
+window.chatHandleCompareProfileDraftChange = function () {
+    const select = document.getElementById('chat-compare-profile-select');
+    if (!select) return;
+    const next = String(select.value || '').trim();
+    if (!next) return;
+    if (next === chatVisibleProfile()) {
+        chatState.compareSecondaryProfile = chatDefaultCompareSecondaryProfile(chatVisibleProfile());
+        chatRenderTransportControls();
+        toast('Choose a different secondary profile for compare mode', 'warning');
+        return;
+    }
+    if (chatState.compareSecondaryProfile !== next) {
+        chatState.compareSecondaryProfile = next;
+        chatResetCompareSessions();
+    }
+    chatRenderSessionBanner();
 };
 
 window.chatApplyRuntimeProfile = async function (nextProfileFromSelect) {
@@ -5820,6 +6104,12 @@ window.chatApplyRuntimeProfile = async function (nextProfileFromSelect) {
         } else {
             chatState.draftProfile = nextProfile;
             chatState.currentSessionProfile = '';
+            if (chatState.compareMode) {
+                if (chatState.compareSecondaryProfile === nextProfile) {
+                    chatState.compareSecondaryProfile = chatDefaultCompareSecondaryProfile(nextProfile);
+                }
+                chatResetCompareSessions();
+            }
             chatState.currentSegments = [{ id: 'segment-1', index: 1, profile: nextProfile, transport: '', start_message_index: 0 }];
             chatState.currentActiveSegmentId = 'segment-1';
             chatState.currentActiveSegmentIndex = 1;
@@ -5859,6 +6149,13 @@ function chatRenderSessionBanner() {
     }
     if (profile) {
         badges.push('<span class="badge badge-accent">Profile: ' + escH(profile) + '</span>');
+    }
+    if (chatState.compareMode) {
+        const compareProfiles = chatCompareProfiles();
+        if (compareProfiles.length === 2) {
+            badges.push('<span class="badge badge-warning">Compare: ' + escH(compareProfiles[1]) + '</span>');
+            text = text || 'Compare mode sends the same prompt to both selected profiles and shows the answers side by side.';
+        }
     }
 
     const activeTransport = chatState.currentTransport || chatExpectedTransport();
@@ -6560,6 +6857,8 @@ window.chatLoadSession = async function (sid) {
             clearInterval(chatState.requestProgressPoll);
             chatState.requestProgressPoll = null;
         }
+        chatState.compareMode = false;
+        chatResetCompareSessions();
         chatState.currentSessionId = sid;
         chatState.localMessages = data.messages || [];
         chatApplySessionMetadata(data.session || null);
@@ -6832,7 +7131,7 @@ function chatShowWelcome() {
                 <span>Writing</span>
             </button>
         </div>
-        <p class="chat-welcome-hint">Tip: You can send a text file even without typing a message</p>
+        <p class="chat-welcome-hint">Tip: You can send a text file even without typing a message${chatState.compareMode ? ' or compare the same prompt across two profiles' : ''}</p>
     </div>`;
 }
 
@@ -6911,6 +7210,9 @@ function chatRenderMessages() {
 
 function chatMessageBadges(message) {
     const badges = [];
+    if (Array.isArray(message?.compare_responses) && message.compare_responses.length > 1) {
+        badges.push('<span class="badge badge-warning">Compare mode</span>');
+    }
     if (message?.sidecar_vision?.used) {
         badges.push('<span class="badge badge-info">Sidecar vision</span>');
         if (message.sidecar_vision.reanalysis) {
@@ -6963,6 +7265,7 @@ function chatBuildMessageNode(message) {
     const files = message.files || [];
     const time = message.timestamp ? new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
     const profile = message?.profile || '';
+    const isCompareMessage = role === 'assistant' && Array.isArray(message?.compare_responses) && message.compare_responses.length > 0;
     const avatarSvg = role === 'user'
         ? '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>'
         : '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>';
@@ -6970,9 +7273,11 @@ function chatBuildMessageNode(message) {
     if (files && files.length > 0) {
         filesHtml = '<div class="chat-msg-files">' + files.map(f => '<span class="chat-file-tag"><span>' + UI_ICONS.paperclip + '</span>' + escH(f) + '</span>').join('') + '</div>';
     }
-    const traceHtml = role === 'assistant' ? chatMessageTraceMarkup(message) : '';
+    const traceHtml = role === 'assistant' && !isCompareMessage ? chatMessageTraceMarkup(message) : '';
     let bubbleHtml = '';
-    if (content || traceHtml) {
+    if (isCompareMessage) {
+        bubbleHtml = chatBuildCompareBubbleMarkup(message);
+    } else if (content || traceHtml) {
         const renderedContent = role === 'assistant'
             ? chatBuildResponseMarkup(content)
             : chatRenderMd(content);
@@ -6989,14 +7294,14 @@ function chatBuildMessageNode(message) {
     div.className = 'chat-msg ' + role + ' ' + chatMessageToneClass(profile) + (message?._pendingAssistant ? ' is-pending' : '');
     const timeHtml = time
         ? '<div class="chat-msg-time">'
-            + (role === 'assistant'
+            + (role === 'assistant' && !isCompareMessage
                 ? '<button class="chat-response-tool chat-msg-time-copy" type="button" data-copy-scope="message" onclick="chatCopyResponseBlock(this)" title="Copy response">' + chatCopyIconMarkup() + '</button>'
                 : '')
             + '<span class="chat-msg-time-label">' + time + '</span>'
             + '</div>'
         : '';
     div.innerHTML = '<div class="chat-msg-inner"><div class="chat-msg-avatar">' + avatarSvg + '</div><div class="chat-msg-body">' + chatMessageBadges(message) + bubbleHtml + filesHtml + timeHtml + '</div></div>';
-    if (role === 'assistant' && content) {
+    if (role === 'assistant' && content && !isCompareMessage) {
         const copyBtn = div.querySelector('.chat-msg-time-copy');
         if (copyBtn) copyBtn._copyText = content;
     }
@@ -7082,6 +7387,7 @@ window.chatNewSession = function (folderId = '') {
     chatState.currentSessionId = null;
     chatState.localMessages = [];
     chatState.lastSubmission = null;
+    chatResetCompareSessions();
     chatState.currentSessionProfile = '';
     chatState.draftProfile = '';
     chatState.currentSegments = [];
@@ -7444,10 +7750,119 @@ window.chatSend = async function () {
     chatState.lastSubmission = {
         message,
         files: pendingUploads.map(f => ({ ...f, preview_url: null })),
+        compareMode: !!chatState.compareMode,
+        compareProfiles: chatCompareProfiles(),
     };
 
     const persisted = document.getElementById('chat-persistent-progress');
     if (persisted) persisted.remove();
+
+    if (chatState.compareMode) {
+        const compareProfiles = chatCompareProfiles();
+        if (compareProfiles.length !== 2) {
+            chatState.isThinking = false;
+            chatSyncSendButton();
+            toast('Choose two different profiles before using compare mode', 'warning');
+            return;
+        }
+
+        const files = pendingUploads.map(f => f.name);
+        const compareUserMsg = {
+            role: 'user',
+            content: message,
+            files,
+            timestamp: new Date().toISOString(),
+            profile: compareProfiles[0],
+            compare_profiles: compareProfiles.slice(),
+            transport: chatExpectedTransport(),
+        };
+        chatState.localMessages.push(compareUserMsg);
+        chatState.localMessages.push(chatBuildComparePendingAssistantMessage(compareProfiles));
+        chatRenderMessages();
+        input.value = '';
+        chatAutoResize(input);
+        chatSyncSendButton();
+
+        const folderId = chatState.draftFolderId || chatState.selectedFolderId || '';
+        const compareRequestIds = Object.fromEntries(compareProfiles.map(profile => [profile, makeRequestId()]));
+        compareProfiles.forEach(profile => {
+            chatStartCompareRequestProgress(profile, compareRequestIds[profile], chatExpectedTransport());
+        });
+        const compareResults = await Promise.allSettled(compareProfiles.map(async (profile) => {
+            const compareSessionId = String(chatState.compareSessionIds[profile] || '').trim();
+            const resp = await api('POST', '/api/chat', {
+                message,
+                session_id: compareSessionId || null,
+                profile,
+                folder_id: compareSessionId ? '' : folderId,
+                transport_preference: chatState.transportPreference || 'auto',
+                request_id: compareRequestIds[profile],
+                files: pendingUploads.map(f => ({ stored_as: f.stored_as, name: f.name })),
+            });
+            return { profile, resp };
+        }));
+
+        let successCount = 0;
+        compareResults.forEach((result, index) => {
+            const profile = compareProfiles[index];
+            const existingEntry = chatCompareResponseEntry(chatGetPendingAssistantMessage(), profile);
+            chatStopCompareRequestProgress(profile);
+            if (result.status === 'fulfilled') {
+                const payload = result.value.resp || {};
+                const assistantMessage = payload.assistant_message || {};
+                chatState.compareSessionIds[profile] = payload.session_id || chatState.compareSessionIds[profile] || '';
+                chatUpdateComparePendingResponse(profile, {
+                    status: 'completed',
+                    content: assistantMessage.content || payload.response || '',
+                    transport: assistantMessage.transport || payload.session?.transport_mode || '',
+                    session_id: payload.session_id || '',
+                    debug_trace_lines: Array.isArray(assistantMessage.debug_trace_lines) && assistantMessage.debug_trace_lines.length
+                        ? [...assistantMessage.debug_trace_lines]
+                        : Array.isArray(existingEntry?.debug_trace_lines) ? [...existingEntry.debug_trace_lines] : [],
+                    debug_trace_transport: assistantMessage.debug_trace_transport || assistantMessage.transport || payload.session?.transport_mode || existingEntry?.debug_trace_transport || '',
+                    debug_trace_status: assistantMessage.debug_trace_status || 'Completed',
+                    show_debug_trace: true,
+                });
+                successCount += 1;
+                return;
+            }
+            chatUpdateComparePendingResponse(profile, {
+                status: 'failed',
+                error: result.reason?.message || 'Request failed',
+                debug_trace_status: 'Error',
+                show_debug_trace: true,
+            });
+        });
+        chatClearCompareRequestProgressState();
+
+        const comparePending = chatGetPendingAssistantMessage();
+        if (comparePending && Array.isArray(comparePending.compare_responses)) {
+            comparePending._pendingAssistant = false;
+        }
+
+        if (!successCount) {
+            chatState.localMessages = previousMessages;
+            chatRenderMessages();
+            input.value = message;
+            chatAutoResize(input);
+            chatRenderFileBar();
+            chatSyncSendButton();
+            chatResetComposerAfterRequest();
+            toast('Both compare requests failed', 'error', 5000);
+            input.focus();
+            return;
+        }
+
+        chatClearRequestErrorNotice();
+        chatRenderMessages();
+        chatReplacePendingFiles([]);
+        chatResetComposerAfterRequest();
+        input.focus();
+        if (successCount < compareProfiles.length) {
+            toast('Compare finished with a partial failure', 'warning', 4000);
+        }
+        return;
+    }
 
     // Swap send button to stop
     const sendBtn = document.getElementById('chat-send-btn');
@@ -7754,7 +8169,7 @@ function chatRenderMd(text, options) {
     h = h.replace(/<p>\s*<\/p>/g, '');
 
     h = h.replace(
-        /(?:<p>)?&lt;virtud-checklist&gt;(?:<\/p>)?([\s\S]*?)(?:<p>)?&lt;\/virtud-checklist&gt;(?:<\/p>)?/gi,
+        /(?:<p>)?&lt;virt(?:ud|us|udud)-checklist&gt;(?:<\/p>)?([\s\S]*?)(?:<p>)?&lt;\/virt(?:ud|us|udud)-checklist&gt;(?:<\/p>)?/gi,
         function(_, inner) {
             const body = String(inner || '')
                 .replace(/^(<br\s*\/?\s*>)+|(<br\s*\/?\s*>)+$/gi, '')
