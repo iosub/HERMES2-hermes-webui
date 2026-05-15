@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import urllib.parse
 
 
@@ -269,3 +270,56 @@ def image_attachment_support_status(
         return True, ""
     api_url = target.get("base_url") or effective_hermes_api_url_fn(default_hermes_api_url)
     return False, f"OpenAI-compatible vision sidecar API is not reachable at {api_url} ({api_reason})"
+
+
+def chat_backend_error_detail(exc: Exception) -> str:
+    message = str(exc or "").strip()
+    message = re.sub(r"^API server returned HTTP \d+:\s*", "", message)
+    message = re.sub(r"^API server error:\s*", "", message)
+    return message.strip()
+
+
+def chat_backend_error_is_rate_limited(exc: Exception, *, chat_backend_error_detail_fn) -> bool:
+    detail = chat_backend_error_detail_fn(exc).lower()
+    return (
+        "rate limit" in detail
+        or "rate-limit" in detail
+        or "rate limited" in detail
+        or "too many requests" in detail
+        or "http 429" in str(exc).lower()
+    )
+
+
+def chat_backend_error_is_retryable(exc: Exception, *, chat_backend_error_is_rate_limited_fn, chat_backend_error_detail_fn) -> bool:
+    status_code = int(getattr(exc, "status_code", 502) or 502)
+    if status_code >= 500 or chat_backend_error_is_rate_limited_fn(exc):
+        return True
+    detail = chat_backend_error_detail_fn(exc).lower()
+    retryable_terms = (
+        "timed out",
+        "timeout",
+        "temporarily unavailable",
+        "service unavailable",
+        "unreachable",
+        "overloaded",
+        "connection refused",
+        "connection reset",
+        "upstream request failed",
+    )
+    return any(term in detail for term in retryable_terms)
+
+
+def targets_equivalent(left: dict | None, right: dict | None) -> bool:
+    left = left or {}
+    right = right or {}
+    return (
+        str(left.get("provider") or "").strip().lower(),
+        str(left.get("base_url") or "").strip().rstrip("/"),
+        str(left.get("model") or "").strip(),
+        str(left.get("routing_provider") or "").strip(),
+    ) == (
+        str(right.get("provider") or "").strip().lower(),
+        str(right.get("base_url") or "").strip().rstrip("/"),
+        str(right.get("model") or "").strip(),
+        str(right.get("routing_provider") or "").strip(),
+    )

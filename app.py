@@ -4978,56 +4978,26 @@ def _update_session_vision_assets(
 
 
 def _chat_backend_error_detail(exc: Exception) -> str:
-    message = str(exc or "").strip()
-    message = re.sub(r"^API server returned HTTP \d+:\s*", "", message)
-    message = re.sub(r"^API server error:\s*", "", message)
-    return message.strip()
+    return _chat_http_service.chat_backend_error_detail(exc)
 
 
 def _chat_backend_error_is_rate_limited(exc: Exception) -> bool:
-    detail = _chat_backend_error_detail(exc).lower()
-    return (
-        "rate limit" in detail
-        or "rate-limit" in detail
-        or "rate limited" in detail
-        or "too many requests" in detail
-        or "http 429" in str(exc).lower()
+    return _chat_http_service.chat_backend_error_is_rate_limited(
+        exc,
+        chat_backend_error_detail_fn=lambda error: _chat_backend_error_detail(error),
     )
 
 
 def _chat_backend_error_is_retryable(exc: Exception) -> bool:
-    status_code = int(getattr(exc, "status_code", 502) or 502)
-    if status_code >= 500 or _chat_backend_error_is_rate_limited(exc):
-        return True
-    detail = _chat_backend_error_detail(exc).lower()
-    retryable_terms = (
-        "timed out",
-        "timeout",
-        "temporarily unavailable",
-        "service unavailable",
-        "unreachable",
-        "overloaded",
-        "connection refused",
-        "connection reset",
-        "upstream request failed",
+    return _chat_http_service.chat_backend_error_is_retryable(
+        exc,
+        chat_backend_error_is_rate_limited_fn=lambda error: _chat_backend_error_is_rate_limited(error),
+        chat_backend_error_detail_fn=lambda error: _chat_backend_error_detail(error),
     )
-    return any(term in detail for term in retryable_terms)
 
 
 def _targets_equivalent(left: dict | None, right: dict | None) -> bool:
-    left = left or {}
-    right = right or {}
-    return (
-        str(left.get("provider") or "").strip().lower(),
-        str(left.get("base_url") or "").strip().rstrip("/"),
-        str(left.get("model") or "").strip(),
-        str(left.get("routing_provider") or "").strip(),
-    ) == (
-        str(right.get("provider") or "").strip().lower(),
-        str(right.get("base_url") or "").strip().rstrip("/"),
-        str(right.get("model") or "").strip(),
-        str(right.get("routing_provider") or "").strip(),
-    )
+    return _chat_http_service.targets_equivalent(left, right)
 
 
 def _chat_completion_request(target: dict, messages: list[dict]) -> str:
