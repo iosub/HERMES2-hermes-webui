@@ -69,6 +69,7 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
     read_request_control = deps["read_request_control"]
     filter_live_progress_lines = deps["filter_live_progress_lines"]
     request_progress_lines = deps["request_progress_lines"]
+    active_request_for_session = deps["active_request_for_session"]
     check_api_server = deps["check_api_server"]
     api_server_probe = deps["api_server_probe"]
     image_attachment_support_status = deps["image_attachment_support_status"]
@@ -121,6 +122,180 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
             if hermes_session_id:
                 return hermes_session_id
         return clean_hermes_session_id(session.get("hermes_session_id"))
+
+    def last_message_for_role(session: dict, role: str) -> dict:
+        normalized_role = str(role or "").strip().lower()
+        for message in reversed(session.get("messages") or []):
+            if str(message.get("role") or "").strip().lower() == normalized_role:
+                return message
+        return {}
+
+    def compare_group_sessions(session: dict) -> list[dict]:
+        if not bool(session.get("compare_temporary")):
+            return []
+        compare_profiles = [normalize_profile_name(value) for value in (session.get("compare_profiles") or [])]
+        compare_profiles = [value for value in compare_profiles if value]
+        if len(compare_profiles) < 2:
+            return []
+        compare_group_id = str(session.get("compare_group_id") or "").strip()
+        folder_id = str(session.get("folder_id") or "").strip()
+        title = str(session.get("title") or "").strip()
+        sessions = []
+        for candidate in load_all_sessions().values():
+            if not bool(candidate.get("compare_temporary")):
+                continue
+            if compare_group_id:
+                if str(candidate.get("compare_group_id") or "").strip() != compare_group_id:
+                    continue
+            else:
+                candidate_profiles = [normalize_profile_name(value) for value in (candidate.get("compare_profiles") or [])]
+                candidate_profiles = [value for value in candidate_profiles if value]
+                if candidate_profiles != compare_profiles:
+                    continue
+                if str(candidate.get("folder_id") or "").strip() != folder_id:
+                    continue
+                if str(candidate.get("title") or "").strip() != title:
+                    continue
+            sessions.append(candidate)
+        if not any(str(item.get("id") or "") == str(session.get("id") or "") for item in sessions):
+            sessions.append(session)
+        return sessions
+
+    def build_compare_temporary_session_view(session: dict) -> tuple[list[dict], dict] | None:
+        compare_profiles = [normalize_profile_name(value) for value in (session.get("compare_profiles") or [])]
+        compare_profiles = [value for value in compare_profiles if value]
+        if len(compare_profiles) < 2 or not bool(session.get("compare_temporary")):
+            return None
+
+        grouped_sessions = compare_group_sessions(session)
+        if not grouped_sessions:
+            return None
+
+        sessions_by_profile = {}
+        for candidate in grouped_sessions:
+            profile_name = normalize_profile_name(candidate.get("profile") or "")
+            if not profile_name:
+                active_segment = ((candidate.get("segments") or [None])[-1]) or {}
+                profile_name = normalize_profile_name(active_segment.get("profile") or "")
+            if profile_name and profile_name not in sessions_by_profile:
+                sessions_by_profile[profile_name] = candidate
+
+        primary_profile = compare_profiles[0]
+        synthetic_segments = []
+        compare_entries = []
+        any_running = False
+        any_cancel_supported = False
+        latest_timestamp = str(session.get("updated") or session.get("created") or datetime.now().isoformat())
+
+        for index, profile in enumerate(compare_profiles, start=1):
+            child_session = sessions_by_profile.get(profile) or {}
+            child_assistant = last_message_for_role(child_session, "assistant")
+            active_request = active_request_for_session(child_session.get("id")) if child_session else None
+            request_status = str((active_request or {}).get("status") or "").strip().lower()
+            is_running = request_status in {"running", "cancel_requested"}
+            content = str(child_assistant.get("content") or "")
+            status = "running" if is_running else ("completed" if content else "failed")
+            request_id = str((active_request or {}).get("request_id") or "").strip()
+            cancel_supported = bool((active_request or {}).get("cancel_supported"))
+            cancel_requested = request_status == "cancel_requested"
+            trace_lines = [str(line) for line in (child_assistant.get("debug_trace_lines") or []) if str(line or "").strip()]
+            if not trace_lines and request_id:
+                trace_lines = [str(line) for line in (filter_live_progress_lines(request_progress_lines(request_id)) or []) if str(line or "").strip()]
+            transport = str(
+                child_assistant.get("debug_trace_transport")
+                or child_assistant.get("transport")
+                or (active_request or {}).get("transport")
+                or child_session.get("transport_mode")
+                or ""
+            ).strip().lower()
+            if status == "running":
+                debug_status = "Cancelling" if cancel_requested else "Running"
+            elif status == "completed":
+                debug_status = str(child_assistant.get("debug_trace_status") or "Completed").strip() or "Completed"
+            else:
+                debug_status = str(child_assistant.get("debug_trace_status") or "Error").strip() or "Error"
+            hermes_session_id = latest_session_id_for_profile(child_session, profile) if child_session else None
+            synthetic_segments.append({
+                "id": f"compare-segment-{index}",
+                "index": index,
+                "profile": profile,
+                "transport": transport,
+                "start_message_index": 0,
+                "hermes_session_id": hermes_session_id,
+            })
+            compare_entries.append({
+                "profile": profile,
+                "status": status,
+                "content": content,
+                "error": str(child_assistant.get("error") or "").strip(),
+                "transport": transport,
+                "session_id": str(child_session.get("id") or "").strip(),
+                "request_id": request_id,
+                "cancel_requested": cancel_requested,
+                "cancel_supported": cancel_supported,
+                "debug_trace_lines": trace_lines,
+                "debug_trace_transport": transport,
+                "debug_trace_status": debug_status,
+                "show_debug_trace": bool(trace_lines or is_running or child_assistant.get("show_debug_trace", True)),
+            })
+            any_running = any_running or is_running
+            any_cancel_supported = any_cancel_supported or cancel_supported
+            latest_timestamp = max(
+                latest_timestamp,
+                str(child_assistant.get("timestamp") or child_session.get("updated") or child_session.get("created") or latest_timestamp),
+            )
+
+        reference_user = last_message_for_role(session, "user")
+        if not reference_user:
+            for profile in compare_profiles:
+                reference_user = last_message_for_role(sessions_by_profile.get(profile) or {}, "user")
+                if reference_user:
+                    break
+
+        primary_segment = synthetic_segments[0]
+        user_msg = {
+            "role": "user",
+            "content": str(reference_user.get("content") or ""),
+            "files": list(reference_user.get("files") or []),
+            "attachment_refs": list(reference_user.get("attachment_refs") or []),
+            "timestamp": str(reference_user.get("timestamp") or latest_timestamp),
+            "segment_id": primary_segment["id"],
+            "segment_index": primary_segment["index"],
+            "profile": primary_profile,
+            "transport": str(reference_user.get("transport") or primary_segment.get("transport") or "").strip().lower(),
+            "compare_profiles": compare_profiles,
+        }
+        assistant_msg = {
+            "role": "assistant",
+            "content": "",
+            "timestamp": latest_timestamp,
+            "segment_id": primary_segment["id"],
+            "segment_index": primary_segment["index"],
+            "profile": primary_profile,
+            "compare_mode": True,
+            "compare_responses": compare_entries,
+        }
+        if any_running:
+            assistant_msg["_pendingAssistant"] = True
+
+        synthetic_session = {
+            **session,
+            "messages": [user_msg, assistant_msg],
+            "profile": primary_profile,
+            "segments": synthetic_segments,
+            "active_segment_id": primary_segment["id"],
+            "updated": latest_timestamp,
+            "compare_profiles": compare_profiles,
+            "compare_temporary": True,
+        }
+        session_meta = chat_session_meta({**synthetic_session, "id": ""})
+        session_meta["compare_temporary"] = True
+        session_meta["compare_group_id"] = str(session.get("compare_group_id") or "").strip()
+        session_meta["active_request_id"] = ""
+        session_meta["active_request_status"] = ""
+        session_meta["active_request_cancel_supported"] = any_cancel_supported
+        session_meta["active_request_transport"] = ""
+        return [user_msg, assistant_msg], session_meta
 
     @app.route("/api/chat/compare/save", methods=["POST"])
     @require_token
@@ -290,6 +465,7 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
         requested_transport_preference = normalize_transport_preference(data.get("transport_preference"))
         requested_folder_id = str(data.get("folder_id") or "").strip()
         parent_session_id = str(data.get("parent_session_id") or "").strip()
+        compare_group_id = str(data.get("compare_group_id") or "").strip()
         request_id = (data.get("request_id") or str(uuid.uuid4())).strip()
         files, file_display_names = parse_request_files(data)
         if not message and not files:
@@ -298,6 +474,7 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
         sess = get_or_create_chat_session(session_id, profile_name=requested_profile)
         sess["compare_profiles"] = compare_profiles if len(compare_profiles) > 1 else []
         sess["compare_temporary"] = len(compare_profiles) > 1
+        sess["compare_group_id"] = compare_group_id if len(compare_profiles) > 1 else ""
         sess["profile"] = normalize_profile_name(sess.get("profile")) or selected_profile_name()
         if len(compare_profiles) > 1 and parent_session_id and parent_session_id != sess["id"] and not sess.get("messages"):
             parent_session = load_session(parent_session_id)
@@ -637,11 +814,13 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
     @app.route("/api/chat/sessions", methods=["GET"])
     @require_token
     def api_chat_sessions():
+        include_session_id = str(request.args.get("include_session_id") or "").strip()
         sessions = []
         for _, session in load_all_sessions().items():
-            if bool(session.get("compare_temporary")):
-                continue
             meta = chat_session_meta(session)
+            is_active_temporary = bool(meta.get("active_request_id")) or active_request_for_session(session.get("id")) is not None
+            if bool(session.get("compare_temporary")) and session.get("id") != include_session_id and not is_active_temporary:
+                continue
             sessions.append({
                 "id": session["id"],
                 "title": session.get("title", "Untitled"),
@@ -658,7 +837,8 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
     @require_token
     def api_chat_folders():
         sessions = load_all_sessions()
-        return jsonify({"folders": folder_summaries(sessions)})
+        include_session_id = str(request.args.get("include_session_id") or "").strip()
+        return jsonify({"folders": folder_summaries(sessions, include_session_id=include_session_id)})
 
     @app.route("/api/chat/folders", methods=["POST"])
     @require_token
@@ -837,6 +1017,10 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
         if trim_trailing_empty_chat_segments(session):
             write_session(session)
             session = load_session(session_id) or session
+        compare_view = build_compare_temporary_session_view(session)
+        if compare_view:
+            messages, session_meta = compare_view
+            return jsonify({"messages": messages, "title": session.get("title", ""), "session": session_meta})
         return jsonify({"messages": session["messages"], "title": session.get("title", ""), "session": chat_session_meta(session)})
 
     @app.route("/api/chat/sessions/<session_id>/rename", methods=["POST"])

@@ -271,7 +271,16 @@ function navigate(screen) {
     const navItem = document.querySelector('[data-screen="' + screen + '"]');
     if (navItem) navItem.classList.add('active');
     if (screen === 'chat') {
-        chatGoHome();
+        const hasRecoverableChatState = !!chatState.currentSessionId
+            || (Array.isArray(chatState.localMessages) && chatState.localMessages.length > 0)
+            || chatState.isThinking
+            || !!chatState.currentRequestId
+            || Object.keys(chatState.compareRequestIds || {}).length > 0
+            || chatState.pendingFiles.length > 0
+            || !!chatState.selectedFolderId;
+        if (!hasRecoverableChatState) {
+            chatGoHome();
+        }
     }
     const content = document.getElementById('content');
     content.style.padding = screen === 'chat' ? '0' : '';
@@ -5798,6 +5807,111 @@ function chatSessionProfiles(session) {
     return names;
 }
 
+function chatCompareSessionGroupKey(session) {
+    const meta = session?.session || {};
+    if (!meta.compare_temporary) return '';
+    const compareGroupId = String(meta.compare_group_id || '').trim();
+    if (compareGroupId) return 'group::' + compareGroupId;
+    const compareProfiles = chatSessionProfiles(session)
+        .map(value => String(value || '').trim().toLowerCase())
+        .filter(Boolean)
+        .sort();
+    if (compareProfiles.length < 2) return '';
+    const folderId = String(meta.folder_id || '').trim();
+    const title = String(session?.title || '').trim().toLowerCase();
+    return [folderId, title, compareProfiles.join('|')].join('::');
+}
+
+function chatChooseCompareGroupRepresentative(group) {
+    const sessions = Array.isArray(group) ? group.slice() : [];
+    sessions.sort((left, right) => {
+        const leftCurrent = left?.id === chatState.currentSessionId ? 1 : 0;
+        const rightCurrent = right?.id === chatState.currentSessionId ? 1 : 0;
+        if (leftCurrent !== rightCurrent) return rightCurrent - leftCurrent;
+        const leftActive = left?.session?.active_request_id ? 1 : 0;
+        const rightActive = right?.session?.active_request_id ? 1 : 0;
+        if (leftActive !== rightActive) return rightActive - leftActive;
+        return String(right?.updated || right?.created || '').localeCompare(String(left?.updated || left?.created || ''));
+    });
+    return sessions[0] || null;
+}
+
+function chatCollapseCompareTemporarySessions(sessions = []) {
+    const list = Array.isArray(sessions) ? sessions : [];
+    const nonTemporaryKeys = new Set();
+    list.forEach(session => {
+        const profiles = chatSessionProfiles(session);
+        if (profiles.length < 2 || session?.session?.compare_temporary) return;
+        const folderId = String(session?.session?.folder_id || '').trim();
+        const title = String(session?.title || '').trim().toLowerCase();
+        nonTemporaryKeys.add([folderId, title, profiles.map(value => String(value || '').trim().toLowerCase()).sort().join('|')].join('::'));
+    });
+
+    const collapsed = [];
+    const temporaryGroups = new Map();
+    list.forEach(session => {
+        const key = chatCompareSessionGroupKey(session);
+        if (!key) {
+            collapsed.push(session);
+            return;
+        }
+        if (nonTemporaryKeys.has(key)) {
+            return;
+        }
+        const group = temporaryGroups.get(key) || [];
+        group.push(session);
+        temporaryGroups.set(key, group);
+    });
+
+    temporaryGroups.forEach(group => {
+        const representative = chatChooseCompareGroupRepresentative(group);
+        if (!representative) return;
+        const profiles = [];
+        const addProfile = (value) => {
+            const name = String(value || '').trim();
+            if (name && !profiles.includes(name)) profiles.push(name);
+        };
+        group.forEach(session => {
+            chatSessionProfiles(session).forEach(addProfile);
+        });
+        const merged = {
+            ...representative,
+            message_count: Math.max(...group.map(session => Number(session?.message_count || 0))),
+            updated: group.reduce((latest, session) => {
+                const stamp = String(session?.updated || session?.created || '');
+                return stamp > latest ? stamp : latest;
+            }, String(representative?.updated || representative?.created || '')),
+            session: {
+                ...(representative.session || {}),
+                compare_temporary: true,
+                compare_profiles: profiles,
+            },
+        };
+        const activeMember = group.find(session => session?.session?.active_request_id) || representative;
+        merged.session.active_request_id = activeMember?.session?.active_request_id || merged.session.active_request_id || '';
+        merged.session.active_request_status = activeMember?.session?.active_request_status || merged.session.active_request_status || '';
+        collapsed.push(merged);
+    });
+
+    collapsed.sort((left, right) => String(right?.updated || right?.created || '').localeCompare(String(left?.updated || left?.created || '')));
+    return collapsed;
+}
+
+function chatFoldersWithCollapsedSessions(folders = [], sessions = []) {
+    const sessionMap = new Map();
+    sessions.forEach(session => {
+        const folderId = String(session?.session?.folder_id || '').trim();
+        if (!folderId) return;
+        const group = sessionMap.get(folderId) || [];
+        group.push(session);
+        sessionMap.set(folderId, group);
+    });
+    return (Array.isArray(folders) ? folders : []).map(folder => ({
+        ...folder,
+        sessions: sessionMap.get(String(folder?.id || '').trim()) || [],
+    }));
+}
+
 function chatSessionProfilesLabel(session) {
     const profiles = chatSessionProfiles(session);
     if (!profiles.length) return '';
@@ -5841,6 +5955,19 @@ function chatSessionMatchesProfileFilter(session) {
     const filter = String(chatState.historyProfileFilter || 'all');
     if (!filter || filter === 'all') return true;
     return chatSessionProfiles(session).includes(filter);
+}
+
+function chatRefreshActiveSessionSelection() {
+    const currentSessionId = String(chatState.currentSessionId || '').trim();
+    document.querySelectorAll('.chat-history-item[data-sid]').forEach(item => {
+        item.classList.toggle('active', currentSessionId && item.getAttribute('data-sid') === currentSessionId);
+    });
+    document.querySelectorAll('.sidebar-folder-chat-row button[onclick*="sidebarOpenChat"], .sidebar-folder-children button[onclick*="sidebarOpenChat"]').forEach(button => {
+        const onclick = String(button.getAttribute('onclick') || '');
+        const match = onclick.match(/sidebarOpenChat\('([^']+)'\)/);
+        const sessionId = match ? match[1] : '';
+        button.classList.toggle('active', !!currentSessionId && sessionId === currentSessionId);
+    });
 }
 
 function chatRenderHistoryProfileFilter(sessions = []) {
@@ -6569,9 +6696,11 @@ window.toggleFoldersScreenFolder = function (folderId) {
 Screens.folders = async function () {
     const content = document.getElementById('content');
     try {
+        const includeSessionId = String(chatState.currentSessionId || '').trim();
+        const historyQuery = includeSessionId ? ('?include_session_id=' + encodeURIComponent(includeSessionId)) : '';
         const [folderData, sessionData] = await Promise.all([
-            api('GET', '/api/chat/folders'),
-            api('GET', '/api/chat/sessions'),
+            api('GET', '/api/chat/folders' + historyQuery),
+            api('GET', '/api/chat/sessions' + historyQuery),
         ]);
         const folders = folderData.folders || [];
         const sessions = sessionData.sessions || [];
@@ -6802,12 +6931,14 @@ async function renderSidebarFoldersTree() {
     }
     tree.classList.remove('hidden');
     try {
+        const includeSessionId = String(chatState.currentSessionId || '').trim();
+        const historyQuery = includeSessionId ? ('?include_session_id=' + encodeURIComponent(includeSessionId)) : '';
         const [folderData, sessionData] = await Promise.all([
-            api('GET', '/api/chat/folders'),
-            api('GET', '/api/chat/sessions'),
+            api('GET', '/api/chat/folders' + historyQuery),
+            api('GET', '/api/chat/sessions' + historyQuery),
         ]);
-        const folders = folderData.folders || [];
-        const sessions = sessionData.sessions || [];
+        const sessions = chatCollapseCompareTemporarySessions(sessionData.sessions || []);
+        const folders = chatFoldersWithCollapsedSessions(folderData.folders || [], sessions);
         const visibleSessions = sessions.filter(chatSessionMatchesProfileFilter);
         chatState.folders = folders.slice();
         const collapsed = sidebarFolderNodeCollapseState();
@@ -6846,12 +6977,14 @@ window.renderSidebarFoldersTree = renderSidebarFoldersTree;
 
 async function chatLoadHistory() {
     try {
+        const includeSessionId = String(chatState.currentSessionId || '').trim();
+        const historyQuery = includeSessionId ? ('?include_session_id=' + encodeURIComponent(includeSessionId)) : '';
         const [folderData, sessionData] = await Promise.all([
-            api('GET', '/api/chat/folders'),
-            api('GET', '/api/chat/sessions'),
+            api('GET', '/api/chat/folders' + historyQuery),
+            api('GET', '/api/chat/sessions' + historyQuery),
         ]);
-        const folders = folderData.folders || [];
-        const sessions = sessionData.sessions || [];
+        const sessions = chatCollapseCompareTemporarySessions(sessionData.sessions || []);
+        const folders = chatFoldersWithCollapsedSessions(folderData.folders || [], sessions);
         const visibleSessions = sessions.filter(chatSessionMatchesProfileFilter);
         chatState.folders = folders.slice();
         chatRenderHistoryProfileFilter(sessions);
@@ -6932,8 +7065,34 @@ window.chatLoadSession = async function (sid) {
         chatState.currentSessionId = sid;
         chatState.localMessages = data.messages || [];
         chatApplySessionMetadata(data.session || null);
+        const pendingCompare = (chatState.localMessages || []).find(message => !!message?._pendingAssistant && Array.isArray(message?.compare_responses));
         const activeRequestId = String(data?.session?.active_request_id || '').trim();
-        if (activeRequestId) {
+        if (pendingCompare) {
+            chatState.currentRequestId = null;
+            chatState.isThinking = true;
+            chatState.currentRequestCancelSupported = pendingCompare.compare_responses.some(entry => !!String(entry?.request_id || '').trim() && !!entry?.cancel_supported);
+            chatState.cancelRequested = pendingCompare.compare_responses.some(entry => !!entry?.cancel_requested);
+            pendingCompare.compare_responses.forEach(entry => {
+                const profile = String(entry?.profile || '').trim();
+                const sessionId = String(entry?.session_id || '').trim();
+                const requestId = String(entry?.request_id || '').trim();
+                const status = String(entry?.status || '').trim().toLowerCase();
+                if (profile && sessionId) {
+                    chatState.compareSessionIds[profile] = sessionId;
+                }
+                if (!profile || !requestId || status !== 'running') {
+                    return;
+                }
+                chatState.compareRequestIds[profile] = requestId;
+                chatState.compareRequestProgressErrorCounts[profile] = 0;
+                chatFetchCompareRequestProgress(profile, requestId);
+                chatState.compareRequestProgressPolls[profile] = window.setInterval(() => {
+                    chatFetchCompareRequestProgress(profile, requestId);
+                }, 900);
+            });
+            chatRenderMessages();
+            chatSyncSendButton();
+        } else if (activeRequestId) {
             chatState.currentRequestId = activeRequestId;
             chatState.isThinking = true;
             chatState.currentRequestCancelSupported = !!data?.session?.active_request_cancel_supported;
@@ -6955,7 +7114,7 @@ window.chatLoadSession = async function (sid) {
     } catch (e) {
         toast('Failed to load session', 'error');
     }
-    chatLoadHistory();  // refresh active state
+    chatRefreshActiveSessionSelection();
 };
 
 async function chatRestoreSessionAfterFailure(sessionId) {
@@ -7063,7 +7222,9 @@ window.chatOpenFolderAddMenu = async function (folderId = '') {
     }
     let sessions = [];
     try {
-        const resp = await api('GET', '/api/chat/sessions');
+        const includeSessionId = String(chatState.currentSessionId || '').trim();
+        const historyQuery = includeSessionId ? ('?include_session_id=' + encodeURIComponent(includeSessionId)) : '';
+        const resp = await api('GET', '/api/chat/sessions' + historyQuery);
         sessions = resp.sessions || [];
     } catch (e) {}
     const movable = sessions.filter(session => (session.session?.folder_id || '') !== folder.id);
@@ -7906,6 +8067,7 @@ window.chatSend = async function () {
         }
 
         chatResetCompareSessions();
+        const compareGroupId = makeRequestId();
 
         const files = pendingUploads.map(f => f.name);
         const compareUserMsg = {
@@ -8005,6 +8167,7 @@ window.chatSend = async function () {
                         message,
                         session_id: compareSessionId || null,
                         parent_session_id: previousSessionId || null,
+                        compare_group_id: compareGroupId,
                         profile,
                         compare_profiles: compareProfiles,
                         folder_id: compareSessionId ? '' : folderId,

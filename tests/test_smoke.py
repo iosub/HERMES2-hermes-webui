@@ -492,6 +492,58 @@ session_id: 20260513_124953_76cd78
         self.assertEqual(audit["chat_count"], 1)
         self.assertEqual([item["id"] for item in audit["sessions"]], [visible["id"]])
 
+    def test_active_compare_temporary_session_can_be_included_in_history(self):
+        visible = mod._get_or_create_chat_session(profile_name="default")
+        visible["title"] = "Visible chat"
+        visible["messages"] = [{"role": "user", "content": "hola", "timestamp": "2026-05-16T01:00:00"}]
+        visible["updated"] = "2026-05-16T01:00:00"
+        visible["folder_id"] = "Audit"
+        mod._write_session(visible)
+
+        active_temp = mod._get_or_create_chat_session(profile_name="alex")
+        active_temp["title"] = "Active compare temp"
+        active_temp["messages"] = [{"role": "user", "content": "hola", "timestamp": "2026-05-16T01:00:02"}]
+        active_temp["updated"] = "2026-05-16T01:00:02"
+        active_temp["folder_id"] = "Audit"
+        active_temp["compare_profiles"] = ["default", "alex"]
+        active_temp["compare_temporary"] = True
+        mod._write_session(active_temp)
+
+        hidden_temp = mod._get_or_create_chat_session(profile_name="leire")
+        hidden_temp["title"] = "Hidden compare temp"
+        hidden_temp["messages"] = [{"role": "user", "content": "hola", "timestamp": "2026-05-16T01:00:03"}]
+        hidden_temp["updated"] = "2026-05-16T01:00:03"
+        hidden_temp["folder_id"] = "Audit"
+        hidden_temp["compare_profiles"] = ["default", "leire"]
+        hidden_temp["compare_temporary"] = True
+        mod._write_session(hidden_temp)
+
+        mod._write_request_control("active-compare-request", {
+            "request_id": "active-compare-request",
+            "session_id": active_temp["id"],
+            "status": "running",
+            "transport": "cli",
+            "cancel_supported": True,
+            "created_at": "2026-05-16T01:00:02",
+            "updated_at": "2026-05-16T01:00:04",
+        })
+
+        auth_headers = {"Authorization": f"Bearer {mod._current_webui_token()}"}
+        sessions_resp = self.client.get("/api/chat/sessions", headers=auth_headers)
+
+        self.assertEqual(sessions_resp.status_code, 200, sessions_resp.data)
+        session_ids = [item["id"] for item in sessions_resp.get_json()["sessions"]]
+        self.assertIn(visible["id"], session_ids)
+        self.assertIn(active_temp["id"], session_ids)
+        self.assertNotIn(hidden_temp["id"], session_ids)
+
+        folders_resp = self.client.get("/api/chat/folders", headers=auth_headers)
+
+        self.assertEqual(folders_resp.status_code, 200, folders_resp.data)
+        audit = next(folder for folder in folders_resp.get_json()["folders"] if folder["id"] == "Audit")
+        self.assertEqual(audit["chat_count"], 2)
+        self.assertEqual({item["id"] for item in audit["sessions"]}, {visible["id"], active_temp["id"]})
+
     def test_compare_chat_inherits_parent_profile_continuity(self):
         parent = mod._get_or_create_chat_session(profile_name="default")
         parent["hermes_session_id"] = "hermes-default-1"
@@ -552,6 +604,80 @@ session_id: 20260513_124953_76cd78
         self.assertTrue(compare_session.get("compare_temporary"))
         alex_compare_segment = next(segment for segment in compare_session["segments"] if segment["profile"] == "alex")
         self.assertEqual(alex_compare_segment["hermes_session_id"], "hermes-alex-2")
+
+    def test_compare_temporary_session_messages_are_aggregated_for_history_reopen(self):
+        default_temp = mod._get_or_create_chat_session(profile_name="default")
+        default_temp["title"] = "Compare temp"
+        default_temp["updated"] = "2026-05-16T01:10:02"
+        default_temp["compare_profiles"] = ["default", "alex"]
+        default_temp["compare_temporary"] = True
+        default_temp["compare_group_id"] = "compare-group-1"
+        default_temp["messages"] = [
+            {
+                "role": "user",
+                "content": "hola",
+                "timestamp": "2026-05-16T01:10:00",
+                "segment_id": "segment-1",
+                "segment_index": 1,
+                "profile": "default",
+                "transport": "cli",
+            },
+            {
+                "role": "assistant",
+                "content": "respuesta default",
+                "timestamp": "2026-05-16T01:10:01",
+                "segment_id": "segment-1",
+                "segment_index": 1,
+                "profile": "default",
+                "transport": "cli",
+                "debug_trace_lines": ["  ┊ 📚 default"],
+                "debug_trace_transport": "cli",
+                "debug_trace_status": "Completed",
+            },
+        ]
+        mod._write_session(default_temp)
+
+        alex_temp = mod._get_or_create_chat_session(profile_name="alex")
+        alex_temp["title"] = "Compare temp"
+        alex_temp["updated"] = "2026-05-16T01:10:03"
+        alex_temp["compare_profiles"] = ["default", "alex"]
+        alex_temp["compare_temporary"] = True
+        alex_temp["compare_group_id"] = "compare-group-1"
+        alex_temp["messages"] = [
+            {
+                "role": "user",
+                "content": "hola",
+                "timestamp": "2026-05-16T01:10:00",
+                "segment_id": "segment-1",
+                "segment_index": 1,
+                "profile": "alex",
+                "transport": "cli",
+            },
+        ]
+        mod._write_session(alex_temp)
+        mod._write_request_control("compare-running-alex", {
+            "request_id": "compare-running-alex",
+            "session_id": alex_temp["id"],
+            "status": "running",
+            "transport": "cli",
+            "cancel_supported": True,
+            "created_at": "2026-05-16T01:10:00",
+            "updated_at": "2026-05-16T01:10:04",
+        })
+
+        resp = self.client.get(f"/api/chat/sessions/{default_temp['id']}/messages", headers=self.headers)
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        data = resp.get_json()
+        self.assertEqual(len(data["messages"]), 2)
+        self.assertTrue(data["messages"][1].get("_pendingAssistant"))
+        compare_entries = data["messages"][1].get("compare_responses") or []
+        self.assertEqual([entry["profile"] for entry in compare_entries], ["default", "alex"])
+        self.assertEqual(compare_entries[0]["status"], "completed")
+        self.assertEqual(compare_entries[1]["status"], "running")
+        self.assertEqual(compare_entries[1]["request_id"], "compare-running-alex")
+        self.assertEqual(data["session"]["compare_profiles"], ["default", "alex"])
+        self.assertTrue(data["session"]["compare_temporary"])
 
     def test_filter_live_progress_lines_removes_reasoning_blocks(self):
         lines = [

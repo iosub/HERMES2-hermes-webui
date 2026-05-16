@@ -202,6 +202,8 @@ def chat_session_meta(
     active_request = active_request_for_session_fn(normalized.get("id") or "")
     return {
         "profile": normalized.get("profile") or selected_hermes_profile_name_fn(),
+        "compare_temporary": bool(normalized.get("compare_temporary")),
+        "compare_group_id": str(normalized.get("compare_group_id") or "").strip(),
         "compare_profiles": copy_module.deepcopy(normalized.get("compare_profiles") or []),
         "active_segment_id": active_segment.get("id") or "",
         "active_segment_index": active_segment.get("index") or 1,

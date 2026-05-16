@@ -1033,6 +1033,7 @@ def _normalize_chat_session(session: dict) -> dict:
     session["workspace_roots"] = _clean_string_list(session.get("workspace_roots"))
     session["source_docs"] = _clean_string_list(session.get("source_docs"))
     session["compare_temporary"] = bool(session.get("compare_temporary"))
+    session["compare_group_id"] = str(session.get("compare_group_id") or "").strip()
     compare_profiles = []
     for value in session.get("compare_profiles") or []:
         name = _normalize_hermes_profile_name(value)
@@ -1593,12 +1594,17 @@ def _dedupe_legacy_folder_titles() -> dict:
     }
 
 
-def _folder_summaries(sessions: dict | None = None) -> list[dict]:
+def _folder_summaries(sessions: dict | None = None, include_session_id: str | None = None) -> list[dict]:
     sessions = sessions if sessions is not None else _load_all_sessions()
+    include_session_id = str(include_session_id or "").strip()
     sessions = {
         session_id: session
         for session_id, session in sessions.items()
-        if not bool(session.get("compare_temporary"))
+        if (
+            not bool(session.get("compare_temporary"))
+            or session_id == include_session_id
+            or _active_request_for_session(session_id) is not None
+        )
     }
     folders = _load_all_folders()
     folder_map = {folder_id: _normalize_chat_folder(folder) for folder_id, folder in folders.items()}
@@ -4255,7 +4261,7 @@ register_chat_routes(
         "max_upload_size": lambda: MAX_UPLOAD_SIZE,
         "estimate_base64_decoded_size": lambda b64: _estimate_base64_decoded_size(b64),
         "load_all_sessions": lambda: _load_all_sessions(),
-        "folder_summaries": lambda sessions=None: _folder_summaries(sessions),
+        "folder_summaries": lambda sessions=None, include_session_id=None: _folder_summaries(sessions, include_session_id=include_session_id),
         "parse_folder_update": lambda data, existing=None: _parse_folder_update(data, existing=existing),
         "folder_title_conflict": lambda title, exclude_folder_id=None: _folder_title_conflict(title, exclude_folder_id=exclude_folder_id),
         "legacy_folder_from_sessions": lambda title, sessions: _legacy_folder_from_sessions(title, sessions),
@@ -4273,6 +4279,7 @@ register_chat_routes(
         "read_request_control": lambda request_id: _read_request_control(request_id),
         "filter_live_progress_lines": lambda lines: _filter_live_progress_lines(lines),
         "request_progress_lines": lambda request_id: _request_progress_lines(request_id),
+        "active_request_for_session": lambda session_id: _active_request_for_session(session_id),
         "check_api_server": lambda: _check_api_server(),
         "api_server_probe": lambda timeout=2: _api_server_probe(timeout=timeout),
         "image_attachment_support_status": lambda: _image_attachment_support_status(),
