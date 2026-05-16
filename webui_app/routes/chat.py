@@ -708,13 +708,14 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
             return jsonify({"error": "Invalid profile"}), 400
         selected = requested_profile
         segment = append_chat_segment(session, selected)
+        segment["hermes_session_id"] = None
         session["profile"] = selected
         session["transport_mode"] = None
         session["continuity_mode"] = None
-        session["hermes_session_id"] = segment_hermes_session_id(segment)
+        session["hermes_session_id"] = None
         session["transport_notice"] = (
             f"Switched to Hermes profile {selected}. "
-            "Next messages in this chat will use that profile."
+            "Next messages in this chat will use that profile with a fresh Hermes turn."
         )
         session["updated"] = datetime.now().isoformat()
         write_session(session)

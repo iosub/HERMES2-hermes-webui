@@ -68,6 +68,10 @@
 
   /* Safe space for browsers that overlap bottom UI */
   --app-bottom-safe: max(90px, env(safe-area-inset-bottom, 0px));
+
+  /* Chat layout */
+  --chat-content-max-width: 920px;
+  --chat-compare-max-width: 1320px;
 }
 
 /* ============================================================
@@ -2979,7 +2983,7 @@ pre code {
 }
 
 .chat-transcript-inner {
-  max-width: 780px;
+  max-width: var(--chat-content-max-width);
   width: 100%;
   margin: 0 auto;
   padding: 0 24px;
@@ -2987,7 +2991,7 @@ pre code {
 
 .chat-session-banner {
   margin: 16px auto 0;
-  max-width: 780px;
+  max-width: var(--chat-content-max-width);
   width: calc(100% - 48px);
   padding: 10px 14px;
   border-radius: 12px;
@@ -3031,7 +3035,7 @@ pre code {
   display: flex;
   align-items: center;
   gap: 12px;
-  max-width: 780px;
+  max-width: var(--chat-content-max-width);
   width: calc(100% - 48px);
   margin: 18px auto 10px;
   color: var(--text-muted);
@@ -3092,7 +3096,7 @@ pre code {
 
 .chat-context-panel {
   margin: 12px auto 0;
-  max-width: 780px;
+  max-width: var(--chat-content-max-width);
   width: calc(100% - 48px);
   padding: 14px 16px;
   border-radius: 14px;
@@ -3368,8 +3372,14 @@ pre code {
   display: flex;
   gap: 10px;
   padding: 8px 32px;
-  max-width: 780px;
+  max-width: var(--chat-content-max-width);
   margin: 0 auto;
+}
+
+.chat-msg:has(.chat-compare-bubble) .chat-msg-inner {
+  max-width: min(var(--chat-compare-max-width), calc(100% - 24px));
+  padding-left: 20px;
+  padding-right: 20px;
 }
 
 .chat-msg.user .chat-msg-inner {
@@ -3793,13 +3803,13 @@ pre code {
 
 .chat-compare-bubble {
   width: 100%;
-  padding: 14px;
+  padding: 12px;
 }
 
 .chat-compare-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 12px;
 }
 
 .chat-compare-card {

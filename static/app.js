@@ -7788,79 +7788,88 @@ window.chatSend = async function () {
         compareProfiles.forEach(profile => {
             chatStartCompareRequestProgress(profile, compareRequestIds[profile], chatExpectedTransport());
         });
-        const compareResults = await Promise.allSettled(compareProfiles.map(async (profile) => {
-            const compareSessionId = String(chatState.compareSessionIds[profile] || '').trim();
-            const resp = await api('POST', '/api/chat', {
-                message,
-                session_id: compareSessionId || null,
-                profile,
-                folder_id: compareSessionId ? '' : folderId,
-                transport_preference: chatState.transportPreference || 'auto',
-                request_id: compareRequestIds[profile],
-                files: pendingUploads.map(f => ({ stored_as: f.stored_as, name: f.name })),
-            });
-            return { profile, resp };
-        }));
-
         let successCount = 0;
-        compareResults.forEach((result, index) => {
-            const profile = compareProfiles[index];
-            const existingEntry = chatCompareResponseEntry(chatGetPendingAssistantMessage(), profile);
-            chatStopCompareRequestProgress(profile);
-            if (result.status === 'fulfilled') {
-                const payload = result.value.resp || {};
-                const assistantMessage = payload.assistant_message || {};
-                chatState.compareSessionIds[profile] = payload.session_id || chatState.compareSessionIds[profile] || '';
-                chatUpdateComparePendingResponse(profile, {
-                    status: 'completed',
-                    content: assistantMessage.content || payload.response || '',
-                    transport: assistantMessage.transport || payload.session?.transport_mode || '',
-                    session_id: payload.session_id || '',
-                    debug_trace_lines: Array.isArray(assistantMessage.debug_trace_lines) && assistantMessage.debug_trace_lines.length
-                        ? [...assistantMessage.debug_trace_lines]
-                        : Array.isArray(existingEntry?.debug_trace_lines) ? [...existingEntry.debug_trace_lines] : [],
-                    debug_trace_transport: assistantMessage.debug_trace_transport || assistantMessage.transport || payload.session?.transport_mode || existingEntry?.debug_trace_transport || '',
-                    debug_trace_status: assistantMessage.debug_trace_status || 'Completed',
-                    show_debug_trace: true,
-                });
-                successCount += 1;
+        chatReplacePendingFiles([]);
+        let settledCount = 0;
+        let compareFinalized = false;
+        const finalizeCompareRun = () => {
+            chatRenderMessages();
+            if (compareFinalized || settledCount < compareProfiles.length) return;
+            compareFinalized = true;
+            chatClearCompareRequestProgressState();
+
+            const comparePending = chatGetPendingAssistantMessage();
+            if (comparePending && Array.isArray(comparePending.compare_responses)) {
+                comparePending._pendingAssistant = false;
+            }
+
+            if (!successCount) {
+                chatState.localMessages = previousMessages;
+                chatRenderMessages();
+                input.value = message;
+                chatAutoResize(input);
+                chatRenderFileBar();
+                chatSyncSendButton();
+                chatResetComposerAfterRequest();
+                toast('Both compare requests failed', 'error', 5000);
+                input.focus();
                 return;
             }
-            chatUpdateComparePendingResponse(profile, {
-                status: 'failed',
-                error: result.reason?.message || 'Request failed',
-                debug_trace_status: 'Error',
-                show_debug_trace: true,
-            });
-        });
-        chatClearCompareRequestProgressState();
 
-        const comparePending = chatGetPendingAssistantMessage();
-        if (comparePending && Array.isArray(comparePending.compare_responses)) {
-            comparePending._pendingAssistant = false;
-        }
-
-        if (!successCount) {
-            chatState.localMessages = previousMessages;
+            chatClearRequestErrorNotice();
             chatRenderMessages();
-            input.value = message;
-            chatAutoResize(input);
-            chatRenderFileBar();
-            chatSyncSendButton();
             chatResetComposerAfterRequest();
-            toast('Both compare requests failed', 'error', 5000);
             input.focus();
-            return;
-        }
+            if (successCount < compareProfiles.length) {
+                toast('Compare finished with a partial failure', 'warning', 4000);
+            }
+            chatLoadHistory();
+        };
 
-        chatClearRequestErrorNotice();
-        chatRenderMessages();
-        chatReplacePendingFiles([]);
-        chatResetComposerAfterRequest();
-        input.focus();
-        if (successCount < compareProfiles.length) {
-            toast('Compare finished with a partial failure', 'warning', 4000);
-        }
+        compareProfiles.forEach((profile) => {
+            void (async () => {
+                const compareSessionId = String(chatState.compareSessionIds[profile] || '').trim();
+                const existingEntry = chatCompareResponseEntry(chatGetPendingAssistantMessage(), profile);
+                try {
+                    const resp = await api('POST', '/api/chat', {
+                        message,
+                        session_id: compareSessionId || null,
+                        profile,
+                        folder_id: compareSessionId ? '' : folderId,
+                        transport_preference: chatState.transportPreference || 'auto',
+                        request_id: compareRequestIds[profile],
+                        files: pendingUploads.map(f => ({ stored_as: f.stored_as, name: f.name })),
+                    });
+                    const payload = resp || {};
+                    const assistantMessage = payload.assistant_message || {};
+                    chatState.compareSessionIds[profile] = payload.session_id || chatState.compareSessionIds[profile] || '';
+                    chatUpdateComparePendingResponse(profile, {
+                        status: 'completed',
+                        content: assistantMessage.content || payload.response || '',
+                        transport: assistantMessage.transport || payload.session?.transport_mode || '',
+                        session_id: payload.session_id || '',
+                        debug_trace_lines: Array.isArray(assistantMessage.debug_trace_lines) && assistantMessage.debug_trace_lines.length
+                            ? [...assistantMessage.debug_trace_lines]
+                            : Array.isArray(existingEntry?.debug_trace_lines) ? [...existingEntry.debug_trace_lines] : [],
+                        debug_trace_transport: assistantMessage.debug_trace_transport || assistantMessage.transport || payload.session?.transport_mode || existingEntry?.debug_trace_transport || '',
+                        debug_trace_status: assistantMessage.debug_trace_status || 'Completed',
+                        show_debug_trace: true,
+                    });
+                    successCount += 1;
+                } catch (error) {
+                    chatUpdateComparePendingResponse(profile, {
+                        status: 'failed',
+                        error: error?.message || 'Request failed',
+                        debug_trace_status: 'Error',
+                        show_debug_trace: true,
+                    });
+                } finally {
+                    chatStopCompareRequestProgress(profile);
+                    settledCount += 1;
+                    finalizeCompareRun();
+                }
+            })();
+        });
         return;
     }
 
