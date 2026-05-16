@@ -5498,6 +5498,9 @@ function chatApplySessionMetadata(meta = null) {
     chatState.lastRequestErrorNotice = '';
     const session = meta || {};
     const sessionSegments = Array.isArray(session.segments) ? session.segments.slice() : [];
+    const compareProfiles = Array.isArray(session.compare_profiles)
+        ? session.compare_profiles.map(value => String(value || '').trim()).filter(Boolean)
+        : null;
     const activeSegmentId = session.active_segment_id || '';
     const activeSegment = sessionSegments.find(segment => segment.id === activeSegmentId)
         || sessionSegments[sessionSegments.length - 1]
@@ -5528,6 +5531,14 @@ function chatApplySessionMetadata(meta = null) {
     chatState.currentSourceDocs = Array.isArray(session.source_docs) ? session.source_docs.slice() : [];
     chatState.currentFolderWorkspaceRoots = Array.isArray(session.folder_workspace_roots) ? session.folder_workspace_roots.slice() : [];
     chatState.currentFolderSourceDocs = Array.isArray(session.folder_source_docs) ? session.folder_source_docs.slice() : [];
+    if (compareProfiles) {
+        const primaryProfile = resolvedSessionProfile || session.profile || compareProfiles[0] || '';
+        const secondaryProfile = compareProfiles.find(profile => profile !== primaryProfile) || '';
+        chatState.compareMode = compareProfiles.length > 1;
+        chatState.compareSecondaryProfile = chatState.compareMode
+            ? (secondaryProfile || chatDefaultCompareSecondaryProfile(primaryProfile))
+            : chatDefaultCompareSecondaryProfile(primaryProfile);
+    }
     if (chatState.currentFolderId) {
         chatState.selectedFolderId = chatState.currentFolderId;
         chatState.draftFolderId = chatState.currentFolderId;
