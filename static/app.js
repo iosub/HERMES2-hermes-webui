@@ -5538,6 +5538,10 @@ function chatApplySessionMetadata(meta = null) {
         chatState.compareSecondaryProfile = chatState.compareMode
             ? (secondaryProfile || chatDefaultCompareSecondaryProfile(primaryProfile))
             : chatDefaultCompareSecondaryProfile(primaryProfile);
+    } else {
+        const primaryProfile = resolvedSessionProfile || session.profile || chatState.activeProfile || 'default';
+        chatState.compareMode = false;
+        chatState.compareSecondaryProfile = chatDefaultCompareSecondaryProfile(primaryProfile);
     }
     if (chatState.currentFolderId) {
         chatState.selectedFolderId = chatState.currentFolderId;
