@@ -5146,6 +5146,45 @@ function chatRemovePendingAssistantMessage() {
     }
 }
 
+function chatPendingCompareCard(profile) {
+    const normalized = String(profile || 'default').trim();
+    return Array.from(document.querySelectorAll('#chat-messages .chat-msg.assistant.is-pending .chat-compare-card'))
+        .find(node => String(node?.dataset?.compareProfile || '').trim() === normalized) || null;
+}
+
+function chatPendingCompareLogPanel(profile) {
+    return chatPendingCompareCard(profile)?.querySelector('.chat-progress-log') || null;
+}
+
+function chatPatchPendingCompareCard(profile) {
+    const msgs = document.getElementById('chat-messages');
+    const pendingAssistant = chatGetPendingAssistantMessage();
+    const entry = chatCompareResponseEntry(pendingAssistant, profile);
+    if (!msgs || !pendingAssistant || !entry) {
+        chatRenderMessages();
+        return;
+    }
+    const existingCard = chatPendingCompareCard(profile);
+    if (!existingCard) {
+        chatRenderMessages();
+        return;
+    }
+    const shouldAutoScroll = chatShouldAutoScroll(msgs);
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = chatBuildCompareResponseMarkup(entry);
+    const nextCard = wrapper.firstElementChild;
+    if (!nextCard) {
+        chatRenderMessages();
+        return;
+    }
+    existingCard.replaceWith(nextCard);
+    nextCard.querySelectorAll('.chat-progress-log').forEach(chatBindProgressLog);
+    chatEnhanceCodeBlocks();
+    if (shouldAutoScroll) {
+        msgs.scrollTop = msgs.scrollHeight;
+    }
+}
+
 function chatActiveProgressPanel() {
     return document.querySelector('#chat-messages .chat-msg.assistant.is-pending .chat-progress-log');
 }
@@ -5223,13 +5262,13 @@ function chatRenderCompareProgressLines(profile, lines = [], transport = '') {
         entry.debug_trace_status = 'Running';
         entry.show_debug_trace = true;
     }
-    chatRenderLogPanel(document.getElementById(chatCompareProgressLogId(profile)), filteredLines, transport || '');
+    chatRenderLogPanel(chatPendingCompareLogPanel(profile), filteredLines, transport || '');
 }
 
 function chatRenderCompareProgressError(profile, message) {
     const entry = chatCompareResponseEntry(chatGetPendingAssistantMessage(), profile);
     const errorMessage = message || 'Live CLI activity could not be loaded.';
-    const panel = document.getElementById(chatCompareProgressLogId(profile));
+    const panel = chatPendingCompareLogPanel(profile);
     if (panel) {
         chatBindProgressLog(panel);
         panel.innerHTML = '<div class="chat-progress-error">' + escH(errorMessage) + '</div>';
@@ -7766,6 +7805,8 @@ window.chatSend = async function () {
             return;
         }
 
+        chatResetCompareSessions();
+
         const files = pendingUploads.map(f => f.name);
         const compareUserMsg = {
             role: 'user',
@@ -7793,7 +7834,6 @@ window.chatSend = async function () {
         let settledCount = 0;
         let compareFinalized = false;
         const finalizeCompareRun = () => {
-            chatRenderMessages();
             if (compareFinalized || settledCount < compareProfiles.length) return;
             compareFinalized = true;
             chatClearCompareRequestProgressState();
@@ -7865,6 +7905,7 @@ window.chatSend = async function () {
                     });
                 } finally {
                     chatStopCompareRequestProgress(profile);
+                    chatPatchPendingCompareCard(profile);
                     settledCount += 1;
                     finalizeCompareRun();
                 }

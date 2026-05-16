@@ -184,6 +184,9 @@ def debug_trace_lines_for_chat(
     if looks_like_rich_cli_trace_fn(raw_lines):
         return raw_lines
 
+    if not str(hermes_session_id or '').strip():
+        return raw_lines
+
     native_path = find_updated_hermes_native_session_fn(None, hermes_session_id)
     if native_path:
         native_lines = load_hermes_native_session_trace_lines_fn(native_path)

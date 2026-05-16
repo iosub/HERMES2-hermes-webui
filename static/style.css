@@ -71,7 +71,7 @@
 
   /* Chat layout */
   --chat-content-max-width: 920px;
-  --chat-compare-max-width: 1320px;
+  --chat-compare-max-width: 1600px;
 }
 
 /* ============================================================
@@ -3377,9 +3377,14 @@ pre code {
 }
 
 .chat-msg:has(.chat-compare-bubble) .chat-msg-inner {
-  max-width: min(var(--chat-compare-max-width), calc(100% - 24px));
-  padding-left: 20px;
-  padding-right: 20px;
+  max-width: min(var(--chat-compare-max-width), calc(100% - 8px));
+  gap: 0;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+.chat-msg:has(.chat-compare-bubble) .chat-msg-avatar {
+  display: none;
 }
 
 .chat-msg.user .chat-msg-inner {
@@ -3803,7 +3808,7 @@ pre code {
 
 .chat-compare-bubble {
   width: 100%;
-  padding: 12px;
+  padding: 8px;
 }
 
 .chat-compare-grid {
