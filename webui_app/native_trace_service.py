@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from urllib.parse import urlparse
 
 
@@ -171,10 +172,21 @@ def looks_like_rich_cli_trace(lines: list[str]) -> bool:
     return tool_progress >= 3
 
 
+def trace_started_at_timestamp(value: str | None) -> float | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
 def debug_trace_lines_for_chat(
     request_id: str,
     hermes_session_id: str | None,
     *,
+    request_started_at: str | None = None,
     request_progress_lines_fn,
     looks_like_rich_cli_trace_fn,
     find_updated_hermes_native_session_fn,
@@ -189,6 +201,13 @@ def debug_trace_lines_for_chat(
 
     native_path = find_updated_hermes_native_session_fn(None, hermes_session_id)
     if native_path:
+        request_started_ts = trace_started_at_timestamp(request_started_at)
+        if request_started_ts is not None:
+            try:
+                if native_path.stat().st_mtime < (request_started_ts - 1):
+                    return raw_lines
+            except OSError:
+                return raw_lines
         native_lines = load_hermes_native_session_trace_lines_fn(native_path)
         if native_lines:
             return native_lines

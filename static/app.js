@@ -5161,12 +5161,10 @@ function chatPatchPendingCompareCard(profile) {
     const pendingAssistant = chatGetPendingAssistantMessage();
     const entry = chatCompareResponseEntry(pendingAssistant, profile);
     if (!msgs || !pendingAssistant || !entry) {
-        chatRenderMessages();
         return;
     }
     const existingCard = chatPendingCompareCard(profile);
     if (!existingCard) {
-        chatRenderMessages();
         return;
     }
     const shouldAutoScroll = chatShouldAutoScroll(msgs);
@@ -5174,7 +5172,6 @@ function chatPatchPendingCompareCard(profile) {
     wrapper.innerHTML = chatBuildCompareResponseMarkup(entry);
     const nextCard = wrapper.firstElementChild;
     if (!nextCard) {
-        chatRenderMessages();
         return;
     }
     existingCard.replaceWith(nextCard);
@@ -5762,6 +5759,8 @@ function chatSessionProfiles(session) {
         const name = String(value || '').trim();
         if (name && !names.includes(name)) names.push(name);
     };
+    const compareProfiles = Array.isArray((session?.session || {}).compare_profiles) ? (session.session.compare_profiles || []) : [];
+    compareProfiles.forEach(addName);
     const segments = Array.isArray((session?.session || {}).segments) ? (session.session.segments || []) : [];
     segments.forEach(segment => addName(segment?.profile));
     addName(chatSessionProfile(session));
@@ -7838,18 +7837,18 @@ window.chatSend = async function () {
         chatReplacePendingFiles([]);
         let settledCount = 0;
         let compareFinalized = false;
-        const finalizeCompareRun = () => {
+        const finalizeCompareRun = async () => {
             if (compareFinalized || settledCount < compareProfiles.length) return;
             if (chatHasRunningCompareResponses()) return;
             compareFinalized = true;
             chatClearCompareRequestProgressState();
 
             const comparePending = chatGetPendingAssistantMessage();
-            if (comparePending && Array.isArray(comparePending.compare_responses)) {
-                comparePending._pendingAssistant = false;
-            }
 
             if (!successCount) {
+                if (comparePending && Array.isArray(comparePending.compare_responses)) {
+                    comparePending._pendingAssistant = false;
+                }
                 chatState.localMessages = previousMessages;
                 chatRenderMessages();
                 input.value = message;
@@ -7860,6 +7859,35 @@ window.chatSend = async function () {
                 toast('Both compare requests failed', 'error', 5000);
                 input.focus();
                 return;
+            }
+
+            if (comparePending && Array.isArray(comparePending.compare_responses)) {
+                try {
+                    const saveResp = await api('POST', '/api/chat/compare/save', {
+                        message,
+                        session_id: previousSessionId || null,
+                        profile: compareProfiles[0],
+                        compare_profiles: compareProfiles,
+                        compare_responses: comparePending.compare_responses,
+                        folder_id: previousSessionId ? '' : folderId,
+                        transport_preference: chatState.transportPreference || 'auto',
+                        files: pendingUploads.map(f => ({ stored_as: f.stored_as, name: f.name })),
+                    });
+                    const latestUserIndex = chatFindLastUserMessageIndex();
+                    if (latestUserIndex >= 0 && saveResp?.user_message) {
+                        chatState.localMessages[latestUserIndex] = saveResp.user_message;
+                    }
+                    if (saveResp?.assistant_message) {
+                        Object.assign(comparePending, saveResp.assistant_message, { _pendingAssistant: false });
+                    } else {
+                        comparePending._pendingAssistant = false;
+                    }
+                    chatState.currentSessionId = saveResp?.session_id || previousSessionId || chatState.currentSessionId;
+                    chatApplySessionMetadata(saveResp?.session || null);
+                } catch (error) {
+                    comparePending._pendingAssistant = false;
+                    toast('Compare finished but could not be saved as a single session: ' + (error?.message || 'request failed'), 'error', 5000);
+                }
             }
 
             chatClearRequestErrorNotice();
@@ -7881,6 +7909,7 @@ window.chatSend = async function () {
                         message,
                         session_id: compareSessionId || null,
                         profile,
+                        compare_profiles: compareProfiles,
                         folder_id: compareSessionId ? '' : folderId,
                         transport_preference: chatState.transportPreference || 'auto',
                         request_id: compareRequestIds[profile],
@@ -7913,7 +7942,7 @@ window.chatSend = async function () {
                     chatStopCompareRequestProgress(profile);
                     chatPatchPendingCompareCard(profile);
                     settledCount += 1;
-                    finalizeCompareRun();
+                    void finalizeCompareRun();
                 }
             })();
         });

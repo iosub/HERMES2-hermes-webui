@@ -1032,6 +1032,12 @@ def _normalize_chat_session(session: dict) -> dict:
     session["folder_id"] = folder_id.strip()
     session["workspace_roots"] = _clean_string_list(session.get("workspace_roots"))
     session["source_docs"] = _clean_string_list(session.get("source_docs"))
+    compare_profiles = []
+    for value in session.get("compare_profiles") or []:
+        name = _normalize_hermes_profile_name(value)
+        if name and name not in compare_profiles:
+            compare_profiles.append(name)
+    session["compare_profiles"] = compare_profiles
     segment_map = {segment["id"]: segment for segment in session.get("segments") or []}
     default_segment = active_segment or ((session.get("segments") or [None])[0])
     for index, entry in enumerate(session["messages"]):
@@ -4228,7 +4234,11 @@ register_chat_routes(
         "clean_hermes_session_id": lambda value: _clean_hermes_session_id(value),
         "update_chat_request": lambda request_id, **fields: _update_chat_request(request_id, **fields),
         "rollback_failed_chat_turn": lambda session, session_id, user_msg: _rollback_failed_chat_turn(session, session_id, user_msg),
-        "debug_trace_lines_for_chat": lambda request_id, hermes_session_id: _debug_trace_lines_for_chat(request_id, hermes_session_id),
+        "debug_trace_lines_for_chat": lambda request_id, hermes_session_id, request_started_at="": _debug_trace_lines_for_chat(
+            request_id,
+            hermes_session_id,
+            request_started_at,
+        ),
         "remove_chat_request": lambda request_id: _remove_chat_request(request_id),
         "chat_session_meta": lambda session: _chat_session_meta(session),
         "cancel_chat_request": lambda request_id: _cancel_chat_request(request_id),
@@ -4473,10 +4483,15 @@ def _looks_like_rich_cli_trace(lines: list[str]) -> bool:
     return _native_trace_service.looks_like_rich_cli_trace(lines)
 
 
-def _debug_trace_lines_for_chat(request_id: str, hermes_session_id: str | None) -> list[str]:
+def _debug_trace_lines_for_chat(
+    request_id: str,
+    hermes_session_id: str | None,
+    request_started_at: str | None = None,
+) -> list[str]:
     return _native_trace_service.debug_trace_lines_for_chat(
         request_id,
         hermes_session_id,
+        request_started_at=request_started_at,
         request_progress_lines_fn=lambda value: _request_progress_lines(value),
         looks_like_rich_cli_trace_fn=lambda lines: _looks_like_rich_cli_trace(lines),
         find_updated_hermes_native_session_fn=lambda before, session_id=None: _find_updated_hermes_native_session(before, session_id),

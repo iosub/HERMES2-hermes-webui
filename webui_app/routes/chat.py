@@ -91,20 +91,7 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
     request_output_path = deps["request_output_path"]
     folder_source_dir = deps["folder_source_dir"]
 
-    @app.route("/api/chat", methods=["POST"])
-    @require_token
-    @rate_limit
-    def api_chat():
-        chat_started_at = time.monotonic()
-        data = request.get_json(silent=True) or {}
-        message = data.get("message", "").strip()
-        session_id = data.get("session_id")
-        requested_profile = normalize_profile_name(data.get("profile") or "")
-        if requested_profile and requested_profile not in available_profile_names():
-            return jsonify({"error": "Invalid profile"}), 400
-        requested_transport_preference = normalize_transport_preference(data.get("transport_preference"))
-        requested_folder_id = str(data.get("folder_id") or "").strip()
-        request_id = (data.get("request_id") or str(uuid.uuid4())).strip()
+    def parse_request_files(data):
         files = []
         file_display_names = {}
         for ref in (data.get("files") or []):
@@ -123,10 +110,191 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
                 files.append(file_path)
                 if display_name:
                     file_display_names[file_path.name] = display_name
+        return files, file_display_names
+
+    def latest_session_id_for_profile(session, profile_name: str) -> str | None:
+        normalized_profile = normalize_profile_name(profile_name or "")
+        for segment in reversed(session.get("segments") or []):
+            if normalize_profile_name(segment.get("profile") or "") != normalized_profile:
+                continue
+            hermes_session_id = clean_hermes_session_id(segment.get("hermes_session_id"))
+            if hermes_session_id:
+                return hermes_session_id
+        return clean_hermes_session_id(session.get("hermes_session_id"))
+
+    @app.route("/api/chat/compare/save", methods=["POST"])
+    @require_token
+    @rate_limit
+    def api_chat_compare_save():
+        data = request.get_json(silent=True) or {}
+        message = str(data.get("message") or "").strip()
+        target_session_id = str(data.get("session_id") or "").strip() or None
+        requested_profile = normalize_profile_name(data.get("profile") or "")
+        compare_profiles = []
+        for value in (data.get("compare_profiles") or []):
+            normalized = normalize_profile_name(value)
+            if normalized and normalized not in compare_profiles:
+                compare_profiles.append(normalized)
+        if requested_profile and requested_profile not in compare_profiles:
+            compare_profiles.insert(0, requested_profile)
+        compare_profiles = [profile for profile in compare_profiles if profile in available_profile_names()]
+        if len(compare_profiles) < 2:
+            return jsonify({"error": "Two valid compare profiles are required"}), 400
+        primary_profile = requested_profile or compare_profiles[0]
+        files, file_display_names = parse_request_files(data)
+        if not message and not files:
+            return jsonify({"error": "Message or attachment is required"}), 400
+
+        raw_entries = data.get("compare_responses") or []
+        entry_by_profile = {}
+        for item in raw_entries:
+            if not isinstance(item, dict):
+                continue
+            profile = normalize_profile_name(item.get("profile") or "")
+            if profile and profile not in entry_by_profile:
+                entry_by_profile[profile] = item
+
+        target_session = get_or_create_chat_session(target_session_id, profile_name=primary_profile)
+        target_session["compare_profiles"] = compare_profiles
+        if data.get("transport_preference") is not None:
+            validated_preference, preference_notice = validated_transport_preference(normalize_transport_preference(data.get("transport_preference")))
+            target_session["transport_preference"] = validated_preference
+            target_session["transport_notice"] = preference_notice or ""
+        requested_folder_id = str(data.get("folder_id") or "").strip()
+        if requested_folder_id and not target_session.get("folder_id"):
+            ensured = ensure_folder_exists(requested_folder_id)
+            target_session["folder_id"] = ensured["id"] if ensured else requested_folder_id
+
+        compare_entries = []
+        child_session_ids = []
+        child_sessions = {}
+        for profile in compare_profiles:
+            raw_entry = entry_by_profile.get(profile) or {}
+            child_session_id = str(raw_entry.get("session_id") or "").strip()
+            if child_session_id and child_session_id not in child_sessions:
+                child = load_session(child_session_id)
+                if child:
+                    child_sessions[child_session_id] = child
+                    child_session_ids.append(child_session_id)
+            status = str(raw_entry.get("status") or "completed").strip().lower()
+            if status not in {"completed", "failed"}:
+                status = "completed" if str(raw_entry.get("content") or "").strip() else "failed"
+            transport = str(raw_entry.get("transport") or "").strip().lower()
+            if transport not in (chat_transport_cli, chat_transport_api):
+                transport = ""
+            entry = {
+                "profile": profile,
+                "status": status,
+                "content": str(raw_entry.get("content") or ""),
+                "error": str(raw_entry.get("error") or "").strip(),
+                "transport": transport,
+                "session_id": child_session_id,
+                "debug_trace_lines": [str(line) for line in (raw_entry.get("debug_trace_lines") or []) if str(line or "").strip()],
+                "debug_trace_transport": str(raw_entry.get("debug_trace_transport") or transport or "").strip(),
+                "debug_trace_status": str(raw_entry.get("debug_trace_status") or ("Completed" if status == "completed" else "Error")).strip(),
+                "show_debug_trace": bool(raw_entry.get("show_debug_trace", True)),
+            }
+            compare_entries.append(entry)
+
+        profile_segments = {}
+        for entry in compare_entries:
+            segment = append_chat_segment(target_session, entry["profile"], transport=entry.get("transport") or "")
+            child_session = child_sessions.get(entry.get("session_id") or "") or {}
+            child_hermes_session_id = latest_session_id_for_profile(child_session, entry["profile"]) if child_session else None
+            if child_hermes_session_id:
+                segment["hermes_session_id"] = child_hermes_session_id
+            profile_segments[entry["profile"]] = segment
+
+        primary_segment = profile_segments.get(primary_profile) or next(iter(profile_segments.values()), None)
+        timestamp = datetime.now().isoformat()
+        user_msg = {
+            "role": "user",
+            "content": message,
+            "files": [attachment_display_name(file_path, file_display_names) for file_path in files],
+            "attachment_refs": build_attachment_refs(files, file_display_names),
+            "timestamp": timestamp,
+            "segment_id": (primary_segment or {}).get("id") or "",
+            "segment_index": (primary_segment or {}).get("index") or 1,
+            "profile": primary_profile,
+            "transport": str(data.get("transport") or "").strip().lower() or (primary_segment or {}).get("transport") or "",
+            "compare_profiles": compare_profiles,
+        }
+        assistant_msg = {
+            "role": "assistant",
+            "content": "",
+            "timestamp": timestamp,
+            "segment_id": (primary_segment or {}).get("id") or "",
+            "segment_index": (primary_segment or {}).get("index") or 1,
+            "profile": primary_profile,
+            "compare_mode": True,
+            "compare_responses": compare_entries,
+        }
+
+        target_session["messages"].append(user_msg)
+        target_session["messages"].append(assistant_msg)
+        if len(target_session["messages"]) == 2 and target_session.get("title") == "New Chat":
+            if message:
+                target_session["title"] = message[:60] + ("..." if len(message) > 60 else "")
+            elif files:
+                file_label = ", ".join(file_path.name for file_path in files[:2])
+                if len(files) > 2:
+                    file_label += f" +{len(files) - 2} more"
+                target_session["title"] = f"Files: {file_label}"
+        if primary_segment:
+            target_session["active_segment_id"] = primary_segment.get("id") or ""
+            target_session["profile"] = primary_segment.get("profile") or primary_profile
+            target_session["hermes_session_id"] = segment_hermes_session_id(primary_segment)
+        else:
+            target_session["profile"] = primary_profile
+            target_session["hermes_session_id"] = None
+        compare_transport = next((entry.get("transport") for entry in compare_entries if entry.get("transport") in (chat_transport_cli, chat_transport_api)), "")
+        if compare_transport == chat_transport_api:
+            target_session["transport_mode"] = chat_transport_api
+            target_session["continuity_mode"] = chat_continuity_local
+        elif compare_transport == chat_transport_cli:
+            target_session["transport_mode"] = chat_transport_cli
+            target_session["continuity_mode"] = chat_continuity_hermes if target_session.get("hermes_session_id") else chat_continuity_limited
+        target_session["updated"] = timestamp
+        write_session(target_session)
+
+        for child_session_id in child_session_ids:
+            if child_session_id and child_session_id != target_session["id"]:
+                delete_session_from_disk(child_session_id)
+
+        return jsonify({
+            "ok": True,
+            "session_id": target_session["id"],
+            "title": target_session.get("title", ""),
+            "session": chat_session_meta(target_session),
+            "user_message": user_msg,
+            "assistant_message": assistant_msg,
+        })
+
+    @app.route("/api/chat", methods=["POST"])
+    @require_token
+    @rate_limit
+    def api_chat():
+        chat_started_at = time.monotonic()
+        data = request.get_json(silent=True) or {}
+        message = data.get("message", "").strip()
+        session_id = data.get("session_id")
+        requested_profile = normalize_profile_name(data.get("profile") or "")
+        compare_profiles = []
+        for value in (data.get("compare_profiles") or []):
+            normalized = normalize_profile_name(value)
+            if normalized and normalized not in compare_profiles:
+                compare_profiles.append(normalized)
+        if requested_profile and requested_profile not in available_profile_names():
+            return jsonify({"error": "Invalid profile"}), 400
+        requested_transport_preference = normalize_transport_preference(data.get("transport_preference"))
+        requested_folder_id = str(data.get("folder_id") or "").strip()
+        request_id = (data.get("request_id") or str(uuid.uuid4())).strip()
+        files, file_display_names = parse_request_files(data)
         if not message and not files:
             return jsonify({"error": "Message or attachment is required"}), 400
 
         sess = get_or_create_chat_session(session_id, profile_name=requested_profile)
+        sess["compare_profiles"] = compare_profiles if len(compare_profiles) > 1 else []
         sess["profile"] = normalize_profile_name(sess.get("profile")) or selected_profile_name()
         if data.get("transport_preference") is not None:
             validated_preference, preference_notice = validated_transport_preference(requested_transport_preference)
@@ -293,8 +461,13 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
         finally:
             debug_trace_lines = []
             if request_id:
+                request_state = read_request_control(request_id) or {}
                 with scoped_profile_override(sess.get("profile")):
-                    debug_trace_lines = debug_trace_lines_for_chat(request_id, sess.get("hermes_session_id"))
+                    debug_trace_lines = debug_trace_lines_for_chat(
+                        request_id,
+                        sess.get("hermes_session_id"),
+                        request_state.get("created_at") or "",
+                    )
             remove_chat_request(request_id)
 
         assistant_msg = {

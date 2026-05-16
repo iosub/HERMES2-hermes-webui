@@ -316,6 +316,152 @@ session_id: 20260513_124953_76cd78
             "  ┊ 🌐 browser_navigate example.com/path?q=1",
         ])
 
+    def test_debug_trace_lines_for_chat_skips_stale_native_session(self):
+        request_id = "stale-native-trace"
+        mod._request_output_path(request_id).write_text(
+            "\n".join([
+                "session_id: 20260513_130301_tracedd",
+                "**respuesta**",
+            ]),
+            encoding="utf-8",
+        )
+        session_path = Path(self.tmpdir.name) / "session_20260513_130301_tracedd.json"
+        session_path.write_text(json.dumps({
+            "session_id": "20260513_130301_tracedd",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "call_id": "call_1",
+                            "function": {
+                                "name": "browser_navigate",
+                                "arguments": json.dumps({"url": "https://example.com/stale"}),
+                            },
+                        },
+                    ],
+                },
+                {"role": "tool", "name": "browser_navigate", "tool_call_id": "call_1", "content": json.dumps({"url": "https://example.com/stale"})},
+            ],
+        }))
+        old_ts = mod.datetime.fromisoformat("2026-05-13T12:00:00").timestamp()
+        os.utime(session_path, (old_ts, old_ts))
+
+        with patch.object(mod, "_find_updated_hermes_native_session", return_value=session_path):
+            lines = mod._debug_trace_lines_for_chat(
+                request_id,
+                "20260513_130301_tracedd",
+                "2026-05-13T13:00:00",
+            )
+
+        self.assertEqual(lines, [
+            "session_id: 20260513_130301_tracedd",
+            "**respuesta**",
+        ])
+
+    def test_compare_save_merges_temporary_sessions_into_one_chat(self):
+        primary = mod._get_or_create_chat_session(profile_name="default")
+        primary["hermes_session_id"] = "hermes-default-1"
+        primary["segments"][0]["hermes_session_id"] = "hermes-default-1"
+        primary["messages"] = [
+            {
+                "role": "user",
+                "content": "hola",
+                "timestamp": "2026-05-16T01:00:00",
+                "segment_id": "segment-1",
+                "segment_index": 1,
+                "profile": "default",
+                "transport": "cli",
+            },
+            {
+                "role": "assistant",
+                "content": "respuesta default",
+                "timestamp": "2026-05-16T01:00:01",
+                "segment_id": "segment-1",
+                "segment_index": 1,
+                "profile": "default",
+                "transport": "cli",
+            },
+        ]
+        mod._write_session(primary)
+
+        secondary = mod._get_or_create_chat_session(profile_name="leire")
+        secondary["hermes_session_id"] = "hermes-leire-1"
+        secondary["segments"][0]["hermes_session_id"] = "hermes-leire-1"
+        secondary["messages"] = [
+            {
+                "role": "user",
+                "content": "hola",
+                "timestamp": "2026-05-16T01:00:00",
+                "segment_id": "segment-1",
+                "segment_index": 1,
+                "profile": "leire",
+                "transport": "cli",
+            },
+            {
+                "role": "assistant",
+                "content": "respuesta leire",
+                "timestamp": "2026-05-16T01:00:01",
+                "segment_id": "segment-1",
+                "segment_index": 1,
+                "profile": "leire",
+                "transport": "cli",
+            },
+        ]
+        mod._write_session(secondary)
+
+        auth_headers = {"Authorization": f"Bearer {mod.HERMES_WEBUI_TOKEN}"}
+
+        with patch.object(mod, "_available_hermes_profile_names", return_value=["default", "leire"]):
+            resp = self.client.post(
+                "/api/chat/compare/save",
+                json={
+                    "message": "hola",
+                    "profile": "default",
+                    "compare_profiles": ["default", "leire"],
+                    "compare_responses": [
+                        {
+                            "profile": "default",
+                            "status": "completed",
+                            "content": "respuesta default",
+                            "transport": "cli",
+                            "session_id": primary["id"],
+                            "debug_trace_lines": ["  ┊ 📚 default"],
+                            "debug_trace_transport": "cli",
+                            "debug_trace_status": "Completed",
+                        },
+                        {
+                            "profile": "leire",
+                            "status": "completed",
+                            "content": "respuesta leire",
+                            "transport": "cli",
+                            "session_id": secondary["id"],
+                            "debug_trace_lines": ["  ┊ 📚 leire"],
+                            "debug_trace_transport": "cli",
+                            "debug_trace_status": "Completed",
+                        },
+                    ],
+                },
+                headers=auth_headers,
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        data = resp.get_json()
+        merged_id = data["session_id"]
+        persisted = mod._load_session(merged_id)
+        self.assertIsNotNone(persisted)
+        self.assertEqual(len(mod._load_all_sessions()), 1)
+        self.assertEqual(len(persisted["messages"]), 2)
+        self.assertEqual(persisted["messages"][0]["content"], "hola")
+        self.assertEqual(len(persisted["messages"][1]["compare_responses"]), 2)
+        self.assertEqual(persisted["compare_profiles"], ["default", "leire"])
+        self.assertFalse((mod.CHAT_DATA_DIR / f"{primary['id']}.json").exists())
+        self.assertFalse((mod.CHAT_DATA_DIR / f"{secondary['id']}.json").exists())
+        leire_segment = next(segment for segment in persisted["segments"] if segment["profile"] == "leire")
+        self.assertEqual(leire_segment["hermes_session_id"], "hermes-leire-1")
+
     def test_filter_live_progress_lines_removes_reasoning_blocks(self):
         lines = [
             "Query: hola",
