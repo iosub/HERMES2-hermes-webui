@@ -365,6 +365,7 @@ session_id: 20260513_124953_76cd78
         primary = mod._get_or_create_chat_session(profile_name="default")
         primary["hermes_session_id"] = "hermes-default-1"
         primary["segments"][0]["hermes_session_id"] = "hermes-default-1"
+        (Path(self.tmpdir.name) / "session_hermes-default-1.json").write_text("{}")
         primary["messages"] = [
             {
                 "role": "user",
@@ -390,6 +391,7 @@ session_id: 20260513_124953_76cd78
         secondary = mod._get_or_create_chat_session(profile_name="leire")
         secondary["hermes_session_id"] = "hermes-leire-1"
         secondary["segments"][0]["hermes_session_id"] = "hermes-leire-1"
+        (Path(self.tmpdir.name) / "session_hermes-leire-1.json").write_text("{}")
         secondary["messages"] = [
             {
                 "role": "user",
@@ -550,6 +552,7 @@ session_id: 20260513_124953_76cd78
         parent["segments"][0]["hermes_session_id"] = "hermes-default-1"
         alex_segment = mod._append_chat_segment(parent, "alex", transport="cli")
         alex_segment["hermes_session_id"] = "hermes-alex-1"
+        (Path(self.tmpdir.name) / "session_hermes-alex-1.json").write_text("{}")
         parent["active_segment_id"] = parent["segments"][0]["id"]
         parent["profile"] = "default"
         parent["hermes_session_id"] = "hermes-default-1"
@@ -604,6 +607,74 @@ session_id: 20260513_124953_76cd78
         self.assertTrue(compare_session.get("compare_temporary"))
         alex_compare_segment = next(segment for segment in compare_session["segments"] if segment["profile"] == "alex")
         self.assertEqual(alex_compare_segment["hermes_session_id"], "hermes-alex-2")
+
+    def test_switching_session_profile_reuses_existing_profile_continuity(self):
+        session = mod._get_or_create_chat_session(profile_name="default")
+        session["hermes_session_id"] = "hermes-default-1"
+        session["segments"][0]["hermes_session_id"] = "hermes-default-1"
+        alex_segment = mod._append_chat_segment(session, "alex", transport="cli")
+        alex_segment["hermes_session_id"] = "hermes-alex-1"
+        (Path(self.tmpdir.name) / "session_hermes-alex-1.json").write_text("{}")
+        session["messages"] = [
+            {
+                "role": "user",
+                "content": "hola",
+                "timestamp": "2026-05-16T01:00:00",
+                "segment_id": "segment-1",
+                "segment_index": 1,
+                "profile": "default",
+                "transport": "cli",
+            },
+            {
+                "role": "assistant",
+                "content": "respuesta base",
+                "timestamp": "2026-05-16T01:00:01",
+                "segment_id": "segment-1",
+                "segment_index": 1,
+                "profile": "default",
+                "transport": "cli",
+            },
+        ]
+        mod._write_session(session)
+
+        with patch.object(mod, "_available_hermes_profile_names", return_value=["default", "alex"]):
+            resp = self.client.put(
+                f"/api/chat/sessions/{session['id']}/profile",
+                json={"profile": "alex"},
+                headers=self.headers,
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        data = resp.get_json()
+        self.assertEqual(data["selected"], "alex")
+        self.assertEqual(data["session"]["profile"], "alex")
+        self.assertIn("resume", data["session"]["transport_notice"].lower())
+        stored = mod._load_session(session["id"])
+        self.assertEqual(stored["hermes_session_id"], "hermes-alex-1")
+        self.assertEqual(stored["segments"][-1]["profile"], "alex")
+        self.assertEqual(stored["segments"][-1]["hermes_session_id"], "hermes-alex-1")
+
+    def test_switching_session_profile_starts_fresh_when_native_session_is_missing(self):
+        session = mod._get_or_create_chat_session(profile_name="default")
+        session["hermes_session_id"] = "hermes-default-1"
+        session["segments"][0]["hermes_session_id"] = "hermes-default-1"
+        alex_segment = mod._append_chat_segment(session, "alex", transport="cli")
+        alex_segment["hermes_session_id"] = "hermes-alex-missing"
+        mod._write_session(session)
+
+        with patch.object(mod, "_available_hermes_profile_names", return_value=["default", "alex"]):
+            resp = self.client.put(
+                f"/api/chat/sessions/{session['id']}/profile",
+                json={"profile": "alex"},
+                headers=self.headers,
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        data = resp.get_json()
+        self.assertIn("fresh", data["session"]["transport_notice"].lower())
+        stored = mod._load_session(session["id"])
+        self.assertIsNone(stored["hermes_session_id"])
+        self.assertIsNone(stored["segments"][-1]["hermes_session_id"])
 
     def test_compare_temporary_session_messages_are_aggregated_for_history_reopen(self):
         default_temp = mod._get_or_create_chat_session(profile_name="default")

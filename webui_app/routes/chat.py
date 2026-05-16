@@ -38,6 +38,7 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
     call_hermes_prompt = deps["call_hermes_prompt"]
     call_hermes_direct = deps["call_hermes_direct"]
     clean_hermes_session_id = deps["clean_hermes_session_id"]
+    hermes_native_session_file_candidates = deps["hermes_native_session_file_candidates"]
     update_chat_request = deps["update_chat_request"]
     rollback_failed_chat_turn = deps["rollback_failed_chat_turn"]
     debug_trace_lines_for_chat = deps["debug_trace_lines_for_chat"]
@@ -114,14 +115,24 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
         return files, file_display_names
 
     def latest_session_id_for_profile(session, profile_name: str) -> str | None:
+        def resumable_session_id(value) -> str | None:
+            session_id = clean_hermes_session_id(value)
+            if not session_id:
+                return None
+            expected_name = f"session_{session_id}.json"
+            for path in hermes_native_session_file_candidates(session_id):
+                if path.name == expected_name and path.exists():
+                    return session_id
+            return None
+
         normalized_profile = normalize_profile_name(profile_name or "")
         for segment in reversed(session.get("segments") or []):
             if normalize_profile_name(segment.get("profile") or "") != normalized_profile:
                 continue
-            hermes_session_id = clean_hermes_session_id(segment.get("hermes_session_id"))
+            hermes_session_id = resumable_session_id(segment.get("hermes_session_id"))
             if hermes_session_id:
                 return hermes_session_id
-        return clean_hermes_session_id(session.get("hermes_session_id"))
+        return resumable_session_id(session.get("hermes_session_id"))
 
     def last_message_for_role(session: dict, role: str) -> dict:
         normalized_role = str(role or "").strip().lower()
@@ -1081,16 +1092,23 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
         if requested_profile not in available_profile_names():
             return jsonify({"error": "Invalid profile"}), 400
         selected = requested_profile
+        resumed_hermes_session_id = latest_session_id_for_profile(session, selected)
         segment = append_chat_segment(session, selected)
-        segment["hermes_session_id"] = None
+        segment["hermes_session_id"] = resumed_hermes_session_id
         session["profile"] = selected
         session["transport_mode"] = None
         session["continuity_mode"] = None
-        session["hermes_session_id"] = None
-        session["transport_notice"] = (
-            f"Switched to Hermes profile {selected}. "
-            "Next messages in this chat will use that profile with a fresh Hermes turn."
-        )
+        session["hermes_session_id"] = resumed_hermes_session_id
+        if resumed_hermes_session_id:
+            session["transport_notice"] = (
+                f"Switched to Hermes profile {selected}. "
+                "Next messages in this chat will resume that profile's prior Hermes continuity."
+            )
+        else:
+            session["transport_notice"] = (
+                f"Switched to Hermes profile {selected}. "
+                "Next messages in this chat will use that profile with a fresh Hermes turn."
+            )
         session["updated"] = datetime.now().isoformat()
         write_session(session)
         return jsonify({"ok": True, "selected": selected, "session": chat_session_meta(session)})

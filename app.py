@@ -4291,6 +4291,7 @@ register_chat_routes(
         "chat_request_timeout": lambda: CHAT_REQUEST_TIMEOUT,
         "chat_server_timeout": lambda: CHAT_SERVER_TIMEOUT,
         "chat_persist_debug_trace": lambda: CHAT_PERSIST_DEBUG_TRACE,
+        "hermes_native_session_file_candidates": lambda session_id=None: _hermes_native_session_file_candidates(session_id),
         "chat_transport_api": CHAT_TRANSPORT_API,
         "chat_transport_cli": CHAT_TRANSPORT_CLI,
         "chat_continuity_hermes": CHAT_CONTINUITY_HERMES,
