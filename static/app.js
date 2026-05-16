@@ -271,16 +271,7 @@ function navigate(screen) {
     const navItem = document.querySelector('[data-screen="' + screen + '"]');
     if (navItem) navItem.classList.add('active');
     if (screen === 'chat') {
-        const hasRecoverableChatState = !!chatState.currentSessionId
-            || (Array.isArray(chatState.localMessages) && chatState.localMessages.length > 0)
-            || chatState.isThinking
-            || !!chatState.currentRequestId
-            || Object.keys(chatState.compareRequestIds || {}).length > 0
-            || chatState.pendingFiles.length > 0
-            || !!chatState.selectedFolderId;
-        if (!hasRecoverableChatState) {
-            chatGoHome();
-        }
+        chatGoHome();
     }
     const content = document.getElementById('content');
     content.style.padding = screen === 'chat' ? '0' : '';
@@ -7054,14 +7045,22 @@ async function chatLoadHistory() {
 }
 
 window.chatLoadSession = async function (sid) {
+    if (chatState.requestProgressPoll) {
+        clearInterval(chatState.requestProgressPoll);
+        chatState.requestProgressPoll = null;
+    }
+    chatState.compareMode = false;
+    chatResetCompareSessions();
+    chatState.currentRequestId = null;
+    chatState.isThinking = false;
+    chatState.currentRequestCancelSupported = false;
+    chatState.cancelRequested = false;
+    chatState.currentSessionId = sid;
+    chatState.localMessages = [];
+    chatShowSessionLoading();
+    chatRefreshActiveSessionSelection();
     try {
         const data = await api('GET', '/api/chat/sessions/' + sid + '/messages');
-        if (chatState.requestProgressPoll) {
-            clearInterval(chatState.requestProgressPoll);
-            chatState.requestProgressPoll = null;
-        }
-        chatState.compareMode = false;
-        chatResetCompareSessions();
         chatState.currentSessionId = sid;
         chatState.localMessages = data.messages || [];
         chatApplySessionMetadata(data.session || null);
@@ -7112,6 +7111,9 @@ window.chatLoadSession = async function (sid) {
             chatSyncSendButton();
         }
     } catch (e) {
+        chatState.currentSessionId = null;
+        chatState.localMessages = [];
+        chatShowWelcome();
         toast('Failed to load session', 'error');
     }
     chatRefreshActiveSessionSelection();
@@ -7364,6 +7366,12 @@ function chatShowWelcome() {
         </div>
         <p class="chat-welcome-hint">Tip: You can send a text file even without typing a message${chatState.compareMode ? ' or compare the same prompt across two profiles' : ''}</p>
     </div>`;
+}
+
+function chatShowSessionLoading() {
+    const msgs = document.getElementById('chat-messages');
+    if (!msgs) return;
+    msgs.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
 }
 
 function chatRenderFolderOverview(folder) {
