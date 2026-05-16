@@ -5632,6 +5632,30 @@ function chatHasRunningCompareResponses(message = chatGetPendingAssistantMessage
     return message.compare_responses.some(entry => String(entry?.status || '').trim().toLowerCase() === 'running');
 }
 
+function chatRunningCompareRequests(message = chatGetPendingAssistantMessage()) {
+    if (!message || !Array.isArray(message.compare_responses)) return [];
+    const seen = new Set();
+    return message.compare_responses.map(function(entry) {
+        const profile = String(entry?.profile || '').trim();
+        const status = String(entry?.status || '').trim().toLowerCase();
+        const requestId = String(entry?.request_id || chatState.compareRequestIds[profile] || '').trim();
+        return { profile, status, requestId };
+    }).filter(function(entry) {
+        if (!entry.profile || entry.status !== 'running' || !entry.requestId || seen.has(entry.requestId)) {
+            return false;
+        }
+        seen.add(entry.requestId);
+        return true;
+    });
+}
+
+function chatHasActiveCompareRequests(message = chatGetPendingAssistantMessage()) {
+    if (!message || !Array.isArray(message.compare_responses) || !message._pendingAssistant) return false;
+    if (chatHasRunningCompareResponses(message)) return true;
+    if (Object.keys(chatState.compareRequestProgressPolls || {}).length > 0) return true;
+    return Object.keys(chatState.compareRequestIds || {}).length > 0;
+}
+
 function chatUpdateComparePendingResponse(profile, patch = {}) {
     const pendingAssistant = chatGetPendingAssistantMessage();
     const entry = chatCompareResponseEntry(pendingAssistant, profile);
@@ -7745,6 +7769,41 @@ window.chatAbort = async function () {
     }
 };
 
+window.chatAbortCompare = async function () {
+    if (!chatState.currentRequestCancelSupported || chatState.cancelRequested) return;
+    const activeRequests = chatRunningCompareRequests();
+    if (!activeRequests.length) return;
+
+    chatState.cancelRequested = true;
+    activeRequests.forEach(function(active) {
+        const entry = chatCompareResponseEntry(chatGetPendingAssistantMessage(), active.profile);
+        if (entry) {
+            entry.debug_trace_status = 'Cancelling';
+            entry.show_debug_trace = true;
+        }
+        chatPatchPendingCompareCard(active.profile);
+    });
+    chatSyncSendButton();
+
+    try {
+        const results = await Promise.all(activeRequests.map(function(active) {
+            return api('POST', '/api/chat/cancel', { request_id: active.requestId });
+        }));
+        const failed = results.find(function(result) {
+            return !result?.cancelled;
+        });
+        if (failed) {
+            chatState.cancelRequested = false;
+            chatSyncSendButton();
+            toast(failed.detail || 'Unable to cancel compare request', 'warning');
+        }
+    } catch (e) {
+        chatState.cancelRequested = false;
+        chatSyncSendButton();
+        toast('Unable to cancel compare request: ' + e.message, 'warning');
+    }
+};
+
 // ── REGENERATE ─────────────────────────────────────────────
 window.chatRegenerate = async function () {
     if (chatState.isThinking) return;
@@ -7904,6 +7963,7 @@ window.chatSend = async function () {
                     const resp = await api('POST', '/api/chat', {
                         message,
                         session_id: compareSessionId || null,
+                        parent_session_id: previousSessionId || null,
                         profile,
                         compare_profiles: compareProfiles,
                         folder_id: compareSessionId ? '' : folderId,
@@ -8390,18 +8450,26 @@ function chatSyncSendButton() {
     const input = document.getElementById('chat-input');
     const sendBtn = document.getElementById('chat-send-btn');
     if (!sendBtn) return;
-    if (chatHasRunningCompareResponses()) {
-        sendBtn.classList.remove('chat-stop-state');
-        sendBtn.onclick = chatSend;
-        sendBtn.disabled = true;
+    if (chatHasActiveCompareRequests()) {
+        sendBtn.classList.add('chat-stop-state');
+        sendBtn.onclick = chatAbortCompare;
+        sendBtn.disabled = !chatState.currentRequestCancelSupported || chatState.cancelRequested;
+        const svg = sendBtn.querySelector('svg');
+        if (svg) svg.innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>';
         return;
     }
     if (chatState.isThinking) {
         sendBtn.classList.add('chat-stop-state');
         sendBtn.onclick = chatState.currentRequestCancelSupported ? chatAbort : chatSend;
         sendBtn.disabled = !chatState.currentRequestCancelSupported;
+        const svg = sendBtn.querySelector('svg');
+        if (svg) svg.innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>';
         return;
     }
+    sendBtn.classList.remove('chat-stop-state');
+    sendBtn.onclick = chatSend;
+    const svg = sendBtn.querySelector('svg');
+    if (svg) svg.innerHTML = '<path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>';
     sendBtn.disabled = !(input?.value.trim() || chatState.pendingFiles.length > 0);
 }
 

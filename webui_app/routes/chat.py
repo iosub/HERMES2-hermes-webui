@@ -289,6 +289,7 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
             return jsonify({"error": "Invalid profile"}), 400
         requested_transport_preference = normalize_transport_preference(data.get("transport_preference"))
         requested_folder_id = str(data.get("folder_id") or "").strip()
+        parent_session_id = str(data.get("parent_session_id") or "").strip()
         request_id = (data.get("request_id") or str(uuid.uuid4())).strip()
         files, file_display_names = parse_request_files(data)
         if not message and not files:
@@ -298,6 +299,18 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
         sess["compare_profiles"] = compare_profiles if len(compare_profiles) > 1 else []
         sess["compare_temporary"] = len(compare_profiles) > 1
         sess["profile"] = normalize_profile_name(sess.get("profile")) or selected_profile_name()
+        if len(compare_profiles) > 1 and parent_session_id and parent_session_id != sess["id"] and not sess.get("messages"):
+            parent_session = load_session(parent_session_id)
+            parent_hermes_session_id = latest_session_id_for_profile(parent_session or {}, sess.get("profile")) if parent_session else None
+            if parent_hermes_session_id:
+                for segment in sess.get("segments") or []:
+                    if normalize_profile_name(segment.get("profile") or "") != sess["profile"]:
+                        continue
+                    if not clean_hermes_session_id(segment.get("hermes_session_id")):
+                        segment["hermes_session_id"] = parent_hermes_session_id
+                    break
+                if not clean_hermes_session_id(sess.get("hermes_session_id")):
+                    sess["hermes_session_id"] = parent_hermes_session_id
         if data.get("transport_preference") is not None:
             validated_preference, preference_notice = validated_transport_preference(requested_transport_preference)
             sess["transport_preference"] = validated_preference

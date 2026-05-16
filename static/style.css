@@ -2477,11 +2477,11 @@ pre code {
 }
 
 .chat-history.collapsed {
-  width: 44px;
-  min-width: 44px;
-  opacity: 1;
-  border-right: 1px solid var(--border);
-  overflow: visible;
+  width: 0;
+  min-width: 0;
+  opacity: 0;
+  border-right: none;
+  overflow: hidden;
 }
 
 /* When collapsed, hide everything except the toggle button */

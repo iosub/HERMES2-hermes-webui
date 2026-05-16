@@ -492,6 +492,67 @@ session_id: 20260513_124953_76cd78
         self.assertEqual(audit["chat_count"], 1)
         self.assertEqual([item["id"] for item in audit["sessions"]], [visible["id"]])
 
+    def test_compare_chat_inherits_parent_profile_continuity(self):
+        parent = mod._get_or_create_chat_session(profile_name="default")
+        parent["hermes_session_id"] = "hermes-default-1"
+        parent["segments"][0]["hermes_session_id"] = "hermes-default-1"
+        alex_segment = mod._append_chat_segment(parent, "alex", transport="cli")
+        alex_segment["hermes_session_id"] = "hermes-alex-1"
+        parent["active_segment_id"] = parent["segments"][0]["id"]
+        parent["profile"] = "default"
+        parent["hermes_session_id"] = "hermes-default-1"
+        parent["messages"] = [
+            {
+                "role": "user",
+                "content": "hola",
+                "timestamp": "2026-05-16T01:00:00",
+                "segment_id": "segment-1",
+                "segment_index": 1,
+                "profile": "default",
+                "transport": "cli",
+            },
+            {
+                "role": "assistant",
+                "content": "respuesta base",
+                "timestamp": "2026-05-16T01:00:01",
+                "segment_id": "segment-1",
+                "segment_index": 1,
+                "profile": "default",
+                "transport": "cli",
+            },
+        ]
+        mod._write_session(parent)
+
+        seen_session_ids = []
+
+        def fake_call(session, message, files=None, request_id=None, file_display_names=None):
+            seen_session_ids.append(session.get("hermes_session_id"))
+            return ("respuesta alex", "hermes-alex-2")
+
+        with patch.object(mod, "_available_hermes_profile_names", return_value=["default", "alex"]), \
+             patch.object(mod, "_call_hermes_direct", side_effect=fake_call), \
+             patch.object(mod, "_check_api_server", return_value=False), \
+             patch.object(mod, "_image_attachment_support_status", return_value=(False, "disabled")):
+            resp = self.client.post(
+                "/api/chat",
+                json={
+                    "message": "hola",
+                    "profile": "alex",
+                    "compare_profiles": ["default", "alex"],
+                    "parent_session_id": parent["id"],
+                },
+                headers=self.headers,
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(seen_session_ids, ["hermes-alex-1"])
+        data = resp.get_json()
+        compare_session = mod._load_session(data["session_id"])
+        self.assertIsNotNone(compare_session)
+        self.assertTrue(compare_session.get("compare_temporary"))
+        alex_compare_segment = next(segment for segment in compare_session["segments"] if segment["profile"] == "alex")
+        self.assertEqual(alex_compare_segment["hermes_session_id"], "hermes-alex-2")
+
     def test_filter_live_progress_lines_removes_reasoning_blocks(self):
         lines = [
             "Query: hola",
