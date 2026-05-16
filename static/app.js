@@ -5630,6 +5630,11 @@ function chatCompareResponseEntry(message, profile) {
     return message.compare_responses.find(entry => entry.profile === profile) || null;
 }
 
+function chatHasRunningCompareResponses(message = chatGetPendingAssistantMessage()) {
+    if (!message || !Array.isArray(message.compare_responses)) return false;
+    return message.compare_responses.some(entry => String(entry?.status || '').trim().toLowerCase() === 'running');
+}
+
 function chatUpdateComparePendingResponse(profile, patch = {}) {
     const pendingAssistant = chatGetPendingAssistantMessage();
     const entry = chatCompareResponseEntry(pendingAssistant, profile);
@@ -7835,6 +7840,7 @@ window.chatSend = async function () {
         let compareFinalized = false;
         const finalizeCompareRun = () => {
             if (compareFinalized || settledCount < compareProfiles.length) return;
+            if (chatHasRunningCompareResponses()) return;
             compareFinalized = true;
             chatClearCompareRequestProgressState();
 
@@ -8359,6 +8365,12 @@ function chatSyncSendButton() {
     const input = document.getElementById('chat-input');
     const sendBtn = document.getElementById('chat-send-btn');
     if (!sendBtn) return;
+    if (chatHasRunningCompareResponses()) {
+        sendBtn.classList.remove('chat-stop-state');
+        sendBtn.onclick = chatSend;
+        sendBtn.disabled = true;
+        return;
+    }
     if (chatState.isThinking) {
         sendBtn.classList.add('chat-stop-state');
         sendBtn.onclick = chatState.currentRequestCancelSupported ? chatAbort : chatSend;
