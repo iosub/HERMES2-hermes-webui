@@ -5692,12 +5692,41 @@ function chatCompareStatusBadge(status) {
     return '<span class="badge badge-warning">Running</span>';
 }
 
+function chatCompareEntryText(entry) {
+    const profile = String(entry?.profile || 'default').trim() || 'default';
+    const status = String(entry?.status || 'running').trim().toLowerCase();
+    const content = String(entry?.content || '').trim();
+    const error = String(entry?.error || '').trim();
+    if (status === 'completed') {
+        return content;
+    }
+    if (status === 'failed') {
+        return error || ('This profile could not answer the request: ' + profile);
+    }
+    return 'Waiting for ' + profile + '...';
+}
+
+function chatCompareEntryExportMarkdown(entry) {
+    const profile = String(entry?.profile || 'default').trim() || 'default';
+    const status = String(entry?.status || 'running').trim().toLowerCase();
+    const transport = String(entry?.transport || '').trim();
+    const statusLabel = status === 'completed' ? 'Ready' : status === 'failed' ? 'Failed' : 'Running';
+    let block = '### Hermes (' + profile + ')\n\n';
+    block += '*Status:* ' + statusLabel;
+    if (transport) {
+        block += '  \n*Transport:* ' + transport;
+    }
+    block += '\n\n' + chatCompareEntryText(entry) + '\n\n';
+    return block;
+}
+
 function chatBuildCompareResponseMarkup(entry) {
     const profile = String(entry?.profile || 'default').trim() || 'default';
     const transport = String(entry?.transport || '').trim();
     const status = String(entry?.status || 'running').trim().toLowerCase();
     const content = String(entry?.content || '');
     const error = String(entry?.error || '').trim();
+    const canCopy = (status === 'completed' && !!content.trim()) || (status === 'failed' && !!(error || '').trim());
     const traceHtml = chatCompareTraceMarkup(entry);
     let bodyHtml = '';
     if (status === 'completed' && content) {
@@ -5713,7 +5742,12 @@ function chatBuildCompareResponseMarkup(entry) {
         + '<span class="badge badge-accent">' + escH(profile) + '</span>'
         + (transport ? '<span class="badge badge-info">' + escH(chatTransportPreferenceLabel(transport)) + '</span>' : '')
         + '</div>'
+        + '<div class="chat-header-right">'
         + chatCompareStatusBadge(status)
+        + (canCopy
+            ? '<button class="chat-response-tool chat-compare-copy" type="button" data-compare-profile="' + escA(profile) + '" onclick="chatCopyResponseBlock(this)" title="Copy response">' + chatCopyIconMarkup() + '</button>'
+            : '')
+        + '</div>'
         + '</div>'
         + '<div class="chat-compare-card-body">' + bodyHtml + '</div>'
         + '</div>';
@@ -7555,6 +7589,15 @@ function chatBuildMessageNode(message) {
             + '</div>'
         : '';
     div.innerHTML = '<div class="chat-msg-inner"><div class="chat-msg-avatar">' + avatarSvg + '</div><div class="chat-msg-body">' + chatMessageBadges(message) + bubbleHtml + filesHtml + timeHtml + '</div></div>';
+    if (role === 'assistant' && isCompareMessage) {
+        div.querySelectorAll('.chat-compare-copy').forEach(function(copyBtn) {
+            const compareProfile = String(copyBtn.getAttribute('data-compare-profile') || '').trim();
+            const entry = (message.compare_responses || []).find(function(item) {
+                return String(item?.profile || '').trim() === compareProfile;
+            });
+            if (entry) copyBtn._copyText = chatCompareEntryText(entry);
+        });
+    }
     if (role === 'assistant' && content && !isCompareMessage) {
         const copyBtn = div.querySelector('.chat-msg-time-copy');
         if (copyBtn) copyBtn._copyText = content;
@@ -8392,8 +8435,15 @@ window.chatExport = function () {
 
     messages.forEach(m => {
         const time = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : '';
-        const label = m.role === 'user' ? '**You**' : '**Hermes**';
-        text += label + ' (' + time + '):\n\n' + m.content + '\n\n';
+        if (m.role === 'assistant' && Array.isArray(m.compare_responses) && m.compare_responses.length > 0) {
+            text += '**Hermes Compare** (' + time + '):\n\n';
+            m.compare_responses.forEach(function(entry) {
+                text += chatCompareEntryExportMarkdown(entry);
+            });
+        } else {
+            const label = m.role === 'user' ? '**You**' : '**Hermes**';
+            text += label + ' (' + time + '):\n\n' + m.content + '\n\n';
+        }
         if (m.files && m.files.length > 0) {
             text += '*Attachments:* ' + m.files.join(', ') + '\n\n';
         }
