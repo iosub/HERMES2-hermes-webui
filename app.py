@@ -1032,6 +1032,7 @@ def _normalize_chat_session(session: dict) -> dict:
     session["folder_id"] = folder_id.strip()
     session["workspace_roots"] = _clean_string_list(session.get("workspace_roots"))
     session["source_docs"] = _clean_string_list(session.get("source_docs"))
+    session["compare_temporary"] = bool(session.get("compare_temporary"))
     compare_profiles = []
     for value in session.get("compare_profiles") or []:
         name = _normalize_hermes_profile_name(value)
@@ -1594,6 +1595,11 @@ def _dedupe_legacy_folder_titles() -> dict:
 
 def _folder_summaries(sessions: dict | None = None) -> list[dict]:
     sessions = sessions if sessions is not None else _load_all_sessions()
+    sessions = {
+        session_id: session
+        for session_id, session in sessions.items()
+        if not bool(session.get("compare_temporary"))
+    }
     folders = _load_all_folders()
     folder_map = {folder_id: _normalize_chat_folder(folder) for folder_id, folder in folders.items()}
     grouped_sessions: dict[str, list[dict]] = {folder_id: [] for folder_id in folder_map}

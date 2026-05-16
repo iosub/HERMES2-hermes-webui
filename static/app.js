@@ -6100,10 +6100,6 @@ window.chatToggleCompareMode = function () {
         toast('At least two profiles are required for compare mode', 'warning');
         return;
     }
-    if (!chatState.compareMode && chatState.currentSessionId) {
-        toast('Compare mode starts from a new chat. Click New Chat first.', 'warning', 3000);
-        return;
-    }
     chatState.compareMode = !chatState.compareMode;
     chatResetCompareSessions();
     if (chatState.compareMode) {

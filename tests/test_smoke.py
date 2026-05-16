@@ -462,6 +462,36 @@ session_id: 20260513_124953_76cd78
         leire_segment = next(segment for segment in persisted["segments"] if segment["profile"] == "leire")
         self.assertEqual(leire_segment["hermes_session_id"], "hermes-leire-1")
 
+    def test_compare_temporary_sessions_are_hidden_from_history(self):
+        visible = mod._get_or_create_chat_session(profile_name="default")
+        visible["title"] = "Visible chat"
+        visible["messages"] = [{"role": "user", "content": "hola", "timestamp": "2026-05-16T01:00:00"}]
+        visible["updated"] = "2026-05-16T01:00:00"
+        visible["folder_id"] = "Audit"
+        mod._write_session(visible)
+
+        hidden = mod._get_or_create_chat_session(profile_name="alex")
+        hidden["title"] = "Hidden compare temp"
+        hidden["messages"] = [{"role": "user", "content": "hola", "timestamp": "2026-05-16T01:00:01"}]
+        hidden["updated"] = "2026-05-16T01:00:01"
+        hidden["folder_id"] = "Audit"
+        hidden["compare_profiles"] = ["default", "alex"]
+        hidden["compare_temporary"] = True
+        mod._write_session(hidden)
+
+        auth_headers = {"Authorization": f"Bearer {mod._current_webui_token()}"}
+        sessions_resp = self.client.get("/api/chat/sessions", headers=auth_headers)
+
+        self.assertEqual(sessions_resp.status_code, 200, sessions_resp.data)
+        session_ids = [item["id"] for item in sessions_resp.get_json()["sessions"]]
+        self.assertIn(visible["id"], session_ids)
+        self.assertNotIn(hidden["id"], session_ids)
+
+        folder_summaries = mod._folder_summaries(mod._load_all_sessions())
+        audit = next(folder for folder in folder_summaries if folder["id"] == "Audit")
+        self.assertEqual(audit["chat_count"], 1)
+        self.assertEqual([item["id"] for item in audit["sessions"]], [visible["id"]])
+
     def test_filter_live_progress_lines_removes_reasoning_blocks(self):
         lines = [
             "Query: hola",

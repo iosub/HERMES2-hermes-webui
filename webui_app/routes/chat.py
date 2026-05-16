@@ -156,6 +156,7 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
 
         target_session = get_or_create_chat_session(target_session_id, profile_name=primary_profile)
         target_session["compare_profiles"] = compare_profiles
+        target_session["compare_temporary"] = False
         if data.get("transport_preference") is not None:
             validated_preference, preference_notice = validated_transport_preference(normalize_transport_preference(data.get("transport_preference")))
             target_session["transport_preference"] = validated_preference
@@ -295,6 +296,7 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
 
         sess = get_or_create_chat_session(session_id, profile_name=requested_profile)
         sess["compare_profiles"] = compare_profiles if len(compare_profiles) > 1 else []
+        sess["compare_temporary"] = len(compare_profiles) > 1
         sess["profile"] = normalize_profile_name(sess.get("profile")) or selected_profile_name()
         if data.get("transport_preference") is not None:
             validated_preference, preference_notice = validated_transport_preference(requested_transport_preference)
@@ -624,6 +626,8 @@ def register_chat_routes(app, *, require_token, rate_limit, deps) -> None:
     def api_chat_sessions():
         sessions = []
         for _, session in load_all_sessions().items():
+            if bool(session.get("compare_temporary")):
+                continue
             meta = chat_session_meta(session)
             sessions.append({
                 "id": session["id"],
