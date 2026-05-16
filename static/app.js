@@ -5030,9 +5030,13 @@ function chatBuildProgressGroups(lines = []) {
         const trimmed = raw.trim();
         if (!trimmed) return;
         const toolName = chatExtractProgressToolName(trimmed);
+        const startsStructuralGroup = /^Query:/i.test(trimmed)
+            || /^Resume this session with:/i.test(trimmed)
+            || /^[┌╭]/.test(trimmed);
         const shouldStartNewGroup = !current
             || (!!toolName && (!current?.toolName || toolName !== current.toolName))
-            || (!toolName && current?.toolName);
+            || (!toolName && current?.toolName)
+            || (!toolName && !current?.toolName && startsStructuralGroup);
 
         if (shouldStartNewGroup) {
             const title = chatProgressGroupTitle(trimmed, groups.length);
@@ -5218,7 +5222,7 @@ function chatRenderProgressError(message) {
     chatSetDebugTraceStatus('Error');
 }
 
-function chatProgressBubbleMarkup(title, logId = '', canStop = false, lines = [], transport = '') {
+function chatProgressBubbleMarkup(title, logId = '', canStop = false, lines = [], transport = '', stopHandler = 'chatAbort()') {
     const logIdAttr = logId ? ' id="' + logId + '"' : '';
     return '<div class="chat-thinking-bubble is-collapsed">'
         + '<div class="chat-thinking-header">'
@@ -5228,7 +5232,7 @@ function chatProgressBubbleMarkup(title, logId = '', canStop = false, lines = []
         + '<span class="chat-progress-toggle-label">Show trace</span>'
         + '<span class="chat-progress-toggle-icon" aria-hidden="true">+</span>'
         + '</button>'
-        + (canStop ? '<button class="chat-stop-btn" id="chat-stop-btn" onclick="chatAbort()" title="Stop"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>' : '')
+        + (canStop ? '<button class="chat-stop-btn" type="button" onclick="' + escA(stopHandler) + '" title="Stop"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>' : '')
         + '</div>'
         + '<div class="chat-progress-log"' + logIdAttr + ' hidden>' + chatProgressPanelInnerHtml(lines, transport) + '</div>'
         + '</div>';
@@ -5608,17 +5612,20 @@ function chatCompareTraceMarkup(entry) {
     const status = String(entry?.status || 'running').trim().toLowerCase();
     const traceLines = Array.isArray(entry?.debug_trace_lines) ? entry.debug_trace_lines : [];
     const transport = String(entry?.debug_trace_transport || entry?.transport || '').trim();
+    const profile = String(entry?.profile || 'default').trim() || 'default';
     const shouldShowTrace = status === 'running' || !!entry?.show_debug_trace || traceLines.length > 0;
     if (!shouldShowTrace) return '';
     const title = status === 'running'
-        ? 'Hermes (' + escH(entry?.profile || 'default') + ') is thinking<span class="chat-thinking-ellipsis"></span>'
+        ? 'Hermes (' + escH(profile) + ') is thinking<span class="chat-thinking-ellipsis"></span>'
         : 'Debug trace (' + escH(entry?.debug_trace_status || (status === 'failed' ? 'Error' : 'Completed')) + ')';
+    const canStop = status === 'running' && !!chatState.currentRequestCancelSupported && !entry?.cancel_requested;
     return chatProgressBubbleMarkup(
         title,
-        chatCompareProgressLogId(entry?.profile || 'default'),
-        false,
+        chatCompareProgressLogId(profile),
+        canStop,
         traceLines,
         transport,
+        'chatAbortCompareProfile(' + JSON.stringify(profile) + ')',
     );
 }
 
@@ -7800,6 +7807,40 @@ window.chatAbortCompare = async function () {
     } catch (e) {
         chatState.cancelRequested = false;
         chatSyncSendButton();
+        toast('Unable to cancel compare request: ' + e.message, 'warning');
+    }
+};
+
+window.chatAbortCompareProfile = async function (profile) {
+    if (!chatState.currentRequestCancelSupported) return;
+    const active = chatRunningCompareRequests().find(function(entry) {
+        return entry.profile === String(profile || '').trim();
+    });
+    if (!active?.requestId) return;
+
+    const entry = chatCompareResponseEntry(chatGetPendingAssistantMessage(), active.profile);
+    if (entry) {
+        entry.cancel_requested = true;
+        entry.debug_trace_status = 'Cancelling';
+        entry.show_debug_trace = true;
+        chatPatchPendingCompareCard(active.profile);
+    }
+
+    try {
+        const result = await api('POST', '/api/chat/cancel', { request_id: active.requestId });
+        if (!result?.cancelled) {
+            if (entry) {
+                entry.cancel_requested = false;
+                chatPatchPendingCompareCard(active.profile);
+            }
+            toast(result?.detail || 'Unable to cancel compare request', 'warning');
+            return;
+        }
+    } catch (e) {
+        if (entry) {
+            entry.cancel_requested = false;
+            chatPatchPendingCompareCard(active.profile);
+        }
         toast('Unable to cancel compare request: ' + e.message, 'warning');
     }
 };

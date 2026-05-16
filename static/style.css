@@ -3682,14 +3682,14 @@ pre code {
   border: 1px solid var(--border);
   background: var(--bg-primary);
   font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 10px;
+  line-height: 0.9;
 }
 
 .chat-progress-groups {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 
 .chat-progress-group {
@@ -3703,13 +3703,14 @@ pre code {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 6px;
+  padding: 3px 6px;
   border: 0;
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
   text-align: left;
+  line-height: 0.9;
 }
 
 .chat-progress-group-toggle:hover {
@@ -3719,7 +3720,7 @@ pre code {
 
 .chat-progress-group-badge {
   flex: 0 0 auto;
-  padding: 2px 6px;
+  padding: 0 4px;
   border-radius: 999px;
   background: rgba(99, 102, 241, 0.12);
   color: var(--accent);
@@ -3744,7 +3745,7 @@ pre code {
 }
 
 .chat-progress-group-body {
-  padding: 0 10px 10px;
+  padding: 0 6px 6px;
 }
 
 .chat-progress-group-body .chat-progress-line:first-child {
@@ -3766,7 +3767,7 @@ pre code {
 }
 
 .chat-progress-line + .chat-progress-line {
-  margin-top: 4px;
+  margin-top: 1px;
 }
 
 /* Send button becomes stop button when thinking */
