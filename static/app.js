@@ -5123,6 +5123,22 @@ function chatFindLastUserMessageIndex() {
     return -1;
 }
 
+function chatLastUserSubmission() {
+    const index = chatFindLastUserMessageIndex();
+    if (index < 0) return null;
+    const message = chatState.localMessages[index] || {};
+    return {
+        message: String(message.content || ''),
+        files: Array.isArray(message.files)
+            ? message.files.map(function(fileName) {
+                return { name: String(fileName || '').trim() };
+            }).filter(function(fileRef) {
+                return !!fileRef.name;
+            })
+            : [],
+    };
+}
+
 function chatCreatePendingAssistantMessage() {
     const pendingAssistant = {
         role: 'assistant',
@@ -8075,7 +8091,7 @@ window.chatAbortCompareProfile = async function (profile) {
 // ── REGENERATE ─────────────────────────────────────────────
 window.chatRegenerate = async function () {
     if (chatState.isThinking) return;
-    const last = chatState.lastSubmission;
+    const last = chatLastUserSubmission() || chatState.lastSubmission;
     if (!last || (!last.message && !(last.files || []).length)) { toast('Nothing to regenerate', 'warning'); return; }
     // Clear last assistant response
     const container = document.getElementById('chat-messages');
